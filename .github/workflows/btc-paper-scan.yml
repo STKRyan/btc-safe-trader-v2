@@ -1,5 +1,6 @@
 
 
+
 name: BTC Polymarket Paper Scanner
 
 on:
@@ -47,4 +48,5 @@ jobs:
             git commit -m "Update paper trading results"
             git push
           fi
+
 
