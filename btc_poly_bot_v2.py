@@ -166,20 +166,28 @@ def rsi(values, period=14):
     return 100.0 - 100.0 / (1.0 + rs)
 
 
+
 def fetch_candles():
-    rows = get_json(
-        f"{BINANCE}/api/v3/klines",
-        {"symbol": "BTCUSDT", "interval": "1m", "limit": 100},
-    )
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
+    rows = get_json(url, {"granularity": 60})
+
+    if not isinstance(rows, list) or len(rows) < 60:
+        raise RuntimeError("Coinbase returned insufficient BTC candles")
+
+    # Coinbase format: [time, low, high, open, close, volume]
+    # Sort oldest to newest for indicator calculations.
+    rows = sorted(rows, key=lambda x: int(x[0]))
+
     return [{
-        "open_time": int(x[0]),
-        "open": float(x[1]),
+        "open_time": int(x[0]) * 1000,
+        "open": float(x[3]),
         "high": float(x[2]),
-        "low": float(x[3]),
+        "low": float(x[1]),
         "close": float(x[4]),
         "volume": float(x[5]),
-        "close_time": int(x[6]),
+        "close_time": (int(x[0]) + 60) * 1000,
     } for x in rows]
+
 
 
 def technical_signal(candles):
