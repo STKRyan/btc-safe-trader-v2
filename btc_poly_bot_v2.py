@@ -100,7 +100,7 @@ def db_connect() -> sqlite3.Connection:
             token_id TEXT NOT NULL,
             entry_price REAL NOT NULL,
             quantity REAL NOT NULL,
-            remaining_quantity REAL NOT NULL,
+            remaining_quantity REAL NOT NULL DEFAULT 0,
             realized_pnl REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'OPEN',
             partial_taken INTEGER NOT NULL DEFAULT 0,
@@ -114,6 +114,41 @@ def db_connect() -> sqlite3.Connection:
         );
         """
     )
+
+    # Migrate databases created by earlier bot versions. CREATE TABLE IF NOT
+    # EXISTS does not add columns to an existing SQLite table, so add any fields
+    # required by this version before the scanner queries them.
+    trade_columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    migrations = {
+        "timeframe": "INTEGER NOT NULL DEFAULT 5",
+        "side": "TEXT NOT NULL DEFAULT 'UP'",
+        "token_id": "TEXT NOT NULL DEFAULT ''",
+        "entry_price": "REAL NOT NULL DEFAULT 0",
+        "quantity": "REAL NOT NULL DEFAULT 0",
+        "remaining_quantity": "REAL NOT NULL DEFAULT 0",
+        "realized_pnl": "REAL NOT NULL DEFAULT 0",
+        "status": "TEXT NOT NULL DEFAULT 'OPEN'",
+        "partial_taken": "INTEGER NOT NULL DEFAULT 0",
+        "last_action": "TEXT NOT NULL DEFAULT ''",
+        "opened_at": "TEXT NOT NULL DEFAULT ''",
+        "closed_at": "TEXT",
+    }
+    for column, declaration in migrations.items():
+        if column not in trade_columns:
+            conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {declaration}")
+
+    # Preserve old open positions by treating their original quantity as the
+    # remaining quantity. Carry forward legacy pnl_usd values when present.
+    trade_columns = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    conn.execute(
+        "UPDATE paper_trades SET remaining_quantity=quantity "
+        "WHERE status='OPEN' AND COALESCE(remaining_quantity,0)=0 AND quantity>0"
+    )
+    if "pnl_usd" in trade_columns:
+        conn.execute(
+            "UPDATE paper_trades SET realized_pnl=COALESCE(pnl_usd,0) "
+            "WHERE COALESCE(realized_pnl,0)=0 AND COALESCE(pnl_usd,0)<>0"
+        )
     conn.commit()
     return conn
 
