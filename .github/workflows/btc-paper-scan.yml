@@ -25,30 +25,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run BTC paper trading scanner
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BTC_BOT_DB: btc_poly_v2.sqlite3
-        run: python btc_poly_bot_v2.py --duration 180
-
-      - name: Save paper trading database
+        
+      - name: Diagnose repository files
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add btc_poly_v2.sqlite3
-          if ! git diff --cached --quiet; then
-            git commit -m "Update BTC paper trading results"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          fi
+          echo "CURRENT DIRECTORY:"
+          pwd
+          echo "CHECKED OUT COMMIT:"
+          git rev-parse --short HEAD
+          echo "PYTHON FILES:"
+          find . -maxdepth 4 -type f -iname "*.py" -print
+          echo "ROOT FILES:"
+          ls -la
+
