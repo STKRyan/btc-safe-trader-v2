@@ -7,10 +7,16 @@
 name: BTC Polymarket Paper Scanner
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: btc-paper-scanner
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -27,13 +33,22 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
 
-      - name: Check Python syntax
-        run: python -m py_compile btc_poly_bot_v2.py
+      - name: Run BTC paper trading scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BTC_BOT_DB: btc_poly_v2.sqlite3
+        run: python btc_poly_bot_v2.py --duration 180
 
-
-
-
-
-
+      - name: Save paper trading database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add btc_poly_v2.sqlite3
+          if ! git diff --cached --quiet; then
+            git commit -m "Update BTC paper trading results"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
