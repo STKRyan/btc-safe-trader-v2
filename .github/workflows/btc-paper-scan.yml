@@ -2,6 +2,7 @@
 
 
 
+
 name: BTC Polymarket Paper Scanner
 
 on:
@@ -33,7 +34,13 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      
+      - name: Run BTC paper trading scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BTC_BOT_DB: btc_poly_v2.sqlite3
+        run: python btc_poly_bot_v2.py --duration 180
+
       - name: Save paper trading database
         run: |
           git config user.name "github-actions[bot]"
@@ -44,6 +51,7 @@ jobs:
             git pull --rebase origin main
             git push origin HEAD:main
           fi
+
 
 
 
