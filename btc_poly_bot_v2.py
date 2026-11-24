@@ -1,5 +1,5 @@
 
-        record_observation(market["slug"], minutes, side, model_p, market_p, edge)
+                record_observation(market["slug"], minutes, side, model_p, market_p, edge)
     paper_result = "NO ENTRY"
     if chosen and not reasons:
         paper_result = create_paper_trade(market, minutes, side, token, chosen["ask"])
