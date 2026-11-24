@@ -378,41 +378,76 @@ def hold_and_flip(roi: float, score: int, position_side: str, imbalance: float) 
     return hold, flip
 
 
+# BTC Polymarket Telegram call-sign upgrade
+# Paste this over the EXISTING manage_open_trades() function in btc_poly_bot_v2.py.
+# It uses the bot's existing data, hold_and_flip(), SQLite fields and Telegram sender.
+# No new package, API key, or extra service is required.
+
 def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
     rows = conn.execute("SELECT * FROM paper_trades WHERE status='OPEN'").fetchall()
+
     for trade in rows:
         book = get_book(trade["token_id"])
         stats = book_stats(book) if book else None
         if not stats:
             continue
-        bid = stats["bid"]
+
+        bid = stats["bid"]                  # Best current Polymarket sell bid
         entry = float(trade["entry_price"])
         roi = (bid / entry - 1.0) if entry else 0.0
-        hold, flip = hold_and_flip(roi, int(tech["score"]), trade["side"], stats["imbalance"])
-        action = "HOLD"
+        hold, flip = hold_and_flip(
+            roi, int(tech["score"]), trade["side"], stats["imbalance"]
+        )
+
         qty = float(trade["remaining_quantity"])
         partial_taken = int(trade["partial_taken"])
         realized = float(trade["realized_pnl"])
+
+        # Plain-English market call, relative to the currently held UP/DOWN token.
+        market_side = tech.get("side", "NEUTRAL")
+        position_side = trade["side"]
+        aligned_score = int(tech["score"]) if position_side == "UP" else -int(tech["score"])
+
+        if market_side == "NEUTRAL" or int(tech["score"]) == 0:
+            call = "⚪ WAIT — NO CLEAR DIRECTION"
+        elif market_side != position_side and abs(int(tech["score"])) >= 2:
+            call = f"🔄 FLIP RISK — MARKET CALL IS {market_side}"
+        elif market_side == "UP":
+            call = "🟢 UP CALL — MARKET LEANING UP"
+        else:
+            call = "🔴 DOWN CALL — MARKET LEANING DOWN"
+
+        # Keep the bot's existing paper-management thresholds unchanged.
+        partial_target = entry * 1.05
+        full_target = entry * 1.10
+        protective_stop = entry * 0.92
+        next_target = full_target if partial_taken else partial_target
+
+        action = "HOLD"
+        close_qty = 0.0
+
         if roi <= -0.08:
-            action = "STOP / EXIT"
+            action = "🛑 STOP / EXIT 100%"
             close_qty = qty
         elif roi >= 0.10:
-            action = "PROFIT TARGET / EXIT"
+            action = "🎯 TAKE PROFIT / EXIT 100%"
             close_qty = qty
         elif flip >= 80 or hold < 35:
-            action = "HIGH FLIP RISK / EXIT"
+            action = "🔴 HIGH FLIP RISK / EXIT 100%"
             close_qty = qty
         elif roi >= 0.05 and not partial_taken:
-            action = "TAKE HALF PROFIT"
+            action = "🟠 TAKE PROFIT / SELL 50%"
             close_qty = qty / 2.0
         elif flip >= 65:
-            action = "FLIP RISK / TAKE HALF" if not partial_taken else "FLIP RISK / WATCH"
-            close_qty = qty / 2.0 if not partial_taken else 0.0
-        else:
-            close_qty = 0.0
-            if hold < 55:
-                action = "WATCH CLOSELY"
+            if not partial_taken:
+                action = "🟠 FLIP RISK / SELL 50%"
+                close_qty = qty / 2.0
+            else:
+                action = "🟡 FLIP RISK / WATCH"
+        elif hold < 55:
+            action = "🟡 WATCH CLOSELY"
 
+        # Record simulated fills exactly as the original paper bot did.
         if close_qty > 0:
             realized += (bid - entry) * close_qty
             qty -= close_qty
@@ -423,156 +458,49 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
             else:
                 status = "OPEN"
                 closed_at = None
-            if action == "TAKE HALF PROFIT" or action == "FLIP RISK / TAKE HALF":
+
+            if "SELL 50%" in action:
                 partial_taken = 1
+
             conn.execute(
-                "UPDATE paper_trades SET remaining_quantity=?,realized_pnl=?,status=?,partial_taken=?,last_action=?,closed_at=? WHERE id=?",
+                "UPDATE paper_trades SET remaining_quantity=?,realized_pnl=?,"
+                "status=?,partial_taken=?,last_action=?,closed_at=? WHERE id=?",
                 (qty, realized, status, partial_taken, action, closed_at, trade["id"]),
             )
             conn.commit()
+            sell_line = f"SELL PRICE NOW: ${bid:.3f} (current best bid)"
         else:
             status = "OPEN"
             closed_at = None
+            sell_line = f"NEXT SELL TARGET: ${next_target:.3f}"
             if action != trade["last_action"]:
-                conn.execute("UPDATE paper_trades SET last_action=? WHERE id=?", (action, trade["id"]))
+                conn.execute(
+                    "UPDATE paper_trades SET last_action=? WHERE id=?",
+                    (action, trade["id"]),
+                )
                 conn.commit()
 
-        # Avoid flooding Telegram with repeated HOLD/WATCH updates.
-        if action != trade["last_action"] or action not in ("HOLD", "WATCH CLOSELY"):
+        # Send a readable alert when the action changes; risk/exit actions remain visible.
+        if action != trade["last_action"] or "EXIT" in action or "SELL 50%" in action:
             telegram(
-                f"📊 PAPER SCALP MANAGER — BTC {trade['timeframe']}m {trade['side']}\n"
-                f"Entry ${entry:.3f} | Current bid ${bid:.3f} | ROI {roi*100:+.1f}%\n"
-                f"Hold strength: {hold}/100 | Flip risk: {flip}/100\n"
-                f"Action: {action}\n"
-                "Hold/flip gauges are heuristic, not probabilities. Paper exit assumes the displayed bid; execution is not guaranteed."
+                f"📣 BTC {trade['timeframe']}m TRADE CALL\n"
+                f"POSITION: {position_side}\n"
+                f"CALL: {call}\n\n"
+                f"🟢 HOLD STRENGTH: {hold}%\n"
+                f"🟠 FLIP RISK: {flip}%\n"
+                f"ACTION: {action}\n\n"
+                f"ENTRY: ${entry:.3f}\n"
+                f"CURRENT SELL BID: ${bid:.3f}\n"
+                f"{sell_line}\n"
+                f"PARTIAL PROFIT LEVEL (+5%): ${partial_target:.3f}\n"
+                f"FULL PROFIT LEVEL (+10%): ${full_target:.3f}\n"
+                f"PROTECTIVE STOP (-8%): ${protective_stop:.3f}\n"
+                f"POSITION RETURN: {roi * 100:+.1f}%\n"
+                f"RSI: {float(tech.get('rsi', 50)):.1f} | "
+                f"BTC 3m: {float(tech.get('move3', 0)):+.3f}% | "
+                f"BTC 10m: {float(tech.get('move10', 0)):+.3f}%\n\n"
+                "PAPER MODE ONLY — no real orders are sent. "
+                "Hold/flip values are heuristic scores, not win probabilities. "
+                "A target is not a guaranteed fill; the displayed bid is the current "
+                "top bid and may change before an order could execute."
             )
-
-
-def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
-    market = get_market(minutes)
-    if not market:
-        print(f"No active Gamma market found for BTC {minutes}m ({market_slug(minutes)})")
-        return
-    slug = str(market.get("slug") or market_slug(minutes))
-    remaining = seconds_remaining(minutes)
-    tokens = outcome_tokens(market)
-    if not tokens:
-        print(f"Could not map UP/DOWN token IDs for {slug}; outcomes={market.get('outcomes')}")
-        return
-
-    side = tech["side"]
-    if side not in ("UP", "DOWN"):
-        print(f"BTC {minutes}m neutral signal; no entry")
-        return
-    token_id = tokens.get(side)
-    if not token_id:
-        print(f"Missing {side} token for {slug}")
-        return
-    book = get_book(token_id)
-    stats = book_stats(book) if book else None
-    if not stats:
-        print(f"No usable order book for {slug} {side}")
-        return
-
-    ask = stats["ask"]
-    market_p = ask
-    model_p = model_probability(int(tech["score"]), side)
-    edge = model_p - market_p
-    record_observation(conn, slug, minutes, side, model_p, market_p, edge)
-    reasons = []
-    if abs(int(tech["score"])) < MIN_VOTES[minutes]:
-        reasons.append(f"directional votes {abs(int(tech['score']))}/5 below {MIN_VOTES[minutes]}")
-    if stats["depth"] < MIN_BOOK_DEPTH_USD:
-        reasons.append("book depth too low")
-    if stats["spread"] > MAX_SPREAD:
-        reasons.append("spread too wide")
-    if ask > MAX_ENTRY_ASK:
-        reasons.append("entry ask too expensive")
-    if remaining < MIN_SECONDS_REMAINING:
-        reasons.append("too little time remaining")
-    if remaining / (minutes * 60) > MAX_SECONDS_REMAINING_FRACTION:
-        reasons.append("market is too early")
-    if edge < MIN_EDGE_PROXY:
-        reasons.append("edge proxy below threshold")
-
-    print(
-        f"BTC {minutes}m {side} | votes {tech['score']}/5 | RSI {tech['rsi']:.1f} "
-        f"| 3m {tech['move3']:+.3f}% | 10m {tech['move10']:+.3f}% "
-        f"| ask {ask:.3f} bid {stats['bid']:.3f} depth ${stats['depth']:.0f} "
-        f"| edge proxy {edge*100:+.1f}pp | {remaining}s left"
-    )
-
-    signal_key = f"signal:{slug}:{minutes}:{side}"
-    message = (
-        f"BTC {minutes}m {side} signal\nVotes: {tech['score']}/5 | RSI: {tech['rsi']:.1f}\n"
-        f"3m move: {tech['move3']:+.3f}% | 10m move: {tech['move10']:+.3f}%\n"
-        f"Ask: ${ask:.3f} | Bid: ${stats['bid']:.3f} | Depth: ${stats['depth']:.0f}\n"
-        f"Heuristic edge proxy: {edge*100:+.1f} percentage points\n"
-        + ("Entry blocked: " + "; ".join(reasons) if reasons else "Entry checks passed; paper entry considered")
-        + "\nPAPER ONLY — no real orders. Estimates are not calibrated probabilities."
-    )
-    alert_once(conn, signal_key, message)
-
-    if reasons:
-        return
-    if daily_closed_pnl(conn) <= -MAX_DAILY_PAPER_LOSS_USD:
-        print("Daily paper loss limit reached; entries paused")
-        return
-    if entries_today(conn) >= MAX_DAILY_ENTRIES:
-        print("Daily paper entry cap reached")
-        return
-    if open_trade_count(conn) >= MAX_OPEN_PAPER_TRADES:
-        print("Maximum open paper trades reached")
-        return
-    create_paper_trade(conn, market, minutes, side, token_id, ask)
-
-
-def print_summary(conn: sqlite3.Connection) -> None:
-    open_count = open_trade_count(conn)
-    pnl = daily_closed_pnl(conn)
-    total = conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"]
-    print(f"Summary: open paper trades={open_count}, today's realized PnL=${pnl:.2f}, saved signal observations={total}")
-    print("Paper bankroll reference: $100.00; this is a simulation, not a live balance.")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="BTC Polymarket paper scanner")
-    parser.add_argument("--duration", type=int, default=0, help="Run for this many seconds; 0 means one scan")
-    args = parser.parse_args()
-    if args.duration < 0:
-        parser.error("--duration must be zero or a positive number")
-
-    conn = db_connect()
-    telegram(
-        "🤖 BTC Conservative Bot v2 started\n"
-        "Mode: automatic scanning + PAPER trading only\n"
-        "Real-money order placement: DISABLED\n"
-        f"Paper stake: ${PAPER_STAKE_USD:.2f} | Daily entry cap: {MAX_DAILY_ENTRIES}\n"
-        "5m entries: 3/5 votes | 15m entries: 4/5 votes"
-    )
-    started = time.time()
-    try:
-        while True:
-            try:
-                candles = get_candles()
-                tech = technical_signal(candles)
-                manage_open_trades(conn, tech)
-                for minutes in TIMEFRAMES:
-                    try:
-                        scan_one(conn, minutes, tech)
-                    except Exception as exc:
-                        print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
-                print_summary(conn)
-            except Exception as exc:
-                print(f"Scan cycle error: {type(exc).__name__}: {exc}")
-                telegram(f"⚠️ BTC paper scanner data error: {type(exc).__name__}: {exc}")
-            if args.duration == 0 or time.time() - started >= args.duration:
-                break
-            time.sleep(min(SCAN_INTERVAL_SECONDS, max(1, args.duration - (time.time() - started))))
-    finally:
-        conn.close()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
