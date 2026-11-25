@@ -1,0 +1,64 @@
+name: BTC Polymarket Paper Scanner
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: btc-paper-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Locate bot and run paper scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          BTC_BOT_DB: btc_poly_v2.sqlite3
+        run: |
+          echo "Repository root: $(pwd)"
+          echo "Python files in checkout:"
+          find . -maxdepth 4 -type f -iname "*.py" -print
+          BOT_FILE="$(find . -type f -name 'btc_poly_bot_v2.py' -print -quit)"
+          if [ -z "$BOT_FILE" ]; then
+            echo "ERROR: btc_poly_bot_v2.py was not found in this checkout."
+            exit 2
+          fi
+          echo "Running: $BOT_FILE"
+          python "$BOT_FILE" --duration 180
+
+      - name: Save paper trading database
+        if: always()
+        run: |
+          if [ -f btc_poly_v2.sqlite3 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add btc_poly_v2.sqlite3
+            if ! git diff --cached --quiet; then
+              git commit -m "Update BTC paper trading results"
+              git pull --rebase origin main
+              git push origin HEAD:main
+            fi
+          else
+            echo "No database file was created; nothing to save."
+          fi
