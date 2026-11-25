@@ -60,33 +60,49 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def telegram(message: str, reply_markup: Optional[dict] = None) -> None:
-    """Send a compact HTML-formatted Telegram card with optional menu buttons."""
+def telegram_chat_ids() -> list[str]:
+    """Return all configured destinations; supports a private chat and groups."""
+    raw = os.getenv("TELEGRAM_CHAT_IDS", "")
+    ids = [part.strip() for part in raw.replace(";", ",").split(",") if part.strip()]
+    legacy = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if legacy:
+        ids.append(legacy)
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(ids))
+
+
+def telegram(message: str, reply_markup: Optional[dict] = None) -> bool:
+    """Send a compact HTML-formatted Telegram card to every configured destination."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        print("Telegram credentials missing; message not sent:", message[:200])
-        return
-    data = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    try:
-        response = SESSION.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            data=data,
-            timeout=HTTP_TIMEOUT,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            print("Telegram API returned not-ok:", payload)
-    except Exception as exc:
-        print(f"Telegram send failed: {exc}")
+    chat_ids = telegram_chat_ids()
+    if not token or not chat_ids:
+        print("Telegram credentials or destination IDs missing; message not sent:", message[:200])
+        return False
+    sent = False
+    for chat_id in chat_ids:
+        data = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        try:
+            response = SESSION.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=data,
+                timeout=HTTP_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("ok"):
+                sent = True
+            else:
+                print(f"Telegram API rejected destination {chat_id}: {payload}")
+        except Exception as exc:
+            print(f"Telegram send failed for destination {chat_id}: {exc}")
+    return sent
 
 
 def telegram_api(method: str, data: dict) -> Any:
@@ -211,7 +227,8 @@ def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
     row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
     if row and time.time() - row["sent_at"] < 3600:
         return
-    telegram(message, menu_markup())
+    if not telegram(message, menu_markup()):
+        return
     conn.execute(
         "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
         "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
@@ -406,6 +423,63 @@ def record_observation(conn: sqlite3.Connection, slug: str, minutes: int, side: 
     conn.commit()
 
 
+def gauge_bar(value: int | float, width: int = 10) -> str:
+    """Compact visual for heuristic scores; not a probability."""
+    pct = max(0, min(100, int(round(float(value)))))
+    filled = round(pct / 100 * width)
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def gauge_line(label: str, value: int | float, icon: str = "") -> str:
+    pct = max(0, min(100, int(round(float(value)))))
+    return f"{icon} <b>{label} {pct}%</b>  <code>{gauge_bar(pct)}</code>"
+
+
+def direction_split(score: int) -> tuple[int, int]:
+    """Translate the signed indicator vote into a bounded directional-bias display.
+
+    These are visualization scores only, not calibrated market probabilities.
+    """
+    up = max(10, min(90, 50 + int(score) * 8))
+    return up, 100 - up
+
+
+def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20) -> dict:
+    """Summarize the latest fully closed simulated trades for conservative feedback."""
+    rows = conn.execute(
+        "SELECT realized_pnl FROM paper_trades WHERE status='CLOSED' "
+        "ORDER BY COALESCE(closed_at,opened_at) DESC, id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    count = len(rows)
+    wins = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) > 0)
+    losses = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) < 0)
+    return {"count": count, "wins": wins, "losses": losses,
+            "win_rate": (100.0 * wins / count) if count else None}
+
+
+def suggested_hold_window(minutes: int, score: int, flip: int) -> str:
+    """A cautious review window, never a promise to hold until a target."""
+    strength = abs(int(score))
+    if strength < MIN_VOTES[minutes] or flip >= 60:
+        return "WAIT · recheck in 30s"
+    if minutes == 5:
+        return "1–2 min · reassess every scan" if strength >= 4 and flip < 40 else "30–60s · reassess"
+    return "3–5 min · reassess every scan" if strength >= 4 and flip < 40 else "1–2 min · reassess"
+
+
+def scalp_fit_score(score: int, tech: dict, stats: dict) -> int:
+    """Rank scalp conditions from indicators and liquidity; this is not a win rate."""
+    side = "UP" if score > 0 else "DOWN"
+    move1 = float(tech.get("move1", 0.0))
+    move3 = float(tech.get("move3", 0.0))
+    aligned = (move1 > 0 and move3 > 0) if side == "UP" else (move1 < 0 and move3 < 0)
+    score_value = 35 + abs(int(score)) * 8
+    score_value += 12 if aligned else -8
+    score_value += 10 if float(stats.get("depth", 0)) >= 2000 else 0
+    score_value += 8 if float(stats.get("spread", 1)) <= 0.015 else 0
+    return max(0, min(95, int(score_value)))
+
+
 def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, side: str,
                        token_id: str, ask: float, trade_type: str = "STANDARD") -> bool:
     if ask <= 0 or ask >= 1:
@@ -422,11 +496,11 @@ def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, sid
     target = ask * (1.0 + (SCALP_TAKE_PROFIT if trade_type == "SCALP" else 0.10))
     stop = ask * (1.0 - (SCALP_STOP_LOSS if trade_type == "SCALP" else 0.08))
     telegram(
-        f"<b>{label} — BTC {minutes}m {side}</b>\n"
-        f"<b>Entry:</b> <code>${ask:.3f}</code>  |  <b>Stake:</b> ${PAPER_STAKE_USD:.2f}\n"
-        f"<b>Target:</b> ${target:.3f}  |  <b>Stop:</b> ${stop:.3f}\n"
-        f"<b>Size:</b> {quantity:.3f} shares\n"
-        "<i>Simulation only • no real orders</i>", menu_markup()
+        f"<b>{label} · BTC {minutes}m {side}</b>\n"
+        f"🟢 IN <code>${ask:.3f}</code> · 💵 ${PAPER_STAKE_USD:.2f}\n"
+        f"🎯 TP ${target:.3f} · 🛑 SL ${stop:.3f}\n"
+        f"📦 {quantity:.3f} shares\n"
+        "<i>Paper only · simulated fills</i>", menu_markup()
     )
     return True
 
@@ -537,17 +611,15 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
             label = "⚡ SCALP MANAGEMENT" if trade_type == "SCALP" else "📣 BTC POSITION UPDATE"
             telegram(
                 f"<b>{label} · {trade['timeframe']}m {position_side}</b>\n"
-                f"<b>Market:</b> {call}\n"
-                f"<b>Action:</b> {action_label}\n\n"
-                f"🟢 <b>Hold gauge:</b> {hold}%   🟠 <b>Flip risk:</b> {flip}%\n"
-                f"<b>Entry:</b> ${entry:.3f}   <b>Bid:</b> ${bid:.3f}\n"
+                f"<b>{action_label}</b> · {call}\n\n"
+                f"{gauge_line('HOLD', hold, '🟢')}\n"
+                f"{gauge_line('FLIP RISK', flip, '🟠')}\n\n"
+                f"🎟 IN <code>${entry:.3f}</code> · 📍 BID <code>${bid:.3f}</code>\n"
                 f"{sell_line}\n"
-                f"<b>Target:</b> ${full_target:.3f}   <b>Stop:</b> ${protective_stop:.3f}\n"
-                f"<b>Return:</b> {roi*100:+.2f}%\n"
-                f"<b>BTC RSI:</b> {float(tech.get('rsi',50)):.1f} · "
-                f"<b>1m:</b> {float(tech.get('move1',0)):+.3f}% · "
-                f"<b>3m:</b> {float(tech.get('move3',0)):+.3f}%\n"
-                "<i>Paper simulation only. Gauges are heuristic scores, not calibrated win odds; target fills are not guaranteed.</i>",
+                f"🎯 TP <code>${full_target:.3f}</code> · 🛑 SL <code>${protective_stop:.3f}</code>\n"
+                f"📈 P/L <b>{roi*100:+.2f}%</b>\n"
+                f"₿ RSI {float(tech.get('rsi',50)):.0f} · 1m {float(tech.get('move1',0)):+.2f}% · 3m {float(tech.get('move3',0)):+.2f}%\n"
+                "<i>Paper only · gauges are heuristic, not calibrated odds.</i>",
                 menu_markup(),
             )
         if action != trade["last_action"]:
@@ -628,49 +700,55 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
 def dashboard_text(conn: sqlite3.Connection) -> str:
     open_count = open_trade_count(conn)
     pnl = daily_closed_pnl(conn)
-    last = conn.execute("SELECT side,setup_score,entry_price,target_price,created_at FROM scalp_signals ORDER BY id DESC LIMIT 1").fetchone()
-    scalp_line = "No qualified scalp setup yet."
+    last = conn.execute("SELECT side,setup_score,entry_price,target_price FROM scalp_signals ORDER BY id DESC LIMIT 1").fetchone()
     if last:
-        scalp_line = (f"Latest scalp: <b>{last['side']}</b> · score <b>{last['setup_score']}/100</b>\n"
-                      f"Entry ${last['entry_price']:.3f} → target ${last['target_price']:.3f}")
-    return ("<b>🤖 BTC SIGNAL DESK</b>\n"
-            f"<b>Mode:</b> PAPER ONLY · <b>Open positions:</b> {open_count}\n"
-            f"<b>Today's realized P/L:</b> ${pnl:+.2f}\n"
-            f"{scalp_line}\n\n"
-            "Choose a panel below. Signal percentages are heuristic gauges, not guaranteed odds.")
+        score = int(last["setup_score"] or 0)
+        scalp = (f"⚡ LAST SCALP: <b>{last['side']}</b> · {score}/100\n"
+                 f"<code>{gauge_bar(score)}</code>\nIN ${last['entry_price']:.3f} → TP ${last['target_price']:.3f}")
+    else:
+        scalp = "⚡ SCALP: <b>NO QUALIFIED SETUP</b>"
+    pnl_icon = "🟢" if pnl >= 0 else "🔴"
+    return ("<b>₿ BTC SIGNAL DESK</b>\n"
+            f"🧪 PAPER · 📂 OPEN {open_count} · {pnl_icon} P/L ${pnl:+.2f}\n\n"
+            f"{scalp}\n\n"
+            "<i>Scores are heuristic gauges, not win probabilities.</i>")
 
 
 def scalps_text(conn: sqlite3.Connection) -> str:
     rows = conn.execute("SELECT * FROM scalp_signals ORDER BY id DESC LIMIT 5").fetchall()
     if not rows:
-        body = "No qualified scalp setups have been recorded yet."
+        body = "<b>NO QUALIFIED SETUPS</b>\nWaiting for filters to align."
     else:
-        body = "\n\n".join(
-            f"<b>{r['side']} · score {r['setup_score']}/100</b>\n"
-            f"Entry ${r['entry_price']:.3f} · target ${r['target_price']:.3f} · stop ${r['stop_price']:.3f}"
-            for r in rows
-        )
-    return "<b>⚡ SCALP WATCHLIST</b>\n" + body + "\n\n<i>Scores rank setup quality; they are not win probabilities.</i>"
+        cards = []
+        for r in rows:
+            score = int(r["setup_score"] or 0)
+            icon = "🟢" if r["side"] == "UP" else "🔴"
+            cards.append(f"<b>{icon} {r['side']} · {score}/100</b>\n"
+                         f"<code>{gauge_bar(score)}</code>\n"
+                         f"IN ${r['entry_price']:.3f} · TP ${r['target_price']:.3f} · SL ${r['stop_price']:.3f}")
+        body = "\n\n".join(cards)
+    return "<b>⚡ SCALP RADAR</b>\n" + body + "\n\n<i>Setup score ≠ win probability.</i>"
 
 
 def positions_text(conn: sqlite3.Connection) -> str:
     rows = conn.execute("SELECT * FROM paper_trades WHERE status='OPEN' ORDER BY id DESC LIMIT 10").fetchall()
     if not rows:
-        body = "No open paper positions."
+        body = "<b>NO OPEN POSITIONS</b>\nStanding by."
     else:
-        body = "\n\n".join(
-            f"<b>{'⚡ SCALP' if r['trade_type']=='SCALP' else '📈 STANDARD'} · {r['timeframe']}m {r['side']}</b>\n"
-            f"Entry ${r['entry_price']:.3f} · Remaining {r['remaining_quantity']:.3f} shares"
-            for r in rows
-        )
-    return "<b>📂 OPEN PAPER POSITIONS</b>\n" + body
+        cards = []
+        for r in rows:
+            kind = "⚡ SCALP" if r["trade_type"] == "SCALP" else "📈 STANDARD"
+            cards.append(f"<b>{kind} · {r['timeframe']}m {r['side']}</b>\n"
+                         f"IN ${r['entry_price']:.3f} · LEFT {r['remaining_quantity']:.3f} shares")
+        body = "\n\n".join(cards)
+    return "<b>📂 OPEN POSITIONS</b>\n" + body
 
 
 def process_telegram_updates(conn: sqlite3.Connection, offset: int) -> int:
     """Handle menu taps and slash commands while the GitHub Actions job is running."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    allowed_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not allowed_chat:
+    allowed_chats = set(telegram_chat_ids())
+    if not token:
         return offset
     try:
         updates = telegram_api("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": json.dumps(["message", "callback_query"])}) or []
@@ -679,7 +757,8 @@ def process_telegram_updates(conn: sqlite3.Connection, offset: int) -> int:
             callback = update.get("callback_query")
             message = callback.get("message", {}) if callback else update.get("message", {})
             chat = message.get("chat", {})
-            if str(chat.get("id", "")) != allowed_chat:
+            incoming_chat_id = str(chat.get("id", ""))
+            if not incoming_chat_id:
                 continue
             if callback:
                 action = callback.get("data", "dashboard")
@@ -691,6 +770,17 @@ def process_telegram_updates(conn: sqlite3.Connection, offset: int) -> int:
                     print(f"Callback acknowledgement skipped: {callback_exc}")
             else:
                 action = str(message.get("text", "")).split()[0].lower().split("@")[0]
+            # Let an administrator discover the group ID after adding the bot.
+            # This command is intentionally handled before destination filtering.
+            if action in ("/chatid", "/id"):
+                telegram_api("sendMessage", {
+                    "chat_id": incoming_chat_id,
+                    "text": f"This Telegram chat ID is: {incoming_chat_id}\nAdd it to the TELEGRAM_CHAT_IDS GitHub secret to receive scanner alerts here.",
+                    "disable_web_page_preview": True,
+                })
+                continue
+            if incoming_chat_id not in allowed_chats:
+                continue
             if action in ("dashboard", "/start", "/status", "/dashboard"):
                 card = dashboard_text(conn)
             elif action in ("scalps", "/scalps"):
@@ -703,7 +793,7 @@ def process_telegram_updates(conn: sqlite3.Connection, offset: int) -> int:
                 continue
             if callback:
                 telegram_api("editMessageText", {
-                    "chat_id": allowed_chat,
+                    "chat_id": incoming_chat_id,
                     "message_id": message["message_id"],
                     "text": card,
                     "parse_mode": "HTML",
@@ -720,35 +810,58 @@ def process_telegram_updates(conn: sqlite3.Connection, offset: int) -> int:
 def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     market = get_market(minutes)
     if not market:
-        print(f"No active Gamma market found for BTC {minutes}m ({market_slug(minutes)})")
+        slug_hint = market_slug(minutes)
+        print(f"No active Gamma market found for BTC {minutes}m ({slug_hint})")
+        alert_once(
+            conn, f"status_v1:{slug_hint}:{minutes}:NO_MARKET",
+            f"<b>₿ BTC {minutes}m · 🟡 WAIT</b>\n⛔ <b>NO ENTRY</b> · Market data unavailable\n<i>Scanner is running; waiting for a valid market.</i>"
+        )
         return
     slug = str(market.get("slug") or market_slug(minutes))
     remaining = seconds_remaining(minutes)
     tokens = outcome_tokens(market)
     if not tokens:
         print(f"Could not map UP/DOWN token IDs for {slug}; outcomes={market.get('outcomes')}")
+        alert_once(
+            conn, f"status_v1:{slug}:{minutes}:NO_TOKENS",
+            f"<b>₿ BTC {minutes}m · 🟡 WAIT</b>\n⛔ <b>NO ENTRY</b> · Market outcomes unavailable\n<i>Safety filter active; no trade will be considered.</i>"
+        )
         return
     side = tech["side"]
     if side not in ("UP", "DOWN"):
         print(f"BTC {minutes}m neutral signal; no entry")
         wait_key = f"signal_v3:{slug}:{minutes}:WAIT"
         wait_message = (
-            f"📣 BTC {minutes}m CALL SIGN: ⚪ WAIT\n"
-            f"Directional votes: {tech['score']}/5 | RSI: {tech['rsi']:.1f}\n"
-            f"3m move: {tech['move3']:+.3f}% | 10m move: {tech['move10']:+.3f}%\n"
-            "No clear directional advantage — stand aside; no paper entry.\n"
-            "PAPER ONLY — strength estimates are heuristic, not calibrated probabilities."
+            f"<b>₿ BTC {minutes}m · ⚪ WAIT</b>\n"
+            f"VOTES {tech['score']}/5 · RSI {tech['rsi']:.0f}\n"
+            f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}%\n"
+            "⏸ <b>NO ENTRY</b> · No clear edge\n"
+            "<i>Paper only · heuristic signal.</i>"
         )
         alert_once(conn, wait_key, wait_message)
         return
     token_id = tokens.get(side)
     if not token_id:
         print(f"Missing {side} token for {slug}")
+        alert_once(
+            conn, f"status_v1:{slug}:{minutes}:MISSING_TOKEN",
+            f"<b>₿ BTC {minutes}m · {side}</b>\n⛔ <b>NO ENTRY</b> · Outcome token unavailable\n<i>Safety filter active.</i>"
+        )
         return
     book = get_book(token_id)
     stats = book_stats(book) if book else None
     if not stats:
         print(f"No usable order book for {slug} {side}")
+        hold, flip = hold_and_flip(0.0, int(tech["score"]), side, 0.0)
+        alert_once(
+            conn, f"status_v1:{slug}:{minutes}:NO_BOOK:{side}",
+            f"<b>₿ BTC {minutes}m · {'🟢 UP' if side == 'UP' else '🔴 DOWN'} WATCH</b>\n"
+            f"{gauge_line('STRENGTH', hold, '🟢')}\n{gauge_line('FLIP RISK', flip, '🟠')}\n\n"
+            f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
+            f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}%\n"
+            "⛔ <b>NO ENTRY</b> · Order book unavailable\n"
+            "<i>Signal only · no trade opened.</i>"
+        )
         return
     ask = stats["ask"]
     market_p = ask
@@ -770,27 +883,55 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         reasons.append("market is too early")
     if edge < MIN_EDGE_PROXY:
         reasons.append("edge proxy below threshold")
+    # Learn conservatively from completed paper trades: poor recent results can
+    # tighten entries, but strong results never loosen the original safety rules.
+    performance = recent_paper_performance(conn, 20)
+    if performance["count"] >= 10 and performance["win_rate"] < 60.0:
+        reasons.append("recent paper results below 60%; adaptive safety pause")
+    if daily_closed_pnl(conn) <= -MAX_DAILY_PAPER_LOSS_USD:
+        reasons.append("daily paper loss limit reached")
+    if entries_today(conn) >= MAX_DAILY_ENTRIES:
+        reasons.append("daily paper entry cap reached")
+    if open_trade_count(conn) >= MAX_OPEN_PAPER_TRADES:
+        reasons.append("maximum open paper positions reached")
     print(
         f"BTC {minutes}m {side} | votes {tech['score']}/5 | RSI {tech['rsi']:.1f} "
         f"| 3m {tech['move3']:+.3f}% | 10m {tech['move10']:+.3f}% "
         f"| ask {ask:.3f} bid {stats['bid']:.3f} depth ${stats['depth']:.0f} "
         f"| edge proxy {edge*100:+.1f}pp | {remaining}s left"
     )
-    # Always send a useful directional call, even when entry filters block a trade.
-    # This is a signal gauge, not an open-position HOLD calculation.
+    # Compact visual call: directional bias, hold/flip gauges, scalp fit and hold window.
     signal_hold, signal_flip = hold_and_flip(0.0, int(tech["score"]), side, stats["imbalance"])
-    call_sign = "🟢 UP" if side == "UP" else "🔴 DOWN"
-    signal_key = f"signal_v3:{slug}:{minutes}:{side}"
+    up_bias, down_bias = direction_split(int(tech["score"]))
+    scalp_fit = scalp_fit_score(int(tech["score"]), tech, stats) if minutes == 5 else 0
+    hold_window = suggested_hold_window(minutes, int(tech["score"]), signal_flip)
+    performance_line = (
+        f"📚 LAST {performance['count']} PAPER: {performance['wins']}W/{performance['losses']}L · "
+        f"{performance['win_rate']:.0f}%"
+        if performance["count"] else "📚 PAPER TRACK RECORD: building sample"
+    )
+    if reasons:
+        action = "⏸ WAIT" if side in ("UP", "DOWN") else "⚪ NO TRADE"
+        entry_line = "🚫 <b>NO ENTRY</b> · " + "; ".join(reasons)
+    else:
+        action = "🟢 BUY PAPER" if side == "UP" else "🔴 BUY PAPER"
+        entry_line = "✅ <b>ENTRY FILTERS PASS</b> · paper entry eligible"
+    signal_key = f"signal_v4:{slug}:{minutes}:{side}"
     message = (
-        f"📣 BTC {minutes}m CALL SIGN: {call_sign}\n"
-        f"DIRECTIONAL STRENGTH: {signal_hold}% | FLIP RISK: {signal_flip}%\n"
-        f"Votes: {tech['score']}/5 | RSI: {tech['rsi']:.1f}\n"
-        f"3m move: {tech['move3']:+.3f}% | 10m move: {tech['move10']:+.3f}%\n"
-        f"Ask: ${ask:.3f} | Bid: ${stats['bid']:.3f} | Depth: ${stats['depth']:.0f}\n"
-        f"Heuristic edge proxy: {edge*100:+.1f} percentage points\n"
-        + ("⛔ ENTRY BLOCKED: " + "; ".join(reasons) if reasons else "✅ Entry checks passed; paper entry considered")
-        + "\nNo open position is required for this call sign."
-        + "\nPAPER ONLY — no real orders. Strength/flip are heuristic scores, not calibrated probabilities."
+        f"<b>₿ BTC {minutes}m  |  {action}</b>\n"
+        f"<b>{'🟢 UP' if side == 'UP' else '🔴 DOWN'} BIAS</b>  {up_bias}% / {down_bias}%\n"
+        f"<code>UP   {gauge_bar(up_bias, 10)}\nDOWN {gauge_bar(down_bias, 10)}</code>\n\n"
+        f"{gauge_line('HOLD', signal_hold, '🟢')}\n"
+        f"{gauge_line('FLIP RISK', signal_flip, '🟠')}\n"
+        f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{gauge_bar(scalp_fit)}</code>\n"
+        f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
+        f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
+        f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}%\n"
+        f"ASK ${ask:.3f} · BID ${stats['bid']:.3f} · DEPTH ${stats['depth']:.0f}\n"
+        f"EDGE {edge*100:+.1f}pp\n"
+        f"{entry_line}\n"
+        f"{performance_line}\n"
+        "<i>Paper only · bars are indicator scores, not win probabilities. Hold window is a review suggestion.</i>"
     )
     # Versioned key avoids the previous version's one-hour alert record suppressing this upgrade.
     alert_once(conn, signal_key, message)
