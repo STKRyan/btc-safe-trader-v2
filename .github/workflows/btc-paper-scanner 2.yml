@@ -1,3 +1,4 @@
+```yaml
 name: BTC Polymarket Paper Scanner
 
 on:
@@ -37,13 +38,15 @@ jobs:
           BTC_BOT_DB: btc_poly_v2.sqlite3
         run: |
           echo "Repository root: $(pwd)"
-          echo "Python files in checkout:"
           find . -maxdepth 4 -type f -iname "*.py" -print
+
           BOT_FILE="$(find . -type f -name 'btc_poly_bot_v2.py' -print -quit)"
+
           if [ -z "$BOT_FILE" ]; then
-            echo "ERROR: btc_poly_bot_v2.py was not found in this checkout."
+            echo "ERROR: btc_poly_bot_v2.py was not found."
             exit 2
           fi
+
           echo "Running: $BOT_FILE"
           python "$BOT_FILE" --duration 180
 
@@ -52,13 +55,18 @@ jobs:
         run: |
           if [ -f btc_poly_v2.sqlite3 ]; then
             git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git config user.email "41898282+users.noreply.github.com"
+
             git add btc_poly_v2.sqlite3
+
             if ! git diff --cached --quiet; then
               git commit -m "Update BTC paper trading results"
-              git pull --rebase origin main
+
+              git pull --rebase -X ours origin main
+
               git push origin HEAD:main
             fi
           else
-            echo "No database file was created; nothing to save."
+            echo "No database file was created."
           fi
+
