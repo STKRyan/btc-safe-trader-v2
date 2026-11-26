@@ -484,7 +484,7 @@ def cycle(c):
     # Keep the most recent scan for every supported coin so the site shows the full radar.
     import re
     for raw in lines:
-        m=re.search(r'\\*\\*([A-Z0-9]{2,12}) (5|15)m\\*\\*',raw)
+        m=re.search(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\*',raw)
         if m: _LATEST_LINES[(m.group(1),int(m.group(2)))]=raw
     dashboard(c,list(_LATEST_LINES.values()) or lines)
 
