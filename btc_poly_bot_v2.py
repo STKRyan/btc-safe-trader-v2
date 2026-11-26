@@ -1335,7 +1335,8 @@ def main() -> int:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
                 update_dashboard(conn, tech, dashboard_opinion)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
-                update_btc_chart_channel(conn, candles, tech)
+                # Chart delivery is isolated in btc_chart_agent.py so chart/API failures
+                # cannot delay or interrupt this signal scanner.
                 update_shared_learning(conn)
                 print_summary(conn)
             except Exception as exc:
