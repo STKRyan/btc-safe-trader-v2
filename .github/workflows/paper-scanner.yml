@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: multi-asset-paper-scanner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
