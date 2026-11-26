@@ -300,6 +300,7 @@ def write_site_data(c, lines):
         rsi_m=re.search(r'RSI\s+(\d+)',clean); rsi=float(rsi_m.group(1)) if rsi_m else 50
         m1=re.search(r'1m\s+([+-]?\d+\.\d+)%',clean); move1=float(m1.group(1)) if m1 else 0
         m3=re.search(r'3m\s+([+-]?\d+\.\d+)%',clean); move3=float(m3.group(1)) if m3 else 0
+        m10=re.search(r'10m\s+([+-]?\d+\.\d+)%',clean); move10=float(m10.group(1)) if m10 else 0
         risk=flip_risk({'score':score,'move1':move1,'move3':move3,'rsi':rsi},side)
         status='MARKET NOT FOUND' if 'MARKET NOT FOUND' in clean else 'SCANNED'
         action='NO TRADE' if status!='SCANNED' else ('PAPER ENTRY' if 'PAPER ENTRY' in clean else ('WAIT' if 'WAIT' in clean else 'CHECK SIGNAL'))
@@ -313,13 +314,7 @@ def write_site_data(c, lines):
             b=book_stats(r['token_id']); bid=float(b['bid']) if b else None; entry=float(r['entry'])
             roi=(bid/entry-1)*100 if bid is not None and entry else None
             feat=json.loads(r['features'] or '{}'); aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
-            risk=48-abs(aligned)*6+(18 if aligned<=-2 else 0)
-            m1=float(feat.get('move1',0)); m3=float(feat.get('move3',0)); rsi=float(feat.get('rsi',50))
-            if (r['side']=='UP' and (m1<0 or m3<0)) or (r['side']=='DOWN' and (m1>0 or m3>0)): risk+=14
-            if (r['side']=='UP' and m1<0 and m3<0) or (r['side']=='DOWN' and m1>0 and m3>0): risk+=12
-            if (r['side']=='UP' and rsi>=72) or (r['side']=='DOWN' and rsi<=28): risk+=12
-            if b and b.get('imbalance',0)*(1 if r['side']=='DOWN' else -1)>0.10: risk+=12
-            risk=max(5,min(95,int(risk)))
+            risk=flip_risk(feat,r['side'],float(b.get('imbalance',0)) if b else 0)
             if roi is not None and roi<=-8: action='PROTECT / EXIT'; explanation='Down 8% or more from entry: review the protective exit.'
             elif roi is not None and roi>=10: action='TAKE PROFIT'; explanation='The +10% paper target has been reached.'
             elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; explanation='The +5% partial-profit level has been reached.'
