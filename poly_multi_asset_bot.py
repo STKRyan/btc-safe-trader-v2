@@ -570,6 +570,27 @@ def cycle(c):
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
                 scalp=scalp_call(asset,tf,m,tech)
+                side=tech["side"]
+                if side in ("UP","DOWN"):
+                    risk=flip_risk(tech,side)
+                    strength=max(5,min(95,50+abs(int(tech["score"]))*8-risk//4))
+                    signal_status="PAPER ENTRY READY" if action.startswith("PAPER ENTRY") else "WATCH · NO ENTRY"
+                    signal_key=f"signal-change:{asset}:{tf}:{m.get('id')}:{side}:{tech['score']}"
+                    signal_message=(
+                        f"📡 **{asset} {tf}m · {side} {signal_status}**\n"
+                        f"Signal strength: **{strength}%** · {tech['score']:+d}/5 votes\n"
+                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\n"
+                        f"{action}{wr}\n⚡ SCALP: {scalp}\n"
+                        "Strength is a heuristic indicator, not win odds. Paper only."
+                    )
+                    send_signal_once(c,signal_key,signal_message)
+                    if scalp.startswith("SCALP CALL"):
+                        scalp_score=max(5,min(95,50+abs(int(tech["score"]))*8-risk//4))
+                        scalp_key=f"scalp-change:{asset}:{tf}:{m.get('id')}:{side}"
+                        send_signal_once(c,scalp_key,
+                            f"⚡ **{asset} {tf}m SCALP CALL · {side}**\n"
+                            f"{scalp}\nScalp strength: **{scalp_score}%** · heuristic, not win odds.\nPaper only; no live orders."
+                        )
                 lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
