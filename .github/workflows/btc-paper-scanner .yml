@@ -2,7 +2,7 @@ name: BTC Polymarket Paper Scanner
 
 on:
   schedule:
-  - cron: "* * * * *"
+  - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -38,11 +38,9 @@ jobs:
           echo "Python files in checkout:"
           find . -maxdepth 4 -type f -iname "*.py" -print
 
-          BOT_FILE="$(find . -type f -name 'btc_poly_bot_v2.py' -print -quit)"
-          if [ -z "$BOT_FILE" ]; then
-            echo "ERROR: btc_poly_bot_v2.py was not found."
-            exit 2
-          fi
+          BOT_FILE="$(find . -type f -name 'poly_multi_asset_bot.py' -print -quit)"
+if [ -z "$BOT_FILE" ]; then
+  echo "ERROR: poly_multi_asset_bot.py was not found."
 
           echo "Running: $BOT_FILE"
           python "$BOT_FILE" --duration 180
