@@ -107,7 +107,7 @@ def discover(asset, tf):
         slot=int(time.time())//seconds*seconds
         cache_key=(asset,tf,slot)
         cached=_DISCOVERY_CACHE.get(cache_key)
-        if cached and time.time()-cached[0]<45: return cached[1]
+        if cached and time.time()-cached[0]<12: return cached[1]
         found=[]
         for stamp in (slot,slot+seconds):
             slug=f"{prefix}-updown-{tf}m-{stamp}"
@@ -150,7 +150,7 @@ def tokens(m):
 def reference_candles(asset):
     if asset in SYMBOLS:
         cached=_CANDLE_CACHE.get(asset)
-        if cached and time.time()-cached[0]<45: return cached[1]
+        if cached and time.time()-cached[0]<8: return cached[1]
         rows=get("https://data-api.binance.vision/api/v3/klines", {"symbol":SYMBOLS[asset],"interval":"1m","limit":100})
         candles=[(float(r[4]),float(r[5]),float(r[2]),float(r[3])) for r in rows[:-1]]
         _CANDLE_CACHE[asset]=(time.time(),candles)
@@ -549,10 +549,10 @@ def dashboard(c, lines):
 def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
-    all_assets=list(TIMEFRAMES)
-    start=(_ASSET_CYCLE*_ASSETS_PER_CYCLE)%len(all_assets)
-    selected=all_assets[start:start+_ASSETS_PER_CYCLE]
-    if len(selected)<_ASSETS_PER_CYCLE: selected+=all_assets[:_ASSETS_PER_CYCLE-len(selected)]
+    # Scan BTC every cycle; rotate two other assets alongside it.
+    other_assets=[a for a in TIMEFRAMES if a!="BTC"]
+    start=(_ASSET_CYCLE*2)%len(other_assets)
+    selected=["BTC"]+[other_assets[(start+i)%len(other_assets)] for i in range(2)]
     _ASSET_CYCLE+=1
     for asset in selected:
         tfs=TIMEFRAMES[asset]
