@@ -217,8 +217,20 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Legacy alert hook: keep scanner signals in the persistent dashboard only."""
-    print(f"Signal included in BTC dashboard: {key}")
+    """Send each new directional paper signal once; keep WAIT/status noise dashboard-only."""
+    if key.endswith(":WAIT") or any(tag in key for tag in (":NO_MARKET", ":NO_TOKENS", ":MISSING_TOKEN")):
+        return
+    # Directional signal messages and order-book WATCH calls are useful; generic
+    # WAIT/status updates stay on the dashboard to avoid Discord spam.
+    if not (key.startswith("signal_v4:") or ":NO_BOOK:" in key):
+        return
+    row = conn.execute("SELECT 1 FROM alerts WHERE alert_key=?", (key,)).fetchone()
+    if row:
+        return
+    if discord_send(message):
+        conn.execute("INSERT OR IGNORE INTO alerts(alert_key,sent_at) VALUES(?,?)", (key, time.time()))
+        conn.commit()
+        print(f"Discord BTC paper signal sent: {key}")
 
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
