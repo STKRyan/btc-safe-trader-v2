@@ -6,7 +6,7 @@ on:
       - "btc_poly_bot_v2.py"
       - ".github/workflows/original-btc-paper-bot.yml"
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 permissions:
