@@ -170,6 +170,25 @@ def db_connect() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             UNIQUE(market_slug, side)
         );
+        CREATE TABLE IF NOT EXISTS btc_forecasts (
+            market_id TEXT NOT NULL,
+            market_slug TEXT NOT NULL,
+            timeframe INTEGER NOT NULL,
+            initial_side TEXT NOT NULL,
+            current_side TEXT NOT NULL,
+            pending_side TEXT NOT NULL DEFAULT '',
+            pending_since REAL NOT NULL DEFAULT 0,
+            flip_count INTEGER NOT NULL DEFAULT 0,
+            features TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            outcome TEXT,
+            winning_side TEXT,
+            created_at TEXT NOT NULL,
+            last_seen REAL NOT NULL,
+            last_check REAL NOT NULL DEFAULT 0,
+            resolved_at TEXT,
+            PRIMARY KEY(market_id, timeframe)
+        );
         """
     )
 
@@ -755,12 +774,123 @@ def positions_text(conn: sqlite3.Connection) -> str:
 
 
 
-def second_opinion(tech: dict, stats: Optional[dict] = None) -> dict:
-    """Independent conservative confirmation using short momentum and book pressure.
+def record_btc_forecast(conn: sqlite3.Connection, market: dict, minutes: int, tech: dict) -> None:
+    """Record a market-window forecast and debounce rapid direction noise."""
+    market_id = str(market.get("id") or "")
+    side = str(tech.get("side", "NEUTRAL"))
+    if not market_id or side not in ("UP", "DOWN"):
+        return
+    stamp = time.time()
+    slug = str(market.get("slug") or market_slug(minutes))
+    features = json.dumps({key: tech.get(key) for key in
+                           ("score", "rsi", "move1", "move3", "move10",
+                            "vol_ratio", "range_position", "last_price")})
+    row = conn.execute(
+        "SELECT * FROM btc_forecasts WHERE market_id=? AND timeframe=?",
+        (market_id, minutes),
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT OR IGNORE INTO btc_forecasts(market_id,market_slug,timeframe,initial_side,current_side,features,created_at,last_seen) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (market_id, slug, minutes, side, side, features, utc_now().isoformat(), stamp),
+        )
+    else:
+        current = str(row["current_side"])
+        pending = str(row["pending_side"] or "")
+        pending_since = float(row["pending_since"] or 0)
+        flips = int(row["flip_count"] or 0)
+        if side == current:
+            pending, pending_since = "", 0.0
+        elif pending != side:
+            pending, pending_since = side, stamp
+        elif stamp - pending_since >= 9.0:
+            current = side
+            flips += 1
+            pending, pending_since = "", 0.0
+            print(f"BTC forecast flip confirmed: {minutes}m {row['current_side']} -> {side} · flips={flips}", flush=True)
+        conn.execute(
+            "UPDATE btc_forecasts SET current_side=?,pending_side=?,pending_since=?,flip_count=?,features=?,last_seen=? "
+            "WHERE market_id=? AND timeframe=?",
+            (current, pending, pending_since, flips, features, stamp, market_id, minutes),
+        )
+    conn.commit()
 
-    This is a rule-based cross-check, not a trained model or a probability.
-    It deliberately returns WAIT when the available evidence is mixed.
-    """
+
+def resolve_btc_forecasts(conn: sqlite3.Connection) -> None:
+    """Resolve expired BTC forecasts from Polymarket's final market outcome."""
+    stamp = time.time()
+    rows = conn.execute(
+        "SELECT * FROM btc_forecasts WHERE status='OPEN' ORDER BY last_seen DESC LIMIT 80"
+    ).fetchall()
+    for row in rows:
+        try:
+            try:
+                market_start = int(str(row["market_slug"]).rsplit("-", 1)[1])
+            except Exception:
+                continue
+            if stamp < market_start + int(row["timeframe"]) * 60 + 12:
+                continue
+            if stamp - float(row["last_check"] or 0) < 120:
+                continue
+            conn.execute(
+                "UPDATE btc_forecasts SET last_check=? WHERE market_id=? AND timeframe=?",
+                (stamp, row["market_id"], row["timeframe"]),
+            )
+            conn.commit()
+            data = http_json(f"{GAMMA}/markets/{row['market_id']}")
+            if not isinstance(data, dict) or not data.get("closed"):
+                continue
+            outcomes = parse_list(data.get("outcomes"))
+            prices = parse_list(data.get("outcomePrices"))
+            mapping = {str(name).lower(): float(price) for name, price in zip(outcomes, prices)}
+            winning = "UP" if mapping.get("up", mapping.get("yes", 0)) >= 0.99 else (
+                "DOWN" if mapping.get("down", mapping.get("no", 0)) >= 0.99 else None
+            )
+            if not winning:
+                continue
+            correct = str(row["current_side"]) == winning
+            outcome = "FLIP" if correct and int(row["flip_count"] or 0) > 0 else (
+                "WIN" if correct else "LOSS"
+            )
+            conn.execute(
+                "UPDATE btc_forecasts SET status='RESOLVED',outcome=?,winning_side=?,resolved_at=? "
+                "WHERE market_id=? AND timeframe=?",
+                (outcome, winning, utc_now().isoformat(), row["market_id"], row["timeframe"]),
+            )
+            conn.commit()
+            print(f"BTC forecast resolved: {row['timeframe']}m {outcome} · flips={row['flip_count']}", flush=True)
+        except Exception as exc:
+            print(f"BTC forecast resolve error: {type(exc).__name__}: {exc}", flush=True)
+
+
+def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> dict:
+    """Summarize resolved forecast accuracy and market-window churn."""
+    if conn is None:
+        return {"sample": 0, "wins": 0, "losses": 0, "flips": 0,
+                "win_rate": None, "flip_rate": 0.0, "caution": False, "pause": False}
+    rows = conn.execute(
+        "SELECT outcome,flip_count FROM btc_forecasts WHERE timeframe=? AND status='RESOLVED' "
+        "ORDER BY resolved_at DESC LIMIT 24", (minutes,)
+    ).fetchall()
+    sample = len(rows)
+    wins = sum(row["outcome"] == "WIN" for row in rows)
+    losses = sum(row["outcome"] == "LOSS" for row in rows)
+    flips = sum(int(row["flip_count"] or 0) > 0 or row["outcome"] == "FLIP" for row in rows)
+    decisive = wins + losses
+    win_rate = (100.0 * wins / decisive) if decisive else None
+    flip_rate = flips / sample if sample else 0.0
+    caution = sample >= 8 and ((win_rate is not None and win_rate < 50.0) or flip_rate >= 0.35)
+    pause = sample >= 12 and ((win_rate is not None and win_rate < 40.0) or flip_rate >= 0.50)
+    return {"sample": sample, "wins": wins, "losses": losses, "flips": flips,
+            "win_rate": win_rate, "flip_rate": flip_rate,
+            "caution": caution, "pause": pause}
+
+
+def second_opinion(tech: dict, stats: Optional[dict] = None,
+                   conn: Optional[sqlite3.Connection] = None, minutes: int = 5,
+                   slug: Optional[str] = None) -> dict:
+    """Second-brain challenge: momentum, book pressure, exhaustion and resolved memory."""
     move1 = float(tech.get("move1", 0.0))
     move3 = float(tech.get("move3", 0.0))
     move10 = float(tech.get("move10", 0.0))
@@ -768,19 +898,61 @@ def second_opinion(tech: dict, stats: Optional[dict] = None) -> dict:
     score += 1 if move1 > 0.015 else -1 if move1 < -0.015 else 0
     score += 1 if move3 > 0.025 else -1 if move3 < -0.025 else 0
     score += 1 if move10 > 0.04 else -1 if move10 < -0.04 else 0
+    imbalance = float(stats.get("imbalance", 0.0)) if stats else 0.0
     if stats:
-        imbalance = float(stats.get("imbalance", 0.0))
         score += 1 if imbalance > 0.12 else -1 if imbalance < -0.12 else 0
-    range_position=tech.get("range_position")
+    range_position = tech.get("range_position")
     if range_position is not None:
-        if range_position>=90: score-=1
-        elif range_position<=10: score+=1
+        if range_position >= 90:
+            score -= 1
+        elif range_position <= 10:
+            score += 1
     side = "UP" if score >= 2 else "DOWN" if score <= -2 else "WAIT"
     primary = str(tech.get("side", "NEUTRAL"))
     agrees = side == primary and primary in ("UP", "DOWN")
-    return {"side": side, "score": score, "agrees": agrees,
-            "label": "CONFIRMED" if agrees else "DISAGREEMENT / WAIT"}
-
+    memory = btc_forecast_learning(conn, minutes)
+    market_flips = 0
+    if conn is not None and slug:
+        row = conn.execute(
+            "SELECT flip_count FROM btc_forecasts WHERE market_slug=? AND timeframe=? AND status='OPEN'",
+            (slug, minutes),
+        ).fetchone()
+        market_flips = int(row["flip_count"] or 0) if row else 0
+    risk = 30
+    if side != primary:
+        risk += 22
+    if move1 * move3 < 0:
+        risk += 12
+    if (primary == "UP" and float(tech.get("rsi", 50)) >= 72) or (
+        primary == "DOWN" and float(tech.get("rsi", 50)) <= 28
+    ):
+        risk += 12
+    if range_position is not None and ((primary == "UP" and range_position >= 90) or
+                                      (primary == "DOWN" and range_position <= 10)):
+        risk += 10
+    if stats and imbalance * (1 if primary == "UP" else -1) < -0.10:
+        risk += 12
+    risk += min(20, market_flips * 7)
+    risk += min(15, int(memory["flip_rate"] * 30))
+    risk = max(5, min(95, risk))
+    if market_flips >= 2:
+        agrees = False
+    if memory["pause"]:
+        agrees = False
+    if memory["caution"] and score < 3:
+        agrees = False
+    label = "CONFIRMED" if agrees else (
+        "CHOPPY WINDOW · WAIT" if market_flips >= 2 else
+        "LEARNING PAUSE · WAIT" if memory["pause"] else "DISAGREEMENT / WAIT"
+    )
+    debate = (
+        f"PRIMARY {primary} / CHECK {side} ({score:+d}) · "
+        f"window flips {market_flips} · resolved {memory['sample']} "
+        f"with {memory['flip_rate']*100:.0f}% flip history"
+    )
+    return {"side": side, "score": score, "agrees": agrees, "label": label,
+            "flip_risk": risk, "market_flips": market_flips, "memory": memory,
+            "debate": debate}
 
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
