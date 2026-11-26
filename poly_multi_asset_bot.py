@@ -232,20 +232,39 @@ def update_shared_learning(c, bot="multi"):
     Path("data/shared_learning.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
 
 def learning_adjustment(c, asset, tf):
-    rows=c.execute("SELECT outcome FROM forecast_journal WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY resolved_at DESC LIMIT 30",(asset,tf)).fetchall()
-    n=len(rows); peer=btc_peer_summary() or shared_learning_data().get("btc",{})
+    """Use resolved outcomes and market churn to tighten, never loosen, entries."""
+    rows=c.execute(
+        "SELECT outcome,flip_count FROM forecast_journal WHERE asset=? AND timeframe=? "
+        "AND status='RESOLVED' ORDER BY resolved_at DESC LIMIT 30",(asset,tf)
+    ).fetchall()
+    n=len(rows)
+    flips=sum(r["outcome"]=="FLIP" or int(r["flip_count"] or 0)>0 for r in rows)
+    flip_rate=flips/n if n else 0.0
+    peer=btc_peer_summary() or shared_learning_data().get("btc",{})
     peer_pause=peer.get("sample",0)>=10 and peer.get("win_rate") is not None and peer.get("win_rate")<45
     if n>=12:
-        wins=sum(r["outcome"]=="WIN" for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
-        flips=sum(r["outcome"]=="FLIP" for r in rows); decisive=wins+losses
+        wins=sum(r["outcome"]=="WIN" for r in rows)
+        losses=sum(r["outcome"]=="LOSS" for r in rows)
+        decisive=wins+losses
         wr=100*wins/decisive if decisive else None
         weak=wr is not None and wr<52
-        return {"sample":n,"threshold":5 if weak or peer_pause else 4,"pause":(wr is not None and wr<42) or peer_pause,"win_rate":wr,"flips":flips,"peer":peer}
-    old=c.execute("SELECT pnl FROM calls WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY resolved_at DESC LIMIT 30",(asset,tf)).fetchall()
-    old_n=len(old); old_w=sum(float(r["pnl"] or 0)>0 for r in old); old_wr=100*old_w/old_n if old_n else None
+        caution=(wr is not None and wr<52) or flip_rate>=0.35
+        pause=(wr is not None and wr<42) or flip_rate>=0.50 or peer_pause
+        return {"sample":n,"threshold":5 if weak or peer_pause or flip_rate>=0.35 else 4,
+                "pause":pause,"caution":caution,"win_rate":wr,"flips":flips,
+                "flip_rate":flip_rate,"peer":peer}
+    old=c.execute(
+        "SELECT pnl FROM calls WHERE asset=? AND timeframe=? AND status='RESOLVED' "
+        "ORDER BY resolved_at DESC LIMIT 30",(asset,tf)
+    ).fetchall()
+    old_n=len(old); old_w=sum(float(r["pnl"] or 0)>0 for r in old)
+    old_wr=100*old_w/old_n if old_n else None
     weak=old_n>=12 and old_wr<52
-    return {"sample":n,"threshold":5 if peer_pause or weak else 4,"pause":peer_pause or (old_n>=12 and old_wr<42),"win_rate":old_wr,"peer":peer}
-
+    caution=(n>=8 and flip_rate>=0.35) or weak
+    pause=peer_pause or (old_n>=12 and old_wr<42) or (n>=12 and flip_rate>=0.50)
+    return {"sample":n,"threshold":5 if peer_pause or weak or (n>=8 and flip_rate>=0.35) else 4,
+            "pause":pause,"caution":caution,"win_rate":old_wr,"flips":flips,
+            "flip_rate":flip_rate,"peer":peer}
 
 def record_forecast(c, market, asset, tf, side, features):
     """Track first call and every direction change for each market window."""
@@ -296,13 +315,15 @@ def save_observation(c, asset, tf, m, tech):
               (asset,tf,str(m.get("id")),tech["side"],tech["score"],json.dumps(tech),iso())); c.commit()
 
 
-def second_brain(tech, stats, side):
-    """Explainable courtroom-style evidence check; rule-based, not an AI oracle."""
+def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
+    """Challenge a directional call with current evidence and resolved flip memory."""
     if side not in ("UP","DOWN"):
-        return {"agrees":False,"label":"NO VERDICT · WAIT","score":0,"debate":"No directional case; WAIT."}
+        return {"agrees":False,"label":"NO VERDICT · WAIT","score":0,
+                "flip_risk":95,"memory":None,"debate":"No directional case; WAIT."}
     sign=1 if side=="UP" else -1
     m1=float(tech.get("move1",0)); m3=float(tech.get("move3",0)); m10=float(tech.get("move10",0))
-    rsi=float(tech.get("rsi",50)); vr=float(tech.get("volume_ratio",0)); imbalance=float(stats.get("imbalance",0))*sign
+    rsi=float(tech.get("rsi",50)); vr=float(tech.get("volume_ratio",0))
+    imbalance=float(stats.get("imbalance",0))*sign
     pos=tech.get("range_position"); support=[]; objections=[]
     if m1*sign>0 and m3*sign>0: support.append("1m/3m momentum aligned")
     else: objections.append("short momentum conflicts")
@@ -320,12 +341,33 @@ def second_brain(tech, stats, side):
         p=float(pos)
         if (side=="UP" and p>=90) or (side=="DOWN" and p<=10): objections.append("price near range exhaustion")
         elif (side=="UP" and p<=25) or (side=="DOWN" and p>=75): support.append("price location leaves room")
-    score=len(support)-len(objections); agrees=score>=2 and len(support)>=3
+    memory=learning_adjustment(c,asset,tf) if c is not None else {
+        "sample":0,"flip_rate":0.0,"caution":False,"pause":False,"win_rate":None}
+    current_flips=0
+    if c is not None and market_id:
+        row=c.execute("SELECT flip_count FROM forecast_journal WHERE market_id=? AND timeframe=?",
+                      (str(market_id),tf)).fetchone()
+        current_flips=int(row["flip_count"] or 0) if row else 0
+    if current_flips>=2: objections.append(f"this market has flipped {current_flips} times · choppy")
+    if memory["sample"]>=8 and memory["flip_rate"]>=0.35:
+        objections.append(f"resolved {tf}m windows flip often ({memory['flip_rate']*100:.0f}%)")
+    if memory["caution"]: objections.append("recent resolved memory asks for stronger confirmation")
+    if memory["pause"]: objections.append("resolved-paper safety pause is active")
+    score=len(support)-len(objections)
+    required_score=3 if current_flips>=2 or memory["caution"] else 2
+    agrees=(score>=required_score and len(support)>=3 and not memory["pause"] and current_flips<3)
+    risk=flip_risk(tech,side,float(stats.get("imbalance",0)))
+    risk=min(95,risk+min(24,current_flips*8)+int(memory["flip_rate"]*20))
     verdict="DEFENSE WINS · CONFIRMED" if agrees else "PROSECUTION WINS · WAIT"
-    debate=f"FOR: {', '.join(support[:3]) or 'no strong evidence'} | AGAINST: {', '.join(objections[:3]) or 'no strong objection'} | VERDICT: {verdict}"
-    return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT","score":score,"debate":debate}
+    debate=(f"FOR: {', '.join(support[:3]) or 'no strong evidence'} | "
+            f"AGAINST: {', '.join(objections[:3]) or 'no strong objection'} | "
+            f"MEMORY: {memory['sample']} resolved, {memory['flip_rate']*100:.0f}% flip rate | "
+            f"CURRENT WINDOW: {current_flips} flips | VERDICT: {verdict}")
+    return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT",
+            "score":score,"flip_risk":risk,"market_flips":current_flips,
+            "memory":memory,"debate":debate}
 
-def scalp_call(asset, tf, market, tech):
+def scalp_call(c, asset, tf, market, tech):
     """Readable 5m scalp idea only when momentum and liquidity are aligned."""
     if tf!=5: return "SCALP: 5m only · sit out this timeframe"
     seconds_left=int(300-(time.time()%300))
@@ -342,7 +384,7 @@ def scalp_call(asset, tf, market, tech):
     if not stats: return "SCALP: SIT OUT · order book unavailable"
     if not (0.20<=stats["ask"]<=0.80 and stats["spread"]<=0.02 and stats["depth"]>=1000):
         return "SCALP: SIT OUT · price, spread, or liquidity is not safe enough"
-    brain=second_brain(tech,stats,side)
+    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
     if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
     return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree"
@@ -669,8 +711,10 @@ def cycle(c):
                 record_forecast(c,m,asset,tf,tech.get("side","WAIT"),tech)
                 action=maybe_enter(c,asset,tf,m,tech)
                 lr=learning_adjustment(c,asset,tf)
-                wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
-                scalp=scalp_call(asset,tf,m,tech)
+                wr=(f" · recent {lr['win_rate']:.0f}%/{lr['sample']} · flips {lr['flip_rate']*100:.0f}%"
+                    if lr["win_rate"] is not None else
+                    f" · learning sample {lr['sample']}/12 · flips {lr['flip_rate']*100:.0f}%")
+                scalp=scalp_call(c,asset,tf,m,tech)
                 side=tech["side"]
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
