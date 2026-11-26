@@ -1,6 +1,11 @@
 name: Multi-Asset Paper Scanner
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - poly_multi_asset_bot.py
+      - .github/workflows/paper-scanner.yml
   schedule:
     # Conservative cadence for GitHub Actions Free usage.
     - cron: "*/15 * * * *"
