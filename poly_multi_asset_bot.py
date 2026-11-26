@@ -273,6 +273,9 @@ def dashboard(c, lines):
     wins=sum(float(x["pnl"])>0 for x in rows); n=len(rows); pnl=sum(float(x["pnl"]) for x in rows)
     opens=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     desc="\n".join(lines)[:3800] or "No matching active markets found."
+    print("\\n=== PAPER SCANNER SIGNALS ===", flush=True)
+    print(desc, flush=True)
+    print("=== END PAPER SCANNER SIGNALS ===\\n", flush=True)
     embed={"title":"POLYMARKET · ADAPTIVE PAPER DESK","description":desc,
       "color":5793266,"fields":[
        {"name":"PAPER TRACK RECORD","value":f"{wins}W / {n-wins}L · {100*wins/n:.1f}%" if n else "Building first resolved sample","inline":True},
