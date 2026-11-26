@@ -15,7 +15,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
           BTC_BOT_DB: data/btc_poly_v2.sqlite3
         run: |
           mkdir -p data
-          python btc_poly_bot_v2.py --duration 180
+          python btc_poly_bot_v2.py --duration 600
 
       - name: Publish original BTC dashboard snapshot
         if: always()
