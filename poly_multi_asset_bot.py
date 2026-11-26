@@ -8,6 +8,7 @@ uses independent reference-price feeds, and learns only from resolved paper call
 from __future__ import annotations
 import argparse, json, math, os, re, sqlite3, sys, time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 import requests
@@ -270,6 +271,40 @@ def manage_open_calls(c, asset, tech):
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
 
+def write_site_data(c, lines):
+    import re
+    markets=[]
+    for raw in lines:
+        clean=raw.replace('**','').replace('`','')
+        match=re.search(r'(BTC|ETH|GOLD)\s+(5|15)m\s*[·|]',clean)
+        if not match: continue
+        asset,tf=match.group(1),int(match.group(2))
+        sm=re.search(r'·\s*(UP|DOWN|WAIT)\s*\(([+-]?\d+)/5\)',clean)
+        score=int(sm.group(2)) if sm else 0; side=sm.group(1) if sm else '—'
+        risk=max(5,min(95,48-abs(score)*6))
+        status='MARKET NOT FOUND' if 'MARKET NOT FOUND' in clean else 'SCANNED'
+        action='NO TRADE' if status!='SCANNED' else ('PAPER ENTRY' if 'PAPER ENTRY' in clean else ('WAIT' if 'WAIT' in clean else 'CHECK SIGNAL'))
+        if status!='SCANNED': risk=None
+        markets.append({'asset':asset,'timeframe':tf,'side':side,'score':score,'risk':risk,'status':status,'action':action,'details':clean[:700]})
+    rr=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
+    wins=sum(float(x['pnl'] or 0)>0 for x in rr); n=len(rr); pnl=sum(float(x['pnl'] or 0) for x in rr)
+    positions=[]
+    for r in c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC").fetchall():
+        try:
+            b=book_stats(r['token_id']); bid=float(b['bid']) if b else None; entry=float(r['entry'])
+            roi=(bid/entry-1)*100 if bid is not None and entry else None
+            feat=json.loads(r['features'] or '{}'); aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
+            risk=max(5,min(95,48-abs(aligned)*6+(18 if aligned<=-2 else 0)))
+            if roi is not None and roi<=-8: action='PROTECT / EXIT'; explanation='Down 8% or more from entry: review the protective exit.'
+            elif roi is not None and roi>=10: action='TAKE PROFIT'; explanation='The +10% paper target has been reached.'
+            elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; explanation='The +5% partial-profit level has been reached.'
+            elif risk>=70: action='EXIT RISK'; explanation='Flip-risk estimate is elevated; review the position.'
+            else: action='HOLD'; explanation='No paper exit threshold is currently triggered.'
+            positions.append({'asset':r['asset'],'timeframe':r['timeframe'],'side':r['side'],'entry':entry,'bid':bid,'roi_pct':round(roi,2) if roi is not None else None,'risk':risk,'action':action,'explanation':explanation,'paper_only':True})
+        except Exception as e: positions.append({'asset':r['asset'],'timeframe':r['timeframe'],'side':r['side'],'action':'CHECK DATA','explanation':str(e)[:120],'paper_only':True})
+    data={'updated_at':iso(),'paper_only':True,'summary':{'resolved_sample':n,'wins':wins,'losses':n-wins,'win_rate':round(100*wins/n,1) if n else None,'realized_pnl':round(pnl,2),'open_positions':len(positions)},'markets':markets,'positions':positions,'disclaimer':'Signal and flip-risk scores are heuristic, not probabilities or guarantees. Paper trading only.'}
+    Path('docs').mkdir(exist_ok=True)
+    Path('docs/data.json').write_text(json.dumps(data,indent=2),encoding='utf-8')
 def dashboard(c, lines):
     rows=c.execute("SELECT score FROM observations ORDER BY id DESC LIMIT 24").fetchall()
     wins_rows=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
@@ -279,6 +314,7 @@ def dashboard(c, lines):
     scores=[max(-5,min(5,int(r["score"]))) for r in reversed(rows)]
     bars="▁▂▃▄▅▆▇█"
     spark="".join(bars[round((s+5)/10*7)] for s in scores) or "No signal history yet"
+    write_site_data(c,lines)
     print("\\n=== PAPER SCANNER SIGNALS ===",flush=True)
     print(desc,flush=True); print(f"Signal trend (-5 to +5): {spark}",flush=True)
     print("=== END PAPER SCANNER SIGNALS ===\\n",flush=True)
