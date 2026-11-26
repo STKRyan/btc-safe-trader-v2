@@ -2,7 +2,7 @@
 """Polymarket multi-asset adaptive paper scanner.
 
 Paper trading only: this program uses public market data and never submits orders.
-It discovers active BTC/ETH 5m+15m and Gold 15m markets via Gamma search,
+It discovers supported crypto 5m+15m UP/DOWN markets via Gamma search,
 uses independent reference-price feeds, and learns only from resolved paper calls.
 """
 from __future__ import annotations
@@ -25,8 +25,10 @@ MAX_OPEN = int(os.getenv("MAX_OPEN_PAPER_TRADES", "4"))
 MIN_DEPTH = float(os.getenv("MIN_BOOK_DEPTH_USD", "500"))
 MAX_SPREAD = float(os.getenv("MAX_SPREAD", "0.035"))
 MIN_ASK, MAX_ASK = 0.20, 0.82
-TIMEFRAMES = {"BTC": (5, 15), "ETH": (5, 15)}
-SYMBOLS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT"}
+TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX","LINK","LTC","BCH","DOT","SUI","TRX","TON")}
+SYMBOLS = {a: f"{a}USDT" for a in TIMEFRAMES}
+_DISCOVERY_CACHE = {}
+_CANDLE_CACHE = {}
 S = requests.Session(); S.headers.update({"User-Agent": "Poly-Multi-Asset-Paper-Scanner/1.0"})
 
 
@@ -82,10 +84,13 @@ def db():
 
 def discover(asset, tf):
     """Find current crypto Up/Down markets using their timestamped event slugs."""
-    if asset in ("BTC","ETH") and tf in (5,15):
-        prefix={"BTC":"btc","ETH":"eth"}[asset]
+    if asset in TIMEFRAMES and tf in (5,15):
+        prefix=asset.lower()
         seconds=tf*60
         slot=int(time.time())//seconds*seconds
+        cache_key=(asset,tf,slot)
+        cached=_DISCOVERY_CACHE.get(cache_key)
+        if cached and time.time()-cached[0]<45: return cached[1]
         found=[]
         for stamp in (slot,slot+seconds):
             slug=f"{prefix}-updown-{tf}m-{stamp}"
@@ -108,8 +113,11 @@ def discover(asset, tf):
                 except Exception:return 10**18
             now_ts=time.time()
             live=[m for m in candidates if start(m)<=now_ts<start(m)+seconds]
-            return live[0] if live else min(candidates,key=start)
+            chosen=live[0] if live else min(candidates,key=start)
+            _DISCOVERY_CACHE[cache_key]=(time.time(),chosen)
+            return chosen
         print(f"Market discovery: exact {asset} {tf}m event slugs not returned.",flush=True)
+        _DISCOVERY_CACHE[cache_key]=(time.time(),None)
         return None
     return None
 
@@ -124,8 +132,12 @@ def tokens(m):
 
 def reference_candles(asset):
     if asset in SYMBOLS:
+        cached=_CANDLE_CACHE.get(asset)
+        if cached and time.time()-cached[0]<45: return cached[1]
         rows=get("https://data-api.binance.vision/api/v3/klines", {"symbol":SYMBOLS[asset],"interval":"1m","limit":100})
-        return [(float(r[4]),float(r[5])) for r in rows[:-1]]
+        candles=[(float(r[4]),float(r[5])) for r in rows[:-1]]
+        _CANDLE_CACHE[asset]=(time.time(),candles)
+        return candles
     # XAUUSD=X is an indicative public reference feed, not the Polymarket settlement oracle.
     data=get(f"{YAHOO}/XAUUSD=X", {"range":"1d","interval":"1m"})
     result=data["chart"]["result"][0]; q=result["indicators"]["quote"][0]
@@ -292,7 +304,7 @@ def write_site_data(c, lines):
     markets=[]
     for raw in lines:
         clean=raw.replace('**','').replace('`','')
-        match=re.search(r'(BTC|ETH|GOLD)\s+(5|15)m\s*[·|]',clean)
+        match=re.search(r'([A-Z0-9]{2,12})\s+(5|15)m\s*[·|]',clean)
         if not match: continue
         asset,tf=match.group(1),int(match.group(2))
         sm=re.search(r'·\s*(UP|DOWN|WAIT)\s*\(([+-]?\d+)/5\)',clean)
@@ -328,8 +340,8 @@ def write_site_data(c, lines):
 def market_embeds(lines):
     import re
     result=[]
-    pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
-    missing=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · MARKET NOT FOUND')
+    pattern=re.compile(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
+    missing=re.compile(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\* · MARKET NOT FOUND')
     for raw in lines:
         first=raw.split('\n',1)[0]
         no_market=missing.search(first)
@@ -380,9 +392,11 @@ def dashboard(c, lines):
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
     write_site_data(c,lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nBTC + ETH · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · Win {100*wins/n:.1f}% · Loss {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(lines); positions=position_embeds(c)
-    send('',[summary]+cards[:4]+positions[:5])
+    # Discord allows at most 10 embeds per message; publish the full radar in batches.
+    all_cards=[summary]+cards+positions
+    for i in range(0,len(all_cards),10): send('',all_cards[i:i+10])
 def cycle(c):
     resolve_calls(c); lines=[]
     for asset, tfs in TIMEFRAMES.items():
@@ -409,7 +423,7 @@ def main():
     p=argparse.ArgumentParser(description="Polymarket multi-asset paper scanner")
     p.add_argument("--duration",type=int,default=0,help="0 runs continuously")
     args=p.parse_args(); c=db()
-    send("🤖 **SIGNALFORGE PAPER DESK ONLINE**\nBTC + ETH · 5m / 15m\nVisual market cards and flip-risk meters enabled. Real-money orders are disabled.")
+    send("🤖 **SIGNALFORGE PAPER DESK ONLINE**\n15 crypto tickers · 5m / 15m\nFlip-risk bars and paper calls. Real-money orders are disabled.")
     start=time.time()
     try:
         while True:
