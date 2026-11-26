@@ -50,7 +50,7 @@ jobs:
 
       - name: Run paper-only scanner
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MULTI_WEBHOOK_URL }}
           POLY_BOT_DB: data/poly_multi_asset.sqlite3
           SCAN_INTERVAL_SECONDS: "15"
           PAPER_STAKE_USD: "2"
