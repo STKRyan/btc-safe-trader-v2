@@ -18,21 +18,3 @@ services:
         sync: false
       - key: DISCORD_BTC_CHART_WEBHOOK_URL
         sync: false
-
-  - type: worker
-    name: btc-chart-agent
-    runtime: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: python btc_chart_agent.py
-    disk:
-      name: btc-chart-state
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
-    envVars:
-      - key: DISCORD_BTC_CHART_WEBHOOK_URL
-        sync: false
-      - key: BTC_CHART_STATE_PATH
-        value: /opt/render/project/src/data/btc_chart_state.json
-      - key: BTC_CHART_UPDATE_SECONDS
-        value: "30"
