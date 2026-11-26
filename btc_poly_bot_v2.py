@@ -1120,8 +1120,8 @@ def update_btc_chart_channel(conn: sqlite3.Connection, candles: list[list[float]
     embed = {
         "title": "BTC LIVE PRICE GRAPH",
         "description": (
-            f"BTC {latest:,.2f} USD · Rolling 60m: {change:+.2f}%\\n"
-            f"Scanner: {tech.get('side', 'WAIT')} · RSI {float(tech.get('rsi', 50)):.1f}\\n"
+            f"BTC {latest:,.2f} USD · Rolling 60m: {change:+.2f}%\n"
+            f"Scanner: {tech.get('side', 'WAIT')} · RSI {float(tech.get('rsi', 50)):.1f}\n"
             "1-minute candles · refreshes about every 30 seconds"
         ),
         "color": 0x19C37D if change >= 0 else 0xEF4444,
