@@ -30,7 +30,7 @@ TIMEFRAMES = (5, 15)
 MIN_VOTES = {5: 3, 15: 4}  # 5m is more flexible; 15m stays strict.
 SCAN_INTERVAL_SECONDS = 1
 DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # keep Discord message edits within rate limits
-SIGNAL_REPEAT_SECONDS = 60  # repeat an active BTC signal at most once per minute
+SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 2.00
 MAX_DAILY_PAPER_LOSS_USD = 10.00
@@ -221,11 +221,12 @@ def db_connect() -> sqlite3.Connection:
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
     """Send each new directional paper signal once; keep WAIT/status noise dashboard-only."""
-    if key.endswith(":WAIT") or any(tag in key for tag in (":NO_MARKET", ":NO_TOKENS", ":MISSING_TOKEN")):
-        return
-    # Directional signal messages and order-book WATCH calls are useful; generic
-    # WAIT/status updates stay on the dashboard to avoid Discord spam.
-    if not (key.startswith("signal_v4:") or ":NO_BOOK:" in key):
+    # Send directional calls, neutral WAIT updates, and order-book WATCH calls.
+    # WAIT updates are throttled below, so the BTC channel stays active without
+    # flooding Discord every scan.
+    if not (key.startswith("signal_v4:") or
+            (key.startswith("signal_v3:") and key.endswith(":WAIT")) or
+            ":NO_BOOK:" in key):
         return
     row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
     if row and time.time() - float(row["sent_at"]) < SIGNAL_REPEAT_SECONDS:
