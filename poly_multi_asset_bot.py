@@ -25,7 +25,8 @@ MAX_OPEN = int(os.getenv("MAX_OPEN_PAPER_TRADES", "4"))
 MIN_DEPTH = float(os.getenv("MIN_BOOK_DEPTH_USD", "500"))
 MAX_SPREAD = float(os.getenv("MAX_SPREAD", "0.035"))
 MIN_ASK, MAX_ASK = 0.20, 0.82
-TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX","LINK","LTC","BCH","DOT","SUI","TRX","TON")}
+# Polymarket's actively listed short-window crypto set; do not emit false NO-MARKET cards for unsupported tickers.
+TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","HYPE")}
 SYMBOLS = {a: f"{a}USDT" for a in TIMEFRAMES}
 _DISCOVERY_CACHE = {}
 _CANDLE_CACHE = {}
@@ -449,6 +450,30 @@ def position_embeds(c):
         except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
     return result
 
+def publish_board(c, embeds):
+    """Post once, then edit the same multi-bot Discord message to prevent alert flooding."""
+    webhook=os.getenv("DISCORD_WEBHOOK_URL","").strip()
+    if not webhook.startswith(("https://discord.com/api/webhooks/","https://discordapp.com/api/webhooks/")):
+        print("Multi-bot Discord webhook missing or invalid; board not sent.")
+        return
+    row=c.execute("SELECT value FROM bot_state WHERE key='multi_dashboard_message_id'").fetchone()
+    message_id=str(row["value"]) if row else ""
+    payload={"embeds":embeds,"allowed_mentions":{"parse":[]}}
+    try:
+        if message_id:
+            response=S.patch(webhook.rstrip("/")+"/messages/"+message_id,json=payload,timeout=12)
+            if response.status_code!=404:
+                response.raise_for_status()
+                return
+        response=S.post(webhook+"?wait=true",json=payload,timeout=12)
+        response.raise_for_status()
+        new_id=str(response.json().get("id",""))
+        if new_id:
+            c.execute("INSERT INTO bot_state(key,value) VALUES('multi_dashboard_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(new_id,))
+            c.commit()
+    except Exception as e:
+        print(f"Multi-bot Discord board update failed: {type(e).__name__}: {e}")
+
 def dashboard(c, lines):
     update_shared_learning(c)
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
@@ -462,9 +487,16 @@ def dashboard(c, lines):
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
     summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · Win {100*wins/n:.1f}% · Loss {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(lines); positions=position_embeds(c)
-    # Discord allows at most 10 embeds per message; publish the full radar in batches.
-    all_cards=[summary]+cards+positions
-    for i in range(0,len(all_cards),10): send('',all_cards[i:i+10])
+    # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
+    market_fields=[]
+    for card in cards:
+        if card.get('fields') and 'NO VERIFIED MARKET' not in card.get('title',''):
+            market_fields.append({'name':card['title'][:256],'value':card.get('description','')[:900],'inline':True})
+    market_fields=market_fields[:25]
+    radar={'title':'CRYPTO RADAR · BTC FIRST · 5m / 15m','description':'Each cell is one coin/timeframe. BTC is listed first; no live orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · flip risk is heuristic, not probability'}}
+    pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
+    pos={'title':'POSITION BOARD · HOLD / EXIT','color':0xffc86b,'fields':pos_fields or [{'name':'NO OPEN PAPER POSITIONS','value':'Waiting for a qualified setup.','inline':False}]}
+    publish_board(c,[summary,radar,pos])
 def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
