@@ -51,6 +51,28 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Verify original BTC Discord destination
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_BTC_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not url:
+              print("BTC Discord destination check: webhook secret is missing")
+              raise SystemExit(0)
+          try:
+              with urllib.request.urlopen(url, timeout=10) as response:
+                  data = json.load(response)
+              print("BTC Discord webhook destination: channel_name=%s channel_id=%s webhook_name=%s" % (
+                  data.get("channel_name", "unknown"), data.get("channel_id", "unknown"),
+                  data.get("name", "unknown")))
+          except urllib.error.HTTPError as error:
+              print("BTC Discord destination check failed: HTTP %s" % error.code)
+          except Exception as error:
+              print("BTC Discord destination check failed: %s" % type(error).__name__)
+          PY
+
       - name: Run original BTC paper bot
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_BTC_WEBHOOK_URL }}
