@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-26T13:35:22.716727+00:00",
+  "updated_at": "2026-11-26T13:39:42.038957+00:00",
   "paper_only": true,
   "summary": {
     "resolved_sample": 5,
@@ -18,14 +18,14 @@
       "primary_side": "DOWN",
       "second_brain": "DOWN",
       "action": "CALL DOWN",
-      "score": -2,
-      "risk": 34,
+      "score": -1,
+      "risk": 42,
       "risk_label": "LOW",
-      "rsi": 40.059419147518646,
-      "move1_pct": -0.022079693214016594,
-      "move3_pct": -0.05463849039869517,
-      "move10_pct": -0.0044430468045364435,
-      "range_position": 53.04394263045864,
+      "rsi": 49.15366430260006,
+      "move1_pct": -0.03717831096300417,
+      "move3_pct": -0.05417899496484857,
+      "move10_pct": -0.040204000758681246,
+      "range_position": 25.296158908698686,
       "scalp": "See BTC bot Discord dashboard for active scalp details."
     },
     {
@@ -35,23 +35,23 @@
       "primary_side": "DOWN",
       "second_brain": "DOWN",
       "action": "CALL DOWN",
-      "score": -2,
-      "risk": 34,
+      "score": -1,
+      "risk": 42,
       "risk_label": "LOW",
-      "rsi": 40.059419147518646,
-      "move1_pct": -0.022079693214016594,
-      "move3_pct": -0.05463849039869517,
-      "move10_pct": -0.0044430468045364435,
-      "range_position": 53.04394263045864,
+      "rsi": 49.15366430260006,
+      "move1_pct": -0.03717831096300417,
+      "move3_pct": -0.05417899496484857,
+      "move10_pct": -0.040204000758681246,
+      "range_position": 25.296158908698686,
       "scalp": "See BTC bot Discord dashboard for active scalp details."
     }
   ],
   "scalp": {
-    "side": "DOWN",
-    "setup_score": 77.61104521152112,
-    "entry_price": 0.71,
-    "target_price": 0.7384,
-    "stop_price": 0.6887
+    "side": "UP",
+    "setup_score": 86.68445156888365,
+    "entry_price": 0.72,
+    "target_price": 0.7488,
+    "stop_price": 0.6983999999999999
   },
   "disclaimer": "BTC bot signal is rule-based paper guidance, not guaranteed prediction."
 }
