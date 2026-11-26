@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-26T09:51:43.877496+00:00",
+  "updated_at": "2026-11-26T09:58:27.293180+00:00",
   "paper_only": true,
   "summary": {
     "resolved_sample": 0,
@@ -21,11 +21,11 @@
       "score": -1,
       "risk": 42,
       "risk_label": "LOW",
-      "rsi": 49.44534778681124,
-      "move1_pct": 0.030400234126193304,
-      "move3_pct": -0.06883774101833495,
-      "move10_pct": -0.027737031253616262,
-      "range_position": 67.43416699748488,
+      "rsi": 46.45682688217858,
+      "move1_pct": 0.008693945825388738,
+      "move3_pct": -0.008100936685184745,
+      "move10_pct": -0.04939038111241301,
+      "range_position": 38.0471716969824,
       "scalp": "See BTC bot Discord dashboard for active scalp details."
     },
     {
@@ -38,11 +38,11 @@
       "score": -1,
       "risk": 42,
       "risk_label": "LOW",
-      "rsi": 49.44534778681124,
-      "move1_pct": 0.030400234126193304,
-      "move3_pct": -0.06883774101833495,
-      "move10_pct": -0.027737031253616262,
-      "range_position": 67.43416699748488,
+      "rsi": 46.45682688217858,
+      "move1_pct": 0.008693945825388738,
+      "move3_pct": -0.008100936685184745,
+      "move10_pct": -0.04939038111241301,
+      "range_position": 38.0471716969824,
       "scalp": "See BTC bot Discord dashboard for active scalp details."
     }
   ],
