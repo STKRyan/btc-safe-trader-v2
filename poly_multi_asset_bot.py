@@ -334,7 +334,7 @@ def market_embeds(lines):
     import re
     result=[]
     pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
-    missing=re.compile(r'\\*\\*(BTC|ETH) (5|15)m\\*\\* · MARKET NOT FOUND')
+    missing=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · MARKET NOT FOUND')
     for raw in lines:
         first=raw.split('\n',1)[0]
         no_market=missing.search(first)
