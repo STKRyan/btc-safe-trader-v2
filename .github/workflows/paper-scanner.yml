@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Validate Python syntax
+        run: python -m py_compile poly_multi_asset_bot.py
+
       - name: Run paper-only scanner
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
