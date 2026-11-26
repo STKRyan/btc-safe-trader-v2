@@ -341,6 +341,8 @@ def rsi(values: list[float], period: int = 14) -> Optional[float]:
 def technical_signal(candles: list[list[float]]) -> dict:
     closes = [float(row[4]) for row in candles]
     volumes = [float(row[5]) for row in candles]
+    highs = [float(row[2]) for row in candles]
+    lows = [float(row[1]) for row in candles]
     if len(closes) < 55:
         raise RuntimeError(f"Not enough Coinbase candles ({len(closes)}); need at least 55")
     e9, e21, e50 = ema(closes, 9), ema(closes, 21), ema(closes, 50)
@@ -352,6 +354,9 @@ def technical_signal(candles: list[list[float]]) -> dict:
     move10 = (closes[-1] / closes[-11] - 1.0) * 100.0
     vol_avg = sum(volumes[-21:-1]) / max(1, len(volumes[-21:-1]))
     vol_ratio = volumes[-1] / vol_avg if vol_avg > 0 else 0.0
+    recent_high=max(highs[-20:]); recent_low=min(lows[-20:])
+    range_position=100.0*(closes[-1]-recent_low)/max(1e-12,recent_high-recent_low)
+    range_pct=100.0*(recent_high-recent_low)/max(1e-12,closes[-1])
     votes = 0
     votes += 1 if e9[-1] > e21[-1] > e50[-1] else (-1 if e9[-1] < e21[-1] < e50[-1] else 0)
     votes += 1 if current_rsi is not None and 52 <= current_rsi <= 68 else (-1 if current_rsi is not None and 32 <= current_rsi <= 48 else 0)
@@ -368,6 +373,10 @@ def technical_signal(candles: list[list[float]]) -> dict:
         "move10": move10,
         "vol_ratio": vol_ratio,
         "last_price": closes[-1],
+        "range_high": recent_high,
+        "range_low": recent_low,
+        "range_position": range_position,
+        "range_pct": range_pct,
     }
 
 
@@ -543,6 +552,9 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
             continue
         roi = bid / entry - 1.0
         hold, flip = hold_and_flip(roi, int(tech["score"]), trade["side"], stats["imbalance"])
+        range_position=tech.get("range_position")
+        if range_position is not None and ((trade["side"]=="UP" and range_position>=90) or (trade["side"]=="DOWN" and range_position<=10)):
+            flip=min(100,flip+10); hold=max(0,hold-10)
         qty = float(trade["remaining_quantity"])
         partial_taken = int(trade["partial_taken"])
         realized = float(trade["realized_pnl"])
@@ -777,6 +789,10 @@ def second_opinion(tech: dict, stats: Optional[dict] = None) -> dict:
     if stats:
         imbalance = float(stats.get("imbalance", 0.0))
         score += 1 if imbalance > 0.12 else -1 if imbalance < -0.12 else 0
+    range_position=tech.get("range_position")
+    if range_position is not None:
+        if range_position>=90: score-=1
+        elif range_position<=10: score+=1
     side = "UP" if score >= 2 else "DOWN" if score <= -2 else "WAIT"
     primary = str(tech.get("side", "NEUTRAL"))
     agrees = side == primary and primary in ("UP", "DOWN")
@@ -1037,6 +1053,9 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     )
     # Compact visual call: directional bias, hold/flip gauges, scalp fit and hold window.
     signal_hold, signal_flip = hold_and_flip(0.0, int(tech["score"]), side, stats["imbalance"])
+    range_position=tech.get("range_position")
+    if range_position is not None and ((side=="UP" and range_position>=90) or (side=="DOWN" and range_position<=10)):
+        signal_flip=min(100,signal_flip+10); signal_hold=max(0,signal_hold-10)
     up_bias, down_bias = direction_split(int(tech["score"]))
     scalp_fit = scalp_fit_score(int(tech["score"]), tech, stats) if minutes == 5 else 0
     hold_window = suggested_hold_window(minutes, int(tech["score"]), signal_flip)
