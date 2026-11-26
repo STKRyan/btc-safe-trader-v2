@@ -80,37 +80,60 @@ def db():
 
 
 def discover(asset, tf):
-    """Use Gamma public search; never manufacture a market slug."""
-    terms={"BTC":"Bitcoin", "ETH":"Ethereum", "GOLD":"Gold"}[asset]
-    queries=[f"{terms} Up or Down {tf}m", f"{terms} {tf} minute"]
+    """Find active recurring Up/Down markets using Gamma event-series discovery."""
+    # Gamma search can omit short-duration markets from its generic search index.
+    # Query the recurring series first, then fall back to full-text search.
+    series={
+        ("BTC",5): ["btc-up-or-down-5m", "btc-updown-5m"],
+        ("BTC",15): ["btc-up-or-down-15m", "btc-updown-15m"],
+        ("ETH",5): ["eth-up-or-down-5m", "eth-updown-5m"],
+        ("ETH",15): ["eth-up-or-down-15m", "eth-updown-15m"],
+        ("GOLD",15): ["gold-up-or-down-15m", "gold-updown-15m"],
+    }.get((asset,tf), [])
     found=[]
-    for q in queries:
+    for slug in series:
         try:
-            data=get(f"{GAMMA}/public-search", {"q":q})
-            events=data.get("events",[]) if isinstance(data,dict) else []
+            data=get(f"{GAMMA}/events", {"series_slug":slug,"active":"true","closed":"false","limit":500,"order":"endDate","ascending":"true"})
+            events=data if isinstance(data,list) else data.get("events",[]) if isinstance(data,dict) else []
             for ev in events:
                 found.extend(ev.get("markets",[]) or [])
-            if isinstance(data,dict): found.extend(data.get("markets",[]) or [])
-        except Exception as e: print(f"Market search {asset} {tf}m: {type(e).__name__}")
-    # Deduplicate and demand a clear asset + timeframe match.
+        except Exception as e:
+            print(f"Series lookup {asset} {tf}m ({slug}): {type(e).__name__}: {str(e)[:120]}",flush=True)
+    # Search endpoint fallback; collect both nested event markets and direct markets.
+    if not found:
+        terms={"BTC":"Bitcoin BTC","ETH":"Ethereum ETH","GOLD":"Gold XAU"}[asset]
+        for q in (f"{terms} Up or Down {tf}m",f"{terms} {tf} minute"):
+            for endpoint in ("search","public-search"):
+                try:
+                    data=get(f"{GAMMA}/{endpoint}", {"q":q,"limit":100})
+                    events=data.get("events",[]) if isinstance(data,dict) else []
+                    for ev in events:
+                        found.extend(ev.get("markets",[]) or [])
+                    if isinstance(data,dict): found.extend(data.get("markets",[]) or [])
+                    if found: break
+                except Exception as e:
+                    print(f"Market search {asset} {tf}m ({endpoint}): {type(e).__name__}: {str(e)[:120]}",flush=True)
+            if found: break
     unique={str(m.get("id") or m.get("slug")):m for m in found if isinstance(m,dict)}
     candidates=[]
     for m in unique.values():
-        label=" ".join(str(m.get(k,"")) for k in ("question","slug","description")).lower()
-        asset_ok=("bitcoin" in label or re.search(r"\bbtc\b",label)) if asset=="BTC" else (("ethereum" in label or re.search(r"\beth\b",label)) if asset=="ETH" else ("gold" in label or "xau" in label))
-        tf_ok=bool(re.search(rf"\b{tf}\s*(?:m|min|minute|minutes)\b|{tf}m",label))
+        label=" ".join(str(m.get(k,"")) for k in ("question","slug","description","groupItemTitle")).lower()
+        if asset=="BTC": asset_ok=("bitcoin" in label or "btc" in label)
+        elif asset=="ETH": asset_ok=("ethereum" in label or "eth" in label)
+        else: asset_ok=("gold" in label or "xau" in label)
+        tf_ok=bool(re.search(rf"(?:^|[^0-9]){tf}\\s*(?:m|min|minute|minutes)?(?:$|[^0-9])",label))
         active=m.get("active",True) not in (False,"false",0) and m.get("closed",False) not in (True,"true",1)
         tokens=jlist(m.get("clobTokenIds")); outcomes=jlist(m.get("outcomes"))
         if asset_ok and tf_ok and active and len(tokens)>=2 and len(outcomes)>=2:
             m["_tokens"]=tokens; m["_outcomes"]=outcomes; candidates.append(m)
-    if not candidates: return None
-    # Prefer the market ending soonest, but still in the future.
+    if not candidates:
+        print(f"Market discovery: no {asset} {tf}m matches from {len(unique)} Gamma records.",flush=True)
+        return None
     def end_ts(m):
-        try: return datetime.fromisoformat(str(m.get("endDate")).replace("Z","+00:00")).timestamp()
+        try: return datetime.fromisoformat(str(m.get("endDate") or m.get("end_date_iso")).replace("Z","+00:00")).timestamp()
         except Exception: return float("inf")
     future=[m for m in candidates if end_ts(m)>time.time()]
-    return min(future or candidates, key=end_ts)
-
+    return min(future or candidates,key=end_ts)
 
 def tokens(m):
     out={}
@@ -269,21 +292,28 @@ def manage_open_calls(c, asset, tech):
 
 
 def dashboard(c, lines):
-    rows=c.execute("SELECT asset,timeframe,pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
-    wins=sum(float(x["pnl"])>0 for x in rows); n=len(rows); pnl=sum(float(x["pnl"]) for x in rows)
+    rows=c.execute("SELECT asset,timeframe,score,created_at FROM observations ORDER BY id DESC LIMIT 60").fetchall()
+    wins_rows=c.execute("SELECT asset,timeframe,pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
+    wins=sum(float(x["pnl"])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x["pnl"]) for x in wins_rows)
     opens=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
-    desc="\n".join(lines)[:3800] or "No matching active markets found."
-    print("\\n=== PAPER SCANNER SIGNALS ===", flush=True)
-    print(desc, flush=True)
-    print("=== END PAPER SCANNER SIGNALS ===\\n", flush=True)
+    desc="\\n".join(lines)[:3800] or "No matching active markets found."
+    print("\\n=== PAPER SCANNER SIGNALS ===",flush=True)
+    print(desc,flush=True)
+    print("=== END PAPER SCANNER SIGNALS ===\\n",flush=True)
+    # Signal-score history chart; Discord renders this as an embedded graph.
+    labels=[str(r["created_at"])[11:16] for r in reversed(rows)]
+    scores=[int(r["score"]) for r in reversed(rows)]
+    chart={"type":"line","data":{"labels":labels,"datasets":[{"label":"Signal score (-5 to +5)","data":scores,"fill":False,"borderColor":"#3b82f6","tension":0.2}]},
+      "options":{"title":{"display":True,"text":"Paper Scanner Signal History"},"legend":{"display":True},"scales":{"yAxes":[{"ticks":{"min":-5,"max":5,"stepSize":1},"scaleLabel":{"display":True,"labelString":"Signal score"}}],"xAxes":[{"ticks":{"maxTicksLimit":12}}]}}}
+    graph_url="https://quickchart.io/chart?width=1000&height=420&format=png&backgroundColor=white&c="+quote(json.dumps(chart,separators=(",",":")),safe="")
     embed={"title":"POLYMARKET · ADAPTIVE PAPER DESK","description":desc,
       "color":5793266,"fields":[
        {"name":"PAPER TRACK RECORD","value":f"{wins}W / {n-wins}L · {100*wins/n:.1f}%" if n else "Building first resolved sample","inline":True},
        {"name":"REALIZED PAPER P/L","value":f"${pnl:+.2f}","inline":True},
        {"name":"OPEN PAPER CALLS","value":str(opens),"inline":True}],
-      "footer":{"text":"Paper only · gross P/L before protocol fees · indicators are not calibrated probabilities · Gold reference feed is indicative"},"timestamp":iso()}
+      "image":{"url":graph_url},
+      "footer":{"text":"Paper only · signal score is not a probability · Gold feed is indicative"},"timestamp":iso()}
     send("",embed)
-
 
 def cycle(c):
     resolve_calls(c); lines=[]
