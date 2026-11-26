@@ -1,0 +1,59 @@
+name: Multi-Asset Paper Scanner
+
+on:
+  schedule:
+    # Every 15 minutes: stays within typical GitHub Free Actions allowance.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: multi-asset-paper-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore paper journal
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: paper-journal-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            paper-journal-${{ github.ref_name }}-
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run paper-only scanner
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          POLY_BOT_DB: data/poly_multi_asset.sqlite3
+          SCAN_INTERVAL_SECONDS: "15"
+          PAPER_STAKE_USD: "2"
+          DAILY_LOSS_LIMIT_USD: "8"
+          MAX_OPEN_PAPER_TRADES: "4"
+          MIN_BOOK_DEPTH_USD: "500"
+          MAX_SPREAD: "0.035"
+        run: |
+          mkdir -p data
+          python poly_multi_asset_bot.py --duration 180
+
+      - name: Save paper journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: paper-journal-${{ github.ref_name }}-${{ github.run_id }}
