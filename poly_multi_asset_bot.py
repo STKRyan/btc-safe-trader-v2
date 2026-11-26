@@ -614,7 +614,9 @@ def dashboard(c, lines):
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
     write_site_data(c,display_lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    frows=c.execute("SELECT outcome FROM forecast_journal WHERE status='RESOLVED' ORDER BY resolved_at DESC LIMIT 100").fetchall()
+    fw=sum(x["outcome"]=="WIN" for x in frows); ff=sum(x["outcome"]=="FLIP" for x in frows); fl=sum(x["outcome"]=="LOSS" for x in frows)
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST SCORE · W / F / L','value':f'**{fw} / {ff} / {fl}**\nFLIP is neutral · {len(frows)} resolved','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     market_fields=[]
@@ -625,9 +627,14 @@ def dashboard(c, lines):
             signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
             hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
             flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
-            market_fields.append({'name':card['title'][:256],'value':(detail[:250]+'\n'+signal[:100]+'\n'+hold[:130]+'\n'+flip[:150])[:900],'inline':True})
+            action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
+            court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'⚖️ Courtroom evidence is being collected.')
+            scalp=next((x.get('value','') for x in cf if x.get('name','').startswith('SCALP SETUP')),'')
+            compact='\n'.join([f'**{action_line[:170]}**',signal[:90],hold[:115],flip[:130],court[:220],('⚡ '+scalp[:140] if scalp else '')]).strip()
+            market_fields.append({'name':card['title'][:256],'value':compact[:1000],'inline':True})
     market_fields=market_fields[:10]
-    radar={'title':'CRYPTO RADAR · BTC FIRST · 5m / 15m','description':'Each cell is one coin/timeframe. BTC is listed first; no live orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · flip risk is heuristic, not probability'}}
+    # One compact, color-coded radar message is edited in place each scan.
+    radar={'title':'⚡ CRYPTO RADAR · BTC FIRST · COURTROOM EDITION','description':'**LIVE PAPER BOARD** · Calls, courtroom verdicts, scalp status and flip-risk gauges update in this same message.\nBTC first · 5m / 15m · no real orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · signal/hold/flip meters are heuristics, not win probabilities'}}
     pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
     pos={'title':'POSITION BOARD · HOLD / EXIT','color':0xffc86b,'fields':pos_fields or [{'name':'NO OPEN PAPER POSITIONS','value':'Waiting for a qualified setup.','inline':False}]}
     publish_board(c,[summary,radar,pos])
@@ -657,26 +664,8 @@ def cycle(c):
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
                 scalp=scalp_call(asset,tf,m,tech)
                 side=tech["side"]
-                if side in ("UP","DOWN"):
-                    risk=flip_risk(tech,side)
-                    strength=max(5,min(95,50+abs(int(tech["score"]))*8-risk//4))
-                    signal_status="PAPER ENTRY READY" if action.startswith("PAPER ENTRY") else "WATCH · NO ENTRY"
-                    signal_key=f"signal-change:{asset}:{tf}:{m.get('id')}:{side}"
-                    signal_message=(
-                        f"📡 **{asset} {tf}m · {side} {signal_status}**\n"
-                        f"Signal strength: **{strength}%** · {tech['score']:+d}/5 votes\n"
-                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\n"
-                        f"{action}{wr}\n⚡ SCALP: {scalp}\n"
-                        "Strength is a heuristic indicator, not win odds. Paper only."
-                    )
-                    send_signal_once(c,signal_key,signal_message)
-                    if scalp.startswith("SCALP CALL"):
-                        scalp_score=max(5,min(95,50+abs(int(tech["score"]))*8-risk//4))
-                        scalp_key=f"scalp-change:{asset}:{tf}:{m.get('id')}:{side}"
-                        send_signal_once(c,scalp_key,
-                            f"⚡ **{asset} {tf}m SCALP CALL · {side}**\n"
-                            f"{scalp}\nScalp strength: **{scalp_score}%** · heuristic, not win odds.\nPaper only; no live orders."
-                        )
+                # Individual per-market Discord alerts are intentionally suppressed.
+                # The persistent, editable board below contains the latest call and avoids channel clutter.
                 lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
