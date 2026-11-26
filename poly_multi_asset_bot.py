@@ -25,7 +25,7 @@ MAX_OPEN = int(os.getenv("MAX_OPEN_PAPER_TRADES", "4"))
 MIN_DEPTH = float(os.getenv("MIN_BOOK_DEPTH_USD", "500"))
 MAX_SPREAD = float(os.getenv("MAX_SPREAD", "0.035"))
 MIN_ASK, MAX_ASK = 0.20, 0.82
-TIMEFRAMES = {"BTC": (5, 15), "ETH": (5, 15), "GOLD": (15,)}
+TIMEFRAMES = {"BTC": (5, 15), "ETH": (5, 15)}
 SYMBOLS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT"}
 S = requests.Session(); S.headers.update({"User-Agent": "Poly-Multi-Asset-Paper-Scanner/1.0"})
 
@@ -111,8 +111,6 @@ def discover(asset, tf):
             return live[0] if live else min(candidates,key=start)
         print(f"Market discovery: exact {asset} {tf}m event slugs not returned.",flush=True)
         return None
-    if asset=="GOLD":
-        print("Gold 15m: no verified recurring Polymarket Gold slug; signal-only.",flush=True)
     return None
 
 def tokens(m):
@@ -183,16 +181,13 @@ def save_observation(c, asset, tf, m, tech):
 
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
-    if asset=="GOLD":
-        return "SIGNAL ONLY · Gold feed is indicative; paper entries stay disabled until it is matched to the market's settlement reference"
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
     mapping=tokens(m); tid=mapping.get(side)
     if not tid:return "WAIT · outcome tokens not mapped safely"
     stats=book_stats(tid)
     if not stats:return "WAIT · order book unavailable"
     learn=learning_adjustment(c,asset,tf)
-    # Gold's external spot feed is indicative only; use stricter confirmation and smaller confidence claims.
-    required=learn["threshold"]+(1 if asset=="GOLD" else 0)
+    required=learn["threshold"]
     signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
     reasons=[]
@@ -270,6 +265,27 @@ def manage_open_calls(c, asset, tech):
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
+
+def flip_risk(tech, side, imbalance=0.0):
+    """Heuristic flip-risk score; higher means more reversal warning, not probability."""
+    score=int(tech.get('score',0)); m1=float(tech.get('move1',0)); m3=float(tech.get('move3',0)); rsi=float(tech.get('rsi',50))
+    risk=48-abs(score)*6
+    against=(side=='UP' and (m1<0 or m3<0)) or (side=='DOWN' and (m1>0 or m3>0))
+    strongly_against=(side=='UP' and m1<0 and m3<0) or (side=='DOWN' and m1>0 and m3>0)
+    if against: risk+=14
+    if strongly_against: risk+=12
+    if (side=='UP' and rsi>=72) or (side=='DOWN' and rsi<=28): risk+=12
+    opposing=imbalance*(1 if side=='DOWN' else -1)
+    if opposing>0.10: risk+=min(18,int((opposing-0.10)*60))
+    return max(5,min(95,int(round(risk))))
+
+def pct_bar(value, width=12):
+    value=max(0,min(100,int(value))); filled=round(value*width/100)
+    return '█'*filled+'░'*(width-filled)
+
+def score_bar(score, width=10):
+    filled=round(abs(int(score))*width/5)
+    return '▰'*filled+'▱'*(width-filled)
 
 def write_site_data(c, lines):
     import re
