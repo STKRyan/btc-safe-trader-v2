@@ -402,13 +402,17 @@ def model_probability(score: int, side: str) -> float:
     return min(0.78, 0.50 + 0.055 * directional)
 
 
-def daily_closed_pnl(conn: sqlite3.Connection) -> float:
+def daily_closed_pnl(conn: sqlite3.Connection, timeframe: Optional[int] = None) -> float:
     today = utc_now().date().isoformat()
-    row = conn.execute(
+    query = (
         "SELECT COALESCE(SUM(realized_pnl),0) AS pnl FROM paper_trades "
-        "WHERE substr(COALESCE(closed_at,opened_at),1,10)=?",
-        (today,),
-    ).fetchone()
+        "WHERE substr(COALESCE(closed_at,opened_at),1,10)=?"
+    )
+    params: list[Any] = [today]
+    if timeframe is not None:
+        query += " AND timeframe=?"
+        params.append(int(timeframe))
+    row = conn.execute(query, params).fetchone()
     return float(row["pnl"] or 0.0)
 
 
@@ -474,12 +478,17 @@ def update_shared_learning(conn: sqlite3.Connection, bot: str = "btc") -> None:
     with open("data/shared_learning.json","w",encoding="utf-8") as handle:
         json.dump(data,handle,indent=2)
 
-def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20) -> dict:
-    """Summarize the latest fully closed simulated trades for conservative feedback."""
-    rows = conn.execute(
-        "SELECT realized_pnl FROM paper_trades WHERE status='CLOSED' "
-        "ORDER BY COALESCE(closed_at,opened_at) DESC, id DESC LIMIT ?", (limit,)
-    ).fetchall()
+def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20,
+                             timeframe: Optional[int] = None) -> dict:
+    """Summarize recent closed paper trades, optionally for one timeframe."""
+    query = "SELECT realized_pnl FROM paper_trades WHERE status='CLOSED'"
+    params: list[Any] = []
+    if timeframe is not None:
+        query += " AND timeframe=?"
+        params.append(int(timeframe))
+    query += " ORDER BY COALESCE(closed_at,opened_at) DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    rows = conn.execute(query, params).fetchall()
     count = len(rows)
     wins = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) > 0)
     losses = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) < 0)
@@ -773,14 +782,17 @@ def second_opinion(tech: dict, stats: Optional[dict] = None) -> dict:
             "label": "CONFIRMED" if agrees else "DISAGREEMENT / WAIT"}
 
 
-def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> dict:
-    """Build the branded BTC SIGNAL TERMINAL Discord dashboard."""
+def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
+                     minutes: int = 5) -> dict:
+    """Build the branded BTC SIGNAL TERMINAL dashboard for one market window."""
+    minutes = 15 if int(minutes) == 15 else 5
     open_rows = conn.execute(
         "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
-        "FROM paper_trades WHERE status='OPEN' ORDER BY id DESC LIMIT 5"
+        "FROM paper_trades WHERE status='OPEN' AND timeframe=? "
+        "ORDER BY id DESC LIMIT 5", (minutes,)
     ).fetchall()
-    pnl = daily_closed_pnl(conn)
-    perf = recent_paper_performance(conn, 20)
+    pnl = daily_closed_pnl(conn, minutes)
+    perf = recent_paper_performance(conn, 20, minutes)
     side = str(tech.get("side", "NEUTRAL"))
     second = str(opinions.get("side", "WAIT"))
     confirmed = bool(opinions.get("agrees"))
@@ -796,19 +808,23 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     flip = max(5, min(95, 100 - hold + (12 if rsi_now >= 72 or rsi_now <= 28 else 0)
                        + (10 if move1 * score < 0 else 0)))
     flip = min(95, flip)
-    scalp_live = max(0, min(95, 35 + abs(score) * 8
-                            + (12 if move1 * move3 > 0 and abs(move3) >= 0.035 else -5)
-                            + (8 if abs(move1) >= 0.025 else 0)))
-    scalp_call = ("SCALP CALL " + side) if side in ("UP", "DOWN") and scalp_live >= 65 and confirmed else "SCALP STANDBY"
+    if minutes == 15:
+        scalp_live = max(0, min(95, 50 + abs(score) * 8 + (8 if confirmed else -12)))
+        scalp_call = f"15M {safe_call} LEAN" if confirmed else "15M WAIT"
+    else:
+        scalp_live = max(0, min(95, 35 + abs(score) * 8
+                                + (12 if move1 * move3 > 0 and abs(move3) >= 0.035 else -5)
+                                + (8 if abs(move1) >= 0.025 else 0)))
+        scalp_call = ("SCALP CALL " + side) if side in ("UP", "DOWN") and scalp_live >= 65 and confirmed else "SCALP STANDBY"
     price = float(tech.get("last_price", 0.0))
     rsi_value = float(tech.get("rsi", 50.0))
     color = 0x19C37D if safe_call == "UP" else 0xEF4444 if safe_call == "DOWN" else 0xF59E0B
     call_icon = "🟢" if safe_call == "UP" else "🔴" if safe_call == "DOWN" else "🟡"
     action_label = (("UP CALL" if safe_call == "UP" else "DOWN CALL") + f" · {abs(score)*9+50}% strength") if confirmed else "WAIT · SIGNALS NOT ALIGNED"
 
-    # Clock-based progress bar for elapsed time in the current 5-minute BTC
-    # market window. Indicator gauges below remain separate heuristic scores.
-    market_period_seconds = 5 * 60
+    # Clock-based progress bar for this Polymarket BTC market window.
+    # Indicator gauges below remain separate heuristic scores.
+    market_period_seconds = minutes * 60
     elapsed_seconds = int(time.time() % market_period_seconds)
     market_progress = int(elapsed_seconds * 100 / market_period_seconds)
     seconds_to_close = market_period_seconds - elapsed_seconds
@@ -825,7 +841,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     description = (
         f"### {call_icon}  {safe_call}  ·  {action_label}\n"
         f"**ACTION NOW:** {action_now}\n"
-        f"**5M MARKET WINDOW**  {market_progress}%  `{progress_bar}`  ·  closes in **{countdown}**\n"
+        f"**POLYMARKET BTC {minutes}M UP/DOWN**  {market_progress}%  `{progress_bar}`  ·  closes in **{countdown}**\n"
         f"**BTC / USD**  `${price:,.2f}`\n"
         f"`PRIMARY  {side}`  ·  `CHECK  {second}`  ·  "
         f"{'🟢 MATCH' if confirmed else '🟠 MISMATCH'}\n"
@@ -871,8 +887,10 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     perf_text += f"Today P/L  **${pnl:+.2f}**\nOpen positions  **{len(open_rows)}**"
     fields.append({"name": "〢 PAPER PERFORMANCE", "value": perf_text, "inline": True})
     fields.append({
-        "name": "〢 SCALP CALL",
-        "value": f"**{scalp_call}** · **{scalp_live}%**\n`{gauge_bar(scalp_live, 13)}`\n`Live setup-strength score · not win odds`",
+        "name": "〢 SCALP CALL" if minutes == 5 else "〢 15M SIGNAL STRENGTH",
+        "value": f"**{scalp_call}** · **{scalp_live}%**\n`{gauge_bar(scalp_live, 13)}`\n"
+                 + ("`Live setup-strength score · not win odds`" if minutes == 5
+                    else "`Directional indicator score · not win odds`"),
         "inline": True,
     })
 
@@ -916,8 +934,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     latest_scalp = conn.execute(
         "SELECT side,setup_score,entry_price,target_price,stop_price "
         "FROM scalp_signals ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    if latest_scalp:
+    ).fetchone() if minutes == 5 else None
+    if minutes == 15:
+        scalp_text = (
+            f"**15M MARKET:** {safe_call if confirmed else 'WAIT'}\n"
+            f"**Votes:** {score:+d}/5 · **RSI:** {rsi_value:.1f}\n"
+            f"**Check:** {second} · {'MATCH' if confirmed else 'NOT CONFIRMED'}\n"
+            "`No forced entry · paper signal only`"
+        )
+    elif latest_scalp:
         scalp_score = max(0, min(100, int(latest_scalp["setup_score"] or 0)))
         scalp_text = (
             f"**{latest_scalp['side']}**  ·  Setup score **{scalp_score}/100**\n"
@@ -928,7 +953,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         )
     else:
         scalp_text = "`SCALP RADAR: STANDBY`\nNo setup currently meets the momentum and liquidity filters."
-    fields.append({"name": "〢 SCALP RADAR", "value": scalp_text, "inline": False})
+    fields.append({"name": "〢 SCALP RADAR" if minutes == 5 else "〢 15M MARKET CHECK",
+                   "value": scalp_text, "inline": False})
     fields.append({
         "name": "〢 EXECUTION GUARDRAILS",
         "value": (
@@ -940,15 +966,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     })
     return {
         "author": {
-            "name": "BTC SIGNAL TERMINAL  /  MARKET INTELLIGENCE",
+            "name": f"BTC SIGNAL TERMINAL  /  {minutes}M MARKET INTELLIGENCE",
             "icon_url": "https://assets.coingecko.com/coins/images/1/large/bitcoin.png",
         },
-        "title": "━━━━━━━━  BTC / USD  ━━━━━━━━",
+        "title": f"━━━━━━━━  BTC / USD · {minutes}M  ━━━━━━━━",
         "description": description,
         "color": color,
         "thumbnail": {"url": "https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "fields": fields,
-        "footer": {"text": "BTC SIGNAL TERMINAL  •  PAPER MODE  •  NO LIVE ORDERS"},
+        "footer": {"text": f"BTC {minutes}M SIGNAL TERMINAL  •  PAPER MODE  •  NO LIVE ORDERS"},
         "timestamp": utc_now().isoformat(),
     }
 
@@ -1112,10 +1138,17 @@ def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state
 
 
 def update_btc_live_channel(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
-    """Mirror the live BTC terminal into a dedicated Discord channel."""
-    embed = _dashboard_embed(conn, tech, opinions)
+    """Mirror the existing 5-minute BTC terminal into its Discord message."""
+    embed = _dashboard_embed(conn, tech, opinions, minutes=5)
     update_btc_channel_message(conn, "DISCORD_BTC_LIVE_WEBHOOK_URL",
                                "btc_live_dashboard", embed, DISCORD_DASHBOARD_UPDATE_SECONDS)
+
+
+def update_btc_15m_live_channel(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
+    """Create and refresh a separate 15-minute Polymarket BTC dashboard message."""
+    embed = _dashboard_embed(conn, tech, opinions, minutes=15)
+    update_btc_channel_message(conn, "DISCORD_BTC_LIVE_WEBHOOK_URL",
+                               "btc_live_15m_dashboard", embed, DISCORD_DASHBOARD_UPDATE_SECONDS)
 
 
 def update_btc_chart_channel(conn: sqlite3.Connection, candles: list[list[float]], tech: dict) -> None:
@@ -1341,6 +1374,7 @@ def main() -> int:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
                 update_dashboard(conn, tech, dashboard_opinion)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
+                update_btc_15m_live_channel(conn, tech, dashboard_opinion)
                 # Chart delivery is paused for now. Keep BTC live and signal scanning active.
                 update_shared_learning(conn)
                 print_summary(conn)
