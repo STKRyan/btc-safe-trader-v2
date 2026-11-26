@@ -41,6 +41,9 @@ jobs:
           restore-keys: |
             signalforge-shared-learning-${{ github.ref_name }}-
 
+      - name: Validate Python syntax
+        run: python -m py_compile btc_poly_bot_v2.py
+
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
