@@ -563,9 +563,9 @@ def cycle(c):
                     signal_key=f"{asset}:{tf}:{market_key}:{tech['side']}"
                     send_signal_once(
                         c, signal_key,
-                        f"📡 PAPER SIGNAL · {asset} {tf}m · {tech['side']} ({tech['score']:+d}/5)\\n"
-                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\\n"
-                        f"{action}\\nNo real orders are placed."
+                        f"📡 PAPER SIGNAL · {asset} {tf}m · {tech['side']} ({tech['score']:+d}/5)\n"
+                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\n"
+                        f"{action}\nNo real orders are placed."
                     )
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
