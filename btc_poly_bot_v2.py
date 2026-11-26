@@ -926,8 +926,33 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         "timestamp": utc_now().isoformat(),
     }
 
+def write_btc_site_data(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
+    """Publish BTC bot snapshot separately from the multi-crypto scanner data."""
+    perf=recent_paper_performance(conn,50)
+    scalp=conn.execute("SELECT side,setup_score,entry_price,target_price,stop_price FROM scalp_signals ORDER BY id DESC LIMIT 1").fetchone()
+    side=str(tech.get("side","WAIT")); second=str(opinions.get("side","WAIT"))
+    safe_side=side if opinions.get("agrees") and side in ("UP","DOWN") else "WAIT"
+    score=int(tech.get("score",0)); hold=max(0,min(100,50+abs(score)*8)); flip=100-hold
+    markets=[]
+    for tf in TIMEFRAMES:
+        markets.append({"asset":"BTC","timeframe":tf,"side":safe_side,"primary_side":side,"second_brain":second,
+            "action":"CALL "+safe_side if safe_side in ("UP","DOWN") else "SIT OUT / WAIT",
+            "score":score,"risk":flip,"risk_label":"HIGH" if flip>=70 else "MODERATE" if flip>=45 else "LOW",
+            "rsi":float(tech.get("rsi",50)),"move1_pct":float(tech.get("move1",0)),
+            "move3_pct":float(tech.get("move3",0)),"move10_pct":float(tech.get("move10",0)),
+            "range_position":float(tech.get("range_position",50)),"scalp":"See BTC bot Discord dashboard for active scalp details."})
+    data={"updated_at":utc_now().isoformat(),"paper_only":True,
+          "summary":{"resolved_sample":perf["count"],"wins":perf["wins"],"losses":perf["losses"],
+          "win_rate":perf["win_rate"],"loss_rate":perf["loss_rate"],
+          "realized_pnl":daily_closed_pnl(conn),"open_positions":conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'").fetchone()[0]},
+          "markets":markets,"scalp":dict(scalp) if scalp else None,
+          "disclaimer":"BTC bot signal is rule-based paper guidance, not guaranteed prediction."}
+    os.makedirs("docs",exist_ok=True)
+    with open("docs/data_btc.json","w",encoding="utf-8") as handle: json.dump(data,handle,indent=2)
+
 def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Create once, then edit the same Discord webhook message on each scan."""
+    write_btc_site_data(conn, tech, opinions)
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook or not (webhook.startswith("https://discord.com/api/webhooks/") or webhook.startswith("https://discordapp.com/api/webhooks/")):
         return
