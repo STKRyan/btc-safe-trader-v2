@@ -2,7 +2,7 @@ name: Original BTC Paper Bot
 
 on:
   schedule:
-    - cron: "11 */4 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
