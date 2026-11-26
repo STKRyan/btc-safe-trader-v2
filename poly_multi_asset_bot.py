@@ -45,7 +45,7 @@ def send(text, embed=None):
     if not WEBHOOK.startswith(("https://discord.com/api/webhooks/", "https://discordapp.com/api/webhooks/")):
         print("Discord webhook missing or invalid; message not sent."); return False
     payload={"content":text[:1900], "allowed_mentions":{"parse":[]}}
-    if embed: payload["embeds"]=[embed]
+    if embed: payload["embeds"]=embed if isinstance(embed,list) else [embed]
     try:
         r=S.post(WEBHOOK, json=payload, timeout=12); r.raise_for_status(); return True
     except Exception as e: print(f"Discord send failed: {type(e).__name__}: {e}"); return False
@@ -334,28 +334,38 @@ def write_site_data(c, lines):
     data={'updated_at':iso(),'paper_only':True,'summary':{'resolved_sample':n,'wins':wins,'losses':n-wins,'win_rate':round(100*wins/n,1) if n else None,'realized_pnl':round(pnl,2),'open_positions':len(positions)},'markets':markets,'positions':positions,'disclaimer':'Signal and flip-risk scores are heuristic, not probabilities or guarantees. Paper trading only.'}
     Path('docs').mkdir(exist_ok=True)
     Path('docs/data.json').write_text(json.dumps(data,indent=2),encoding='utf-8')
-def dashboard(c, lines):
-    rows=c.execute("SELECT score FROM observations ORDER BY id DESC LIMIT 24").fetchall()
-    wins_rows=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
-    wins=sum(float(x["pnl"])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x["pnl"]) for x in wins_rows)
-    opens=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
-    desc="\\n".join(lines)[:3000] or "No matching active markets found."
-    scores=[max(-5,min(5,int(r["score"]))) for r in reversed(rows)]
-    bars="▁▂▃▄▅▆▇█"
-    spark="".join(bars[round((s+5)/10*7)] for s in scores) or "No signal history yet"
-    write_site_data(c,lines)
-    print("\\n=== PAPER SCANNER SIGNALS ===",flush=True)
-    print(desc,flush=True); print(f"Signal trend (-5 to +5): {spark}",flush=True)
-    print("=== END PAPER SCANNER SIGNALS ===\\n",flush=True)
-    embed={"title":"POLYMARKET · ADAPTIVE PAPER DESK","description":desc,
-      "color":5793266,"fields":[
-       {"name":"SIGNAL SCORE TREND","value":f"`-5` {spark} `+5`","inline":False},
-       {"name":"PAPER TRACK RECORD","value":f"{wins}W / {n-wins}L · {100*wins/n:.1f}%" if n else "Building first resolved sample","inline":True},
-       {"name":"REALIZED PAPER P/L","value":f"${pnl:+.2f}","inline":True},
-       {"name":"OPEN PAPER CALLS","value":str(opens),"inline":True}],
-      "footer":{"text":"Paper only · score is not a probability · Gold is signal-only"},"timestamp":iso()}
-    send("",embed)
+def market_embeds(lines):
+    import re
+    result=[]
+    pattern=re.compile(r'\\*\\*(BTC|ETH) (5|15)m\\*\\* · \\*\\*(UP|DOWN|WAIT)\\*\\* \\(([+-]?\\d+)/5\\) · RSI (\\d+) · 1m ([+-]?\\d+\\.\\d+)% · 3m ([+-]?\\d+\\.\\d+)%')
+    for raw in lines:
+        first=raw.split('\\n',1)[0]
+        match=pattern.search(first)
+        if not match: continue
+        asset,tf,side,score,rsi,m1,m3=match.groups()
+        tech={'score':int(score),'move1':float(m1),'move3':float(m3),'rsi':float(rsi)}
+        risk=flip_risk(tech,side)
+        body=raw.split('\\n',1)[1] if '\\n' in raw else 'No action detail'
+        if risk>=70: level='HIGH · reversal warning'
+        elif risk>=45: level='MODERATE · stay alert'
+        else: level='LOWER · signal currently aligned'
+        color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\\n**{int(score):+d}/5 votes**','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\\n3m **{float(m3):+.3f}%**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · flip risk is a heuristic estimate, not probability'}})
+    return result
 
+def dashboard(c, lines):
+    rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
+    wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
+    wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
+    opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
+    desc='\\n'.join(lines)[:2500] or 'No matching active markets found.'
+    scores=[max(-5,min(5,int(r['score']))) for r in reversed(rows)]
+    bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
+    write_site_data(c,lines)
+    print('\\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\\n',flush=True)
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\\nBTC + ETH · 5m and 15m\\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    cards=market_embeds(lines)
+    send('',[summary]+cards[:9])
 def cycle(c):
     resolve_calls(c); lines=[]
     for asset, tfs in TIMEFRAMES.items():
@@ -382,7 +392,7 @@ def main():
     p=argparse.ArgumentParser(description="Polymarket multi-asset paper scanner")
     p.add_argument("--duration",type=int,default=0,help="0 runs continuously")
     args=p.parse_args(); c=db()
-    send("🤖 **MULTI-ASSET PAPER DESK ONLINE**\nBTC + ETH: 5m/15m · Gold: 15m only\nAdaptive feedback begins after resolved paper calls. Real-money trading is disabled.")
+    send("🤖 **SIGNALFORGE PAPER DESK ONLINE**\\nBTC + ETH · 5m / 15m\\nVisual market cards and flip-risk meters enabled. Real-money orders are disabled.")
     start=time.time()
     try:
         while True:
