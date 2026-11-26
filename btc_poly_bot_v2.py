@@ -397,7 +397,6 @@ def open_trade_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS n FROM paper_trades WHERE status='OPEN'").fetchone()
     return int(row["n"])
 
-
 def entries_today(conn: sqlite3.Connection) -> int:
     today = utc_now().date().isoformat()
     row = conn.execute(
@@ -797,8 +796,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         f"{'🟢 MATCH' if confirmed else '🟠 MISMATCH'}\n"
         f"*Last refresh <t:{int(time.time())}:R>*"
     )
-    fields = [
-        {
+    fields = [        {
             "name": "〢 MARKET BIAS",
             "value": (
                 f"🟩 **UP  {up_bias:>2}%**  `{gauge_bar(up_bias, 18)}`\n"
@@ -933,7 +931,12 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
     """Create once, then edit the same Discord webhook message on each scan."""
     write_btc_site_data(conn, tech, opinions)
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-    if not webhook or not (webhook.startswith("https://discord.com/api/webhooks/") or webhook.startswith("https://discordapp.com/api/webhooks/")):
+    if not webhook:
+        print("Discord dashboard skipped: DISCORD_WEBHOOK_URL secret is missing.")
+        return
+    if not (webhook.startswith("https://discord.com/api/webhooks/") or
+            webhook.startswith("https://discordapp.com/api/webhooks/")):
+        print("Discord dashboard skipped: webhook secret is not a valid Discord webhook URL.")
         return
     row = conn.execute("SELECT state_value FROM bot_state WHERE state_key='dashboard_message_id'").fetchone()
     message_id = row["state_value"] if row else ""
@@ -943,17 +946,22 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
             url = webhook.rstrip("/") + "/messages/" + message_id
             response = SESSION.patch(url, json=payload, timeout=HTTP_TIMEOUT)
             if response.status_code == 404:
+                print("Discord dashboard message was not found; creating a replacement.")
                 message_id = ""
             else:
                 response.raise_for_status()
+                print("Discord dashboard updated successfully.")
                 return
-        response = SESSION.post(webhook + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
+        response = SESSION.post(webhook.rstrip("/") + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         result = response.json()
         new_id = str(result.get("id", ""))
         if new_id:
             conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('dashboard_message_id',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value", (new_id,))
             conn.commit()
+            print("Discord dashboard posted successfully; message ID saved.")
+        else:
+            print("Discord dashboard POST succeeded, but Discord returned no message ID.")
     except Exception as exc:
         print(f"Discord dashboard update failed: {type(exc).__name__}: {exc}")
 
@@ -1161,4 +1169,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
