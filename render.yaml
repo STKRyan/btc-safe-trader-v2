@@ -7,12 +7,10 @@ services:
     startCommand: python btc_poly_bot_v2.py
     disk:
       name: btc-paper-data
-      mountPath: /var/data
+      mountPath: /opt/render/project/src/data
       sizeGB: 1
     envVars:
       - key: BTC_BOT_DB
-        value: /var/data/btc_poly_v2.sqlite3
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
+        value: /opt/render/project/src/data/btc_poly_v2.sqlite3
+      - key: DISCORD_WEBHOOK_URL
         sync: false
