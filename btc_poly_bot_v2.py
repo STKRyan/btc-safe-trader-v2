@@ -437,6 +437,25 @@ def direction_split(score: int) -> tuple[int, int]:
     return up, 100 - up
 
 
+def shared_learning_data() -> dict:
+    try:
+        with open("data/shared_learning.json", "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+def update_shared_learning(conn: sqlite3.Connection, bot: str = "btc") -> None:
+    rows=conn.execute("SELECT realized_pnl FROM paper_trades WHERE status='CLOSED' ORDER BY COALESCE(closed_at,opened_at) DESC,id DESC LIMIT 50").fetchall()
+    count=len(rows)
+    wins=sum(float(row["realized_pnl"] or 0)>0 for row in rows)
+    losses=sum(float(row["realized_pnl"] or 0)<0 for row in rows)
+    data=shared_learning_data()
+    data[bot]={"sample":count,"wins":wins,"losses":losses,"win_rate":round(100*wins/count,1) if count else None,"updated_at":utc_now().isoformat()}
+    data["updated_at"]=utc_now().isoformat()
+    os.makedirs("data",exist_ok=True)
+    with open("data/shared_learning.json","w",encoding="utf-8") as handle:
+        json.dump(data,handle,indent=2)
+
 def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20) -> dict:
     """Summarize the latest fully closed simulated trades for conservative feedback."""
     rows = conn.execute(
@@ -1001,6 +1020,9 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     performance = recent_paper_performance(conn, 20)
     if performance["count"] >= 10 and performance["win_rate"] < 60.0:
         reasons.append("recent paper results below 60%; adaptive safety pause")
+    peer=shared_learning_data().get("multi",{})
+    if peer.get("sample",0)>=10 and peer.get("win_rate") is not None and peer.get("win_rate")<45:
+        reasons.append("shared learning caution: multi-asset bot recent win rate below 45%")
     if daily_closed_pnl(conn) <= -MAX_DAILY_PAPER_LOSS_USD:
         reasons.append("daily paper loss limit reached")
     if entries_today(conn) >= MAX_DAILY_ENTRIES:
@@ -1102,6 +1124,7 @@ def main() -> int:
                     except Exception as exc:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
                 update_dashboard(conn, tech, dashboard_opinion)
+                update_shared_learning(conn)
                 print_summary(conn)
             except Exception as exc:
                 print(f"Scan cycle error: {type(exc).__name__}: {exc}")
