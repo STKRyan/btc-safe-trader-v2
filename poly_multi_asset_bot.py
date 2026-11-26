@@ -505,6 +505,8 @@ def write_site_data(c, lines):
         markets.append({'asset':asset,'timeframe':tf,'side':side,'score':score,'score_bar':score_bar(score),'rsi':rsi,'range_position':range_position,'move1_pct':move1,'move3_pct':move3,'move10_pct':move10,'risk':risk,'risk_bar':pct_bar(risk) if risk is not None else '', 'risk_label':'HIGH' if risk is not None and risk>=70 else ('MODERATE' if risk is not None and risk>=45 else 'LOW'), 'status':status,'action':action,'scalp':scalp,'details':clean[:700]})
     rr=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
     wins=sum(float(x['pnl'] or 0)>0 for x in rr); n=len(rr); pnl=sum(float(x['pnl'] or 0) for x in rr)
+    fr=c.execute("SELECT outcome FROM forecast_journal WHERE status='RESOLVED' ORDER BY resolved_at DESC LIMIT 100").fetchall()
+    forecast_wins=sum(x["outcome"]=="WIN" for x in fr); forecast_flips=sum(x["outcome"]=="FLIP" for x in fr); forecast_losses=sum(x["outcome"]=="LOSS" for x in fr)
     positions=[]
     for r in c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC").fetchall():
         try:
@@ -519,7 +521,7 @@ def write_site_data(c, lines):
             else: action='HOLD'; explanation='No paper exit threshold is currently triggered.'
             positions.append({'asset':r['asset'],'timeframe':r['timeframe'],'side':r['side'],'entry':entry,'bid':bid,'roi_pct':round(roi,2) if roi is not None else None,'risk':risk,'action':action,'explanation':explanation,'paper_only':True})
         except Exception as e: positions.append({'asset':r['asset'],'timeframe':r['timeframe'],'side':r['side'],'action':'CHECK DATA','explanation':str(e)[:120],'paper_only':True})
-    data={'updated_at':iso(),'paper_only':True,'summary':{'resolved_sample':n,'wins':wins,'losses':n-wins,'win_rate':round(100*wins/n,1) if n else None,'loss_rate':round(100*(n-wins)/n,1) if n else None,'realized_pnl':round(pnl,2),'open_positions':len(positions)},'markets':markets,'positions':positions,'disclaimer':'Signal and flip-risk scores are heuristic, not probabilities or guarantees. Paper trading only.'}
+    data={'updated_at':iso(),'paper_only':True,'summary':{'resolved_sample':n,'wins':wins,'losses':n-wins,'win_rate':round(100*wins/n,1) if n else None,'loss_rate':round(100*(n-wins)/n,1) if n else None,'realized_pnl':round(pnl,2),'open_positions':len(positions),'forecast_score':{'resolved_sample':len(fr),'wins':forecast_wins,'flips':forecast_flips,'losses':forecast_losses,'flip_is_tie':True}},'markets':markets,'positions':positions,'disclaimer':'Signal and flip-risk scores are heuristic, not probabilities or guarantees. Forecast WIN/FLIP/LOSS uses resolved paper forecasts; FLIP is neutral. Paper trading only.'}
     Path('docs').mkdir(exist_ok=True)
     Path('docs/data.json').write_text(json.dumps(data,indent=2),encoding='utf-8')
 def market_embeds(lines):
