@@ -19,6 +19,7 @@ YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 SCAN_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "15"))
+SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "120"))
 STAKE = float(os.getenv("PAPER_STAKE_USD", "2"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_USD", "8"))
 MAX_OPEN = int(os.getenv("MAX_OPEN_PAPER_TRADES", "4"))
@@ -57,11 +58,11 @@ def send(text, embed=None):
     except Exception as e: print(f"Discord send failed: {type(e).__name__}: {e}"); return False
 
 def send_signal_once(c, key, message):
-    """Send one paper signal per market/side; avoid repeating it every scan loop."""
+    """Repeat a current paper signal only after its cooldown; avoid scan-loop spam."""
     row=c.execute("SELECT sent_at FROM signal_alerts WHERE alert_key=?",(key,)).fetchone()
-    if row: return False
+    if row and time.time()-float(row["sent_at"])<SIGNAL_REPEAT_SECONDS: return False
     if send(message):
-        c.execute("INSERT OR REPLACE INTO signal_alerts(alert_key,sent_at) VALUES(?,?)",(key,time.time()))
+        c.execute("INSERT INTO signal_alerts(alert_key,sent_at) VALUES(?,?) ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",(key,time.time()))
         c.commit()
         print(f"Discord paper signal sent: {key}",flush=True)
         return True
@@ -575,7 +576,7 @@ def cycle(c):
                     risk=flip_risk(tech,side)
                     strength=max(5,min(95,50+abs(int(tech["score"]))*8-risk//4))
                     signal_status="PAPER ENTRY READY" if action.startswith("PAPER ENTRY") else "WATCH · NO ENTRY"
-                    signal_key=f"signal-change:{asset}:{tf}:{m.get('id')}:{side}:{tech['score']}"
+                    signal_key=f"signal-change:{asset}:{tf}:{m.get('id')}:{side}"
                     signal_message=(
                         f"📡 **{asset} {tf}m · {side} {signal_status}**\n"
                         f"Signal strength: **{strength}%** · {tech['score']:+d}/5 votes\n"
