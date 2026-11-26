@@ -379,7 +379,7 @@ def maybe_enter(c, asset, tf, m, tech):
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · BRAIN 2 {brain['label']}"
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · COURT: {brain['debate']}"
 
 
 def resolve_calls(c):
