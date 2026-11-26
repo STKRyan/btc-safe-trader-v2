@@ -786,13 +786,22 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
     """Build the branded BTC SIGNAL TERMINAL dashboard for one market window."""
     minutes = 15 if int(minutes) == 15 else 5
-    open_rows = conn.execute(
-        "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
-        "FROM paper_trades WHERE status='OPEN' AND timeframe=? "
-        "ORDER BY id DESC LIMIT 5", (minutes,)
-    ).fetchall()
-    pnl = daily_closed_pnl(conn, minutes)
-    perf = recent_paper_performance(conn, 20, minutes)
+    if minutes == 15:
+        open_rows = conn.execute(
+            "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
+            "FROM paper_trades WHERE status='OPEN' AND timeframe=15 "
+            "ORDER BY id DESC LIMIT 5"
+        ).fetchall()
+        pnl = daily_closed_pnl(conn, 15)
+        perf = recent_paper_performance(conn, 20, 15)
+    else:
+        # Preserve the existing 5-minute terminal's original combined display.
+        open_rows = conn.execute(
+            "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
+            "FROM paper_trades WHERE status='OPEN' ORDER BY id DESC LIMIT 5"
+        ).fetchall()
+        pnl = daily_closed_pnl(conn)
+        perf = recent_paper_performance(conn, 20)
     side = str(tech.get("side", "NEUTRAL"))
     second = str(opinions.get("side", "WAIT"))
     confirmed = bool(opinions.get("agrees"))
