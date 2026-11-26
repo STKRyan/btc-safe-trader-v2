@@ -337,20 +337,20 @@ def write_site_data(c, lines):
 def market_embeds(lines):
     import re
     result=[]
-    pattern=re.compile(r'\\*\\*(BTC|ETH) (5|15)m\\*\\* · \\*\\*(UP|DOWN|WAIT)\\*\\* \\(([+-]?\\d+)/5\\) · RSI (\\d+) · 1m ([+-]?\\d+\\.\\d+)% · 3m ([+-]?\\d+\\.\\d+)%')
+    pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \\(([+-]?\\d+)/5\\) · RSI (\\d+) · 1m ([+-]?\\d+\\.\\d+)% · 3m ([+-]?\\d+\\.\\d+)%')
     for raw in lines:
-        first=raw.split('\\n',1)[0]
+        first=raw.split('\n',1)[0]
         match=pattern.search(first)
         if not match: continue
         asset,tf,side,score,rsi,m1,m3=match.groups()
         tech={'score':int(score),'move1':float(m1),'move3':float(m3),'rsi':float(rsi)}
         risk=flip_risk(tech,side)
-        body=raw.split('\\n',1)[1] if '\\n' in raw else 'No action detail'
+        body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
         if risk>=70: level='HIGH · reversal warning'
         elif risk>=45: level='MODERATE · stay alert'
         else: level='LOWER · signal currently aligned'
         color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\\n**{int(score):+d}/5 votes**','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\\n3m **{float(m3):+.3f}%**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · flip risk is a heuristic estimate, not probability'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · flip risk is a heuristic estimate, not probability'}})
     return result
 
 def dashboard(c, lines):
@@ -358,12 +358,12 @@ def dashboard(c, lines):
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
     opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
-    desc='\\n'.join(lines)[:2500] or 'No matching active markets found.'
+    desc='\n'.join(lines)[:2500] or 'No matching active markets found.'
     scores=[max(-5,min(5,int(r['score']))) for r in reversed(rows)]
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
     write_site_data(c,lines)
-    print('\\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\\n',flush=True)
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\\nBTC + ETH · 5m and 15m\\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nBTC + ETH · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(lines)
     send('',[summary]+cards[:9])
 def cycle(c):
