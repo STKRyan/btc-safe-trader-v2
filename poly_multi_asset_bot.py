@@ -590,10 +590,14 @@ def publish_board(c, embeds):
         if message_id:
             response=S.patch(webhook.rstrip("/")+"/messages/"+message_id,json=payload,timeout=12)
             if response.status_code!=404:
-                response.raise_for_status()
+                if not response.ok:
+                    print(f"Discord board PATCH rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
+                    response.raise_for_status()
                 return
         response=S.post(webhook+"?wait=true",json=payload,timeout=12)
-        response.raise_for_status()
+        if not response.ok:
+            print(f"Discord board POST rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
+            response.raise_for_status()
         new_id=str(response.json().get("id",""))
         if new_id:
             c.execute("INSERT INTO bot_state(key,value) VALUES('multi_dashboard_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(new_id,))
@@ -630,12 +634,14 @@ def dashboard(c, lines):
             action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
             court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'⚖️ Courtroom evidence is being collected.')
             scalp=next((x.get('value','') for x in cf if x.get('name','').startswith('SCALP SETUP')),'')
-            compact='\n'.join([f'**{action_line[:170]}**',signal[:90],hold[:115],flip[:130],court[:220],('⚡ '+scalp[:140] if scalp else '')]).strip()
-            market_fields.append({'name':card['title'][:256],'value':compact[:1000],'inline':True})
-    market_fields=market_fields[:10]
+            compact='\n'.join([f'**{action_line[:100]}**',signal[:65],hold[:75],flip[:85],court[:120],('⚡ '+scalp[:70] if scalp else '')]).strip()
+            market_fields.append({'name':card['title'][:90],'value':compact[:420],'inline':True})
+    # Discord caps all embeds in one message at 6000 total characters.
+    # Keep the board comfortably below that limit so PATCH succeeds.
+    market_fields=market_fields[:5]
     # One compact, color-coded radar message is edited in place each scan.
     radar={'title':'⚡ CRYPTO RADAR · BTC FIRST · COURTROOM EDITION','description':'**LIVE PAPER BOARD** · Calls, courtroom verdicts, scalp status and flip-risk gauges update in this same message.\nBTC first · 5m / 15m · no real orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · signal/hold/flip meters are heuristics, not win probabilities'}}
-    pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
+    pos_fields=[{'name':p.get('title','Open paper position')[:90],'value':p.get('description','')[:180],'inline':True} for p in positions[:6]]
     pos={'title':'POSITION BOARD · HOLD / EXIT','color':0xffc86b,'fields':pos_fields or [{'name':'NO OPEN PAPER POSITIONS','value':'Waiting for a qualified setup.','inline':False}]}
     publish_board(c,[summary,radar,pos])
 def cycle(c):
