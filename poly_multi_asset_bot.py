@@ -304,7 +304,7 @@ def resolve_calls(c):
             pnl=float(r["realized_pnl"] or 0.0)+payout-(rem*float(r["entry"]))
             c.execute("UPDATE calls SET status='RESOLVED',result=?,pnl=?,remaining_qty=0,resolved_at=? WHERE id=?",("WIN" if pnl>0 else "LOSS",pnl,iso(),r["id"]))
             c.commit()
-            send(f"{'🟢' if won else '🔴'} **PAPER RESULT · {r['asset']} {r['timeframe']}m {r['side']}**\nResult: {'WIN' if won else 'LOSS'} · Simulated P/L: **${pnl:+.2f}**\nLearning sample updated. No real order was placed.")
+            # Result is reflected in the single dashboard; no separate Discord alert.
         except Exception as e:print(f"Resolve check {r['market_id']}: {type(e).__name__}: {e}")
 
 
@@ -336,7 +336,7 @@ def manage_open_calls(c, asset, tech):
                    "EXIT" if closed else None,iso() if closed else None,r["id"]))
                 c.commit()
             if action!=r["last_action"]:
-                send(f"📣 **{asset} {r['timeframe']}m {r['side']} PAPER POSITION**\n**{action}** · entry {entry:.3f} · bid {bid:.3f} · ROI {roi*100:+.2f}%\nHold/flip check: {aligned:+d} aligned votes · simulated only")
+                # Position changes appear on the dashboard, not as separate alerts.
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
@@ -363,6 +363,27 @@ def pct_bar(value, width=12):
 def score_bar(score, width=10):
     filled=round(abs(int(score))*width/5)
     return '▰'*filled+'▱'*(width-filled)
+
+def line_asset(raw):
+    import re
+    m=re.search(r"\*\*([A-Z0-9]{2,12}) (?:5|15)m\*\*",raw)
+    return m.group(1) if m else None
+
+def select_top_assets(lines):
+    """Choose BTC plus the four strongest other assets; retain both timeframes."""
+    import re
+    scores={}
+    verified=set()
+    for raw in lines:
+        asset=line_asset(raw)
+        if not asset or "MARKET NOT FOUND" in raw or "FEED ERROR" in raw or "SCAN ERROR" in raw:
+            continue
+        m=re.search(r"\(([+-]?\d+)/5\)",raw)
+        if not m: continue
+        scores[asset]=max(scores.get(asset,0),abs(int(m.group(1))))
+        verified.add(asset)
+    ranked=sorted((a for a in verified if a!="BTC"),key=lambda a:(-scores.get(a,0),a))
+    return set((["BTC"] if "BTC" in verified else [])+ranked[:4])
 
 def write_site_data(c, lines):
     import re
@@ -480,13 +501,15 @@ def dashboard(c, lines):
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
     opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
-    desc='\n'.join(lines)[:2500] or 'No matching active markets found.'
+    desc='\n'.join(display_lines)[:2500] or 'No matching active markets found.'
     scores=[max(-5,min(5,int(r['score']))) for r in reversed(rows)]
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
-    write_site_data(c,lines)
+    top_assets=select_top_assets(lines)
+    display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
+    write_site_data(c,display_lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
     summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · Win {100*wins/n:.1f}% · Loss {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
-    cards=market_embeds(lines); positions=position_embeds(c)
+    cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     market_fields=[]
     for card in cards:
@@ -496,7 +519,7 @@ def dashboard(c, lines):
             signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
             flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
             market_fields.append({'name':card['title'][:256],'value':(detail[:350]+'\n'+signal[:100]+'\n'+flip[:150])[:900],'inline':True})
-    market_fields=market_fields[:25]
+    market_fields=market_fields[:10]
     radar={'title':'CRYPTO RADAR · BTC FIRST · 5m / 15m','description':'Each cell is one coin/timeframe. BTC is listed first; no live orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · flip risk is heuristic, not probability'}}
     pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
     pos={'title':'POSITION BOARD · HOLD / EXIT','color':0xffc86b,'fields':pos_fields or [{'name':'NO OPEN PAPER POSITIONS','value':'Waiting for a qualified setup.','inline':False}]}
@@ -540,14 +563,14 @@ def main():
     p=argparse.ArgumentParser(description="Polymarket multi-asset paper scanner")
     p.add_argument("--duration",type=int,default=0,help="0 runs continuously")
     args=p.parse_args(); c=db()
-    send("🤖 **SIGNALFORGE PAPER DESK ONLINE**\n15 crypto tickers · 5m / 15m\nFlip-risk bars and paper calls. Real-money orders are disabled.")
+    print("SignalForge dashboard scanner online · top five assets · paper only",flush=True)
     start=time.time()
     try:
         while True:
             try:cycle(c)
             except Exception as e:
                 print(f"Cycle error: {type(e).__name__}: {e}")
-                send(f"⚠️ **Scanner cycle error** · `{type(e).__name__}: {str(e)[:180]}`")
+                print(f"Cycle error (dashboard will show next successful scan): {type(e).__name__}: {str(e)[:180]}",flush=True)
             if args.duration and time.time()-start>=args.duration:break
             time.sleep(max(5,SCAN_SECONDS))
     finally:c.close()
