@@ -34,6 +34,14 @@ jobs:
           restore-keys: |
             paper-journal-${{ github.ref_name }}-
 
+      - name: Restore shared learning journal
+        uses: actions/cache/restore@v4
+        with:
+          path: data/shared_learning.json
+          key: signalforge-shared-learning-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            signalforge-shared-learning-${{ github.ref_name }}-
+
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
@@ -53,6 +61,13 @@ jobs:
         run: |
           mkdir -p data
           python poly_multi_asset_bot.py --duration 180
+
+      - name: Save shared learning journal
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/shared_learning.json
+          key: signalforge-shared-learning-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Publish dashboard snapshot
         if: always()
