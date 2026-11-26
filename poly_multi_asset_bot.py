@@ -56,6 +56,17 @@ def send(text, embed=None):
         r=S.post(WEBHOOK, json=payload, timeout=12); r.raise_for_status(); return True
     except Exception as e: print(f"Discord send failed: {type(e).__name__}: {e}"); return False
 
+def send_signal_once(c, key, message):
+    """Send one paper signal per market/side; avoid repeating it every scan loop."""
+    row=c.execute("SELECT sent_at FROM signal_alerts WHERE alert_key=?",(key,)).fetchone()
+    if row: return False
+    if send(message):
+        c.execute("INSERT OR REPLACE INTO signal_alerts(alert_key,sent_at) VALUES(?,?)",(key,time.time()))
+        c.commit()
+        print(f"Discord paper signal sent: {key}",flush=True)
+        return True
+    return False
+
 
 def db():
     c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row
@@ -74,6 +85,8 @@ def db():
       market_id TEXT NOT NULL, side TEXT NOT NULL, score INTEGER NOT NULL,
       features TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS bot_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS signal_alerts(
+      alert_key TEXT PRIMARY KEY, sent_at REAL NOT NULL);
     """)
     # Safe additive migrations for databases created by an earlier draft.
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
@@ -545,6 +558,15 @@ def cycle(c):
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
                 save_observation(c,asset,tf,m,tech)
                 action=maybe_enter(c,asset,tf,m,tech)
+                if tech.get("side") in ("UP","DOWN"):
+                    market_key=str(m.get("id") or m.get("slug") or f"{asset}-{tf}-{int(time.time())//(tf*60)}")
+                    signal_key=f"{asset}:{tf}:{market_key}:{tech['side']}"
+                    send_signal_once(
+                        c, signal_key,
+                        f"📡 PAPER SIGNAL · {asset} {tf}m · {tech['side']} ({tech['score']:+d}/5)\\n"
+                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\\n"
+                        f"{action}\\nNo real orders are placed."
+                    )
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
                 scalp=scalp_call(asset,tf,m,tech)
