@@ -3,7 +3,7 @@ name: Multi-Asset Paper Scanner
 on:
   schedule:
     # Conservative cadence for GitHub Actions Free usage.
-    - cron: "17 */2 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -60,7 +60,7 @@ jobs:
           MAX_SPREAD: "0.035"
         run: |
           mkdir -p data
-          python poly_multi_asset_bot.py --duration 180
+          python poly_multi_asset_bot.py --duration 600
 
       - name: Save shared learning journal
         if: always()
