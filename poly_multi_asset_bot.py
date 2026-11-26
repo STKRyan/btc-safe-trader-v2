@@ -371,7 +371,7 @@ def position_embeds(c):
             else: action='HOLD'; reason='No exit threshold currently triggered. Re-check next scan.'
             color=0x42dba8 if action=='HOLD' else (0xffc45c if 'SELL' in action or 'PROFIT' in action else 0xff657d)
             roi_text='—' if roi is None else f'{roi:+.2f}%'
-            result.append({'title':f'OPEN PAPER · {r["asset"]} {r["timeframe"]}m · {r["side"]}','description':f'**{action}**\\n{reason}','color':color,'fields':[{'name':'PAPER RETURN','value':roi_text,'inline':True},{'name':'ENTRY / BID','value':f'{entry:.3f} / {bid:.3f}' if bid is not None else f'{entry:.3f} / unavailable','inline':True},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**','inline':False}],'footer':{'text':'Simulated position · no real order'}})
+            result.append({'title':f'OPEN PAPER · {r["asset"]} {r["timeframe"]}m · {r["side"]}','description':f'**{action}**\n{reason}','color':color,'fields':[{'name':'PAPER RETURN','value':roi_text,'inline':True},{'name':'ENTRY / BID','value':f'{entry:.3f} / {bid:.3f}' if bid is not None else f'{entry:.3f} / unavailable','inline':True},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**','inline':False}],'footer':{'text':'Simulated position · no real order'}})
         except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
     return result
 
