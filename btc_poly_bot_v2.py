@@ -447,7 +447,8 @@ def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20) -> dict:
     wins = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) > 0)
     losses = sum(1 for row in rows if float(row["realized_pnl"] or 0.0) < 0)
     return {"count": count, "wins": wins, "losses": losses,
-            "win_rate": (100.0 * wins / count) if count else None}
+            "win_rate": (100.0 * wins / count) if count else None,
+            "loss_rate": (100.0 * losses / count) if count else None}
 
 
 def suggested_hold_window(minutes: int, score: int, flip: int) -> str:
@@ -829,7 +830,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     ]
 
     perf_text = (
-        f"**{perf['wins']}W · {perf['losses']}L** 　`{perf['win_rate']:.0f}% wins`\n"
+        f"**{perf['wins']}W · {perf['losses']}L** 　`Win {perf['win_rate']:.0f}% · Loss {perf['loss_rate']:.0f}%`\n"
         if perf['count'] else "`Collecting completed paper trades`\n"
     )
     perf_text += f"Today P/L  **${pnl:+.2f}**\nOpen positions  **{len(open_rows)}**"
@@ -1019,7 +1020,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     hold_window = suggested_hold_window(minutes, int(tech["score"]), signal_flip)
     performance_line = (
         f"📚 LAST {performance['count']} PAPER: {performance['wins']}W/{performance['losses']}L · "
-        f"{performance['win_rate']:.0f}%"
+        f"Win {performance['win_rate']:.0f}% · Loss {performance['loss_rate']:.0f}%"
         if performance["count"] else "📚 PAPER TRACK RECORD: building sample"
     )
     if reasons:
