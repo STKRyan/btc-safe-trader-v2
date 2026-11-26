@@ -33,6 +33,6 @@ services:
       - key: BTC_CHART_STATE_PATH
         value: /opt/render/project/src/data/btc_chart_state.json
       - key: BTC_CHART_UPDATE_SECONDS
-        value: "30"
+        value: "15"
       - key: DISCORD_BTC_CHART_WEBHOOK_URL
         sync: false
