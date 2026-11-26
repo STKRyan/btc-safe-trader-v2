@@ -1,0 +1,51 @@
+{
+  "updated_at": "2026-11-26T09:51:43.877496+00:00",
+  "paper_only": true,
+  "summary": {
+    "resolved_sample": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": null,
+    "loss_rate": null,
+    "realized_pnl": 0.0,
+    "open_positions": 0
+  },
+  "markets": [
+    {
+      "asset": "BTC",
+      "timeframe": 5,
+      "side": "WAIT",
+      "primary_side": "DOWN",
+      "second_brain": "WAIT",
+      "action": "SIT OUT / WAIT",
+      "score": -1,
+      "risk": 42,
+      "risk_label": "LOW",
+      "rsi": 49.44534778681124,
+      "move1_pct": 0.030400234126193304,
+      "move3_pct": -0.06883774101833495,
+      "move10_pct": -0.027737031253616262,
+      "range_position": 67.43416699748488,
+      "scalp": "See BTC bot Discord dashboard for active scalp details."
+    },
+    {
+      "asset": "BTC",
+      "timeframe": 15,
+      "side": "WAIT",
+      "primary_side": "DOWN",
+      "second_brain": "WAIT",
+      "action": "SIT OUT / WAIT",
+      "score": -1,
+      "risk": 42,
+      "risk_label": "LOW",
+      "rsi": 49.44534778681124,
+      "move1_pct": 0.030400234126193304,
+      "move3_pct": -0.06883774101833495,
+      "move10_pct": -0.027737031253616262,
+      "range_position": 67.43416699748488,
+      "scalp": "See BTC bot Discord dashboard for active scalp details."
+    }
+  ],
+  "scalp": null,
+  "disclaimer": "BTC bot signal is rule-based paper guidance, not guaranteed prediction."
+}
