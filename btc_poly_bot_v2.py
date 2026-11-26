@@ -848,6 +848,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
                 f"**1m** `{float(tech.get('move1',0)):+.3f}%`  "
                 f"**3m** `{float(tech.get('move3',0)):+.3f}%`\n"
                 f"**10m** `{float(tech.get('move10',0)):+.3f}%`  "
+                f"**20-candle range** `{float(tech.get('range_position',50)):.0f}% from low`\n"
                 f"**Votes** `{score:+d}/5`"
             ),
             "inline": True,
@@ -1080,7 +1081,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{gauge_bar(scalp_fit)}</code>\n"
         f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
         f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
-        f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}%\n"
+        f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}% · 20-candle range {float(tech.get('range_position',50)):.0f}% from low\n"
         f"ASK ${ask:.3f} · BID ${stats['bid']:.3f} · DEPTH ${stats['depth']:.0f}\n"
         f"EDGE {edge*100:+.1f}pp\n"
         f"SECOND BRAIN: {opinions['side']} · {opinions['label']}\n"
