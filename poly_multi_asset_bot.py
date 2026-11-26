@@ -501,14 +501,14 @@ def dashboard(c, lines):
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
     opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
+    top_assets=select_top_assets(lines)
+    display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
     desc='\n'.join(display_lines)[:2500] or 'No matching active markets found.'
     scores=[max(-5,min(5,int(r['score']))) for r in reversed(rows)]
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
-    top_assets=select_top_assets(lines)
-    display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
     write_site_data(c,display_lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · Win {100*wins/n:.1f}% · Loss {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nMulti-crypto · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     market_fields=[]
