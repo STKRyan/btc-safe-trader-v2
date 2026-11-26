@@ -88,6 +88,14 @@ def db():
     CREATE TABLE IF NOT EXISTS bot_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS signal_alerts(
       alert_key TEXT PRIMARY KEY, sent_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS forecast_journal(
+      market_id TEXT NOT NULL, timeframe INTEGER NOT NULL, slug TEXT NOT NULL,
+      asset TEXT NOT NULL, initial_side TEXT NOT NULL, current_side TEXT NOT NULL,
+      flip_count INTEGER NOT NULL DEFAULT 0, side_history TEXT NOT NULL DEFAULT '[]',
+      features TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'OPEN',
+      outcome TEXT, winning_side TEXT, last_seen REAL NOT NULL,
+      last_check REAL NOT NULL DEFAULT 0, resolved_at TEXT,
+      PRIMARY KEY(market_id,timeframe));
     """)
     # Safe additive migrations for databases created by an earlier draft.
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
@@ -204,6 +212,16 @@ def shared_learning_data():
     try: return json.loads(Path("data/shared_learning.json").read_text(encoding="utf-8"))
     except Exception: return {}
 
+def btc_peer_summary():
+    """Use the original BTC bot's published results as a conservative peer signal."""
+    try:
+        data=json.loads(Path("docs/data_btc.json").read_text(encoding="utf-8"))
+        updated=datetime.fromisoformat(str(data.get("updated_at","")).replace("Z","+00:00"))
+        if (now()-updated).total_seconds()>14400: return {}
+        s=data.get("summary",{}); n=int(s.get("resolved_sample",0) or 0); wr=s.get("win_rate")
+        return {"sample":n,"win_rate":float(wr) if wr is not None else None,"source":"original BTC dashboard","updated_at":data.get("updated_at")}
+    except Exception: return {}
+
 def update_shared_learning(c, bot="multi"):
     rows=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
     n=len(rows); wins=sum(float(r["pnl"] or 0)>0 for r in rows); losses=sum(float(r["pnl"] or 0)<0 for r in rows)
@@ -214,15 +232,64 @@ def update_shared_learning(c, bot="multi"):
     Path("data/shared_learning.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
 
 def learning_adjustment(c, asset, tf):
-    rows=c.execute("SELECT pnl FROM calls WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY id DESC LIMIT 30",(asset,tf)).fetchall()
-    n=len(rows)
-    peer=shared_learning_data().get("btc",{})
+    rows=c.execute("SELECT outcome FROM forecast_journal WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY resolved_at DESC LIMIT 30",(asset,tf)).fetchall()
+    n=len(rows); peer=btc_peer_summary() or shared_learning_data().get("btc",{})
     peer_pause=peer.get("sample",0)>=10 and peer.get("win_rate") is not None and peer.get("win_rate")<45
-    if n<12:return {"sample":n,"threshold":5 if peer_pause else 4,"pause":peer_pause,"win_rate":None,"peer":peer}
-    wins=sum(float(r["pnl"])>0 for r in rows); wr=100*wins/n
-    # Both bots' resolved paper results can tighten filters; never loosen base safety.
-    return {"sample":n,"threshold":5 if wr<52 or peer_pause else 4,"pause":wr<42 or peer_pause,"win_rate":wr,"peer":peer}
+    if n>=12:
+        wins=sum(r["outcome"]=="WIN" for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
+        flips=sum(r["outcome"]=="FLIP" for r in rows); decisive=wins+losses
+        wr=100*wins/decisive if decisive else None
+        weak=wr is not None and wr<52
+        return {"sample":n,"threshold":5 if weak or peer_pause else 4,"pause":(wr is not None and wr<42) or peer_pause,"win_rate":wr,"flips":flips,"peer":peer}
+    old=c.execute("SELECT pnl FROM calls WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY resolved_at DESC LIMIT 30",(asset,tf)).fetchall()
+    old_n=len(old); old_w=sum(float(r["pnl"] or 0)>0 for r in old); old_wr=100*old_w/old_n if old_n else None
+    weak=old_n>=12 and old_wr<52
+    return {"sample":n,"threshold":5 if peer_pause or weak else 4,"pause":peer_pause or (old_n>=12 and old_wr<42),"win_rate":old_wr,"peer":peer}
 
+
+def record_forecast(c, market, asset, tf, side, features):
+    """Track first call and every direction change for each market window."""
+    if side not in ("UP","DOWN"): return
+    market_id=str(market.get("id","")); slug=str(market.get("slug",""))
+    if not market_id: return
+    row=c.execute("SELECT * FROM forecast_journal WHERE market_id=? AND timeframe=?",(market_id,tf)).fetchone()
+    stamp=time.time()
+    if row is None:
+        history=[{"side":side,"at":iso()}]
+        c.execute("INSERT OR IGNORE INTO forecast_journal(market_id,timeframe,slug,asset,initial_side,current_side,flip_count,side_history,features,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",(market_id,tf,slug,asset,side,side,0,json.dumps(history),json.dumps(features),stamp))
+    else:
+        current=row["current_side"]; flips=int(row["flip_count"])
+        try: history=json.loads(row["side_history"] or "[]")
+        except Exception: history=[]
+        if side!=current:
+            flips+=1; history.append({"side":side,"at":iso()}); history=history[-30:]
+            print(f"Forecast flip tracked: {asset} {tf}m {current} -> {side} (flip {flips})",flush=True)
+        c.execute("UPDATE forecast_journal SET current_side=?,flip_count=?,side_history=?,features=?,last_seen=? WHERE market_id=? AND timeframe=?",(side,flips,json.dumps(history),json.dumps(features),stamp,market_id,tf))
+    c.commit()
+
+def resolve_forecasts(c):
+    """Resolve expired forecasts; correct final direction after a flip is a neutral FLIP."""
+    rows=c.execute("SELECT * FROM forecast_journal WHERE status='OPEN' ORDER BY last_seen DESC LIMIT 120").fetchall()
+    stamp=time.time()
+    for row in rows:
+        try:
+            try: market_start=int(row["slug"].rsplit("-",1)[1])
+            except Exception: continue
+            if stamp < market_start+int(row["timeframe"])*60+15: continue
+            if stamp-float(row["last_check"] or 0)<180: continue
+            c.execute("UPDATE forecast_journal SET last_check=? WHERE market_id=? AND timeframe=?",(stamp,row["market_id"],row["timeframe"])); c.commit()
+            data=get(f"{GAMMA}/markets/{row['market_id']}")
+            if not data.get("closed"): continue
+            outcomes=jlist(data.get("outcomes")); prices=jlist(data.get("outcomePrices"))
+            mapping={str(o).lower():float(p) for o,p in zip(outcomes,prices)}
+            winning="UP" if mapping.get("up",mapping.get("yes",0))>=0.99 else "DOWN" if mapping.get("down",mapping.get("no",0))>=0.99 else None
+            if not winning: continue
+            correct=row["current_side"]==winning
+            outcome="FLIP" if correct and int(row["flip_count"])>0 else "WIN" if correct else "LOSS"
+            c.execute("UPDATE forecast_journal SET status='RESOLVED',outcome=?,winning_side=?,resolved_at=? WHERE market_id=? AND timeframe=?",(outcome,winning,iso(),row["market_id"],row["timeframe"]))
+            c.commit()
+            print(f"Forecast resolved: {row['asset']} {row['timeframe']}m {outcome} · flips={row['flip_count']}",flush=True)
+        except Exception as e: print(f"Forecast resolve {row['market_id']}: {type(e).__name__}: {e}",flush=True)
 
 def save_observation(c, asset, tf, m, tech):
     c.execute("INSERT INTO observations(asset,timeframe,market_id,side,score,features,created_at) VALUES(?,?,?,?,?,?,?)",
@@ -230,19 +297,33 @@ def save_observation(c, asset, tf, m, tech):
 
 
 def second_brain(tech, stats, side):
-    """Independent confirmation brain: momentum, RSI and order-book pressure."""
-    if side not in ("UP","DOWN"): return {"agrees":False,"label":"No clear direction","score":0}
+    """Explainable courtroom-style evidence check; rule-based, not an AI oracle."""
+    if side not in ("UP","DOWN"):
+        return {"agrees":False,"label":"NO VERDICT · WAIT","score":0,"debate":"No directional case; WAIT."}
     sign=1 if side=="UP" else -1
-    votes=[1 if float(tech.get("move1",0))*sign>0 else -1,
-           1 if float(tech.get("move3",0))*sign>0 else -1]
-    rsi=float(tech.get("rsi",50))
-    votes.append(1 if (38<=rsi<=68 if side=="UP" else 32<=rsi<=62) else -1)
-    votes.append(1 if float(stats.get("imbalance",0))*sign>=-0.05 else -1)
-    range_pos=tech.get("range_position")
-    if range_pos is not None:
-        votes.append(-1 if (side=="UP" and float(range_pos)>=90) or (side=="DOWN" and float(range_pos)<=10) else 1 if (side=="UP" and float(range_pos)<=20) or (side=="DOWN" and float(range_pos)>=80) else 0)
-    score=sum(votes)
-    return {"agrees":score>=2,"label":"CONFIRMS" if score>=2 else "DISAGREES · SIT OUT","score":score}
+    m1=float(tech.get("move1",0)); m3=float(tech.get("move3",0)); m10=float(tech.get("move10",0))
+    rsi=float(tech.get("rsi",50)); vr=float(tech.get("volume_ratio",0)); imbalance=float(stats.get("imbalance",0))*sign
+    pos=tech.get("range_position"); support=[]; objections=[]
+    if m1*sign>0 and m3*sign>0: support.append("1m/3m momentum aligned")
+    else: objections.append("short momentum conflicts")
+    if m10*sign>0: support.append("10m trend supports")
+    else: objections.append("10m trend unconfirmed")
+    if (38<=rsi<=68 if side=="UP" else 32<=rsi<=62): support.append("RSI in workable zone")
+    elif (side=="UP" and rsi>=72) or (side=="DOWN" and rsi<=28): objections.append("RSI stretched")
+    else: objections.append("RSI outside confirmation zone")
+    if vr>=1.10 and m3*sign>0: support.append("volume confirms momentum")
+    else: objections.append("volume confirmation missing")
+    if imbalance>=0.05: support.append("order-book pressure supports")
+    elif imbalance<=-0.10: objections.append("order-book pressure opposes")
+    else: objections.append("book pressure weak/neutral")
+    if pos is not None:
+        p=float(pos)
+        if (side=="UP" and p>=90) or (side=="DOWN" and p<=10): objections.append("price near range exhaustion")
+        elif (side=="UP" and p<=25) or (side=="DOWN" and p>=75): support.append("price location leaves room")
+    score=len(support)-len(objections); agrees=score>=2 and len(support)>=3
+    verdict="DEFENSE WINS · CONFIRMED" if agrees else "PROSECUTION WINS · WAIT"
+    debate=f"FOR: {', '.join(support[:3]) or 'no strong evidence'} | AGAINST: {', '.join(objections[:3]) or 'no strong objection'} | VERDICT: {verdict}"
+    return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT","score":score,"debate":debate}
 
 def scalp_call(asset, tf, market, tech):
     """Readable 5m scalp idea only when momentum and liquidity are aligned."""
@@ -291,7 +372,7 @@ def maybe_enter(c, asset, tf, m, tech):
     if pnl<=-DAILY_LOSS_LIMIT:reasons.append("daily paper loss limit reached")
     open_n=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
-    if reasons:return "WAIT · "+"; ".join(reasons)
+    if reasons:return "WAIT · "+"; ".join(reasons)+" · COURT: "+brain["debate"]
     qty=STAKE/stats["ask"]
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -302,6 +383,7 @@ def maybe_enter(c, asset, tf, m, tech):
 
 
 def resolve_calls(c):
+    resolve_forecasts(c)
     rows=c.execute("SELECT * FROM calls WHERE status='OPEN'").fetchall()
     for r in rows:
         try:
@@ -567,6 +649,7 @@ def cycle(c):
                 if not m:
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
                 save_observation(c,asset,tf,m,tech)
+                record_forecast(c,m,asset,tf,tech.get("side","WAIT"),tech)
                 action=maybe_enter(c,asset,tf,m,tech)
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
