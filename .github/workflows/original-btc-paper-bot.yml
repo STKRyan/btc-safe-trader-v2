@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: original-btc-paper-bot
@@ -51,6 +51,20 @@ jobs:
         run: |
           mkdir -p data
           python btc_poly_bot_v2.py --duration 180
+
+      - name: Publish original BTC dashboard snapshot
+        if: always()
+        run: |
+          if [ -f docs/data_btc.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add docs/data_btc.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Refresh original BTC dashboard data"
+              git pull --rebase origin main
+              git push
+            fi
+          fi
 
       - name: Save shared learning journal
         if: always()
