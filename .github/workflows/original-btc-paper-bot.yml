@@ -57,7 +57,7 @@ jobs:
           BTC_BOT_DB: data/btc_poly_v2.sqlite3
         run: |
           mkdir -p data
-          python btc_poly_bot_v2.py --duration 600
+          python btc_poly_bot_v2.py --duration 720
 
       - name: Publish original BTC dashboard snapshot
         if: always()
