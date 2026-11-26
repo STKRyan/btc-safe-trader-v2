@@ -53,6 +53,28 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile poly_multi_asset_bot.py
 
+      - name: Verify multi-asset Discord destination safely
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MULTI_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not url:
+              print("Multi-asset Discord destination check: webhook secret is missing")
+              raise SystemExit(0)
+          try:
+              with urllib.request.urlopen(url, timeout=10) as response:
+                  data = json.load(response)
+              print("Multi-asset Discord destination: channel_name=%s channel_id=%s webhook_name=%s" % (
+                  data.get("channel_name", "unknown"), data.get("channel_id", "unknown"),
+                  data.get("name", "unknown")))
+          except urllib.error.HTTPError as error:
+              print("Multi-asset Discord destination check failed: HTTP %s" % error.code)
+          except Exception as error:
+              print("Multi-asset Discord destination check failed: %s" % type(error).__name__)
+          PY
+
       - name: Run paper-only scanner
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MULTI_WEBHOOK_URL }}
