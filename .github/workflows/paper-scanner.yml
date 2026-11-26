@@ -78,15 +78,36 @@ jobs:
         if: always()
         run: |
           if [ -f docs/data.json ]; then
+            cp docs/data.json "$RUNNER_TEMP/paper-dashboard-data.json"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add docs/data.json
-            if ! git diff --cached --quiet; then
+
+            # Start each publish attempt from the latest main. This avoids
+            # rebasing conflicting generated JSON from overlapping bot runs.
+            for attempt in 1 2 3; do
+              git fetch origin main
+              git reset --hard origin/main
+              cp "$RUNNER_TEMP/paper-dashboard-data.json" docs/data.json
+              git add docs/data.json
+
+              if git diff --cached --quiet; then
+                echo "Dashboard data is already current."
+                exit 0
+              fi
+
               git commit -m "Refresh paper dashboard data"
-              git pull --rebase origin main
-              git push
-            fi
+              if git push origin HEAD:main; then
+                echo "Dashboard snapshot published."
+                exit 0
+              fi
+
+              echo "Push raced with another workflow; retrying from latest main (attempt $attempt)."
+            done
+
+            echo "Could not publish dashboard snapshot after 3 attempts."
+            exit 1
           fi
+
       - name: Save paper journal
         if: always()
         uses: actions/cache/save@v4
