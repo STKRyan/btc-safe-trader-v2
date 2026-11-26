@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import requests
+import urllib.parse
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -1035,6 +1036,103 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
     except Exception as exc:
         print(f"Discord dashboard update failed: {type(exc).__name__}: {exc}")
 
+
+def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state_prefix: str, embed: dict, interval: int) -> None:
+    """Create a channel message once, then edit it at a controlled cadence."""
+    webhook = os.getenv(webhook_env, "").strip()
+    if not webhook:
+        return
+    if not (webhook.startswith("https://discord.com/api/webhooks/") or
+            webhook.startswith("https://discordapp.com/api/webhooks/")):
+        print(f"{state_prefix} skipped: invalid Discord webhook URL.")
+        return
+    last_key = state_prefix + "_last_update"
+    message_key = state_prefix + "_message_id"
+    row = conn.execute("SELECT state_value FROM bot_state WHERE state_key=?", (last_key,)).fetchone()
+    try:
+        last_update = float(row["state_value"]) if row else 0.0
+    except (TypeError, ValueError):
+        last_update = 0.0
+    if time.time() - last_update < interval:
+        return
+    row = conn.execute("SELECT state_value FROM bot_state WHERE state_key=?", (message_key,)).fetchone()
+    message_id = row["state_value"] if row else ""
+    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    conn.execute(
+        "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
+        "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+        (last_key, str(time.time())),
+    )
+    conn.commit()
+    try:
+        if message_id:
+            response = SESSION.patch(webhook.rstrip("/") + "/messages/" + message_id,
+                                    json=payload, timeout=HTTP_TIMEOUT)
+            if response.status_code != 404:
+                response.raise_for_status()
+                print(f"{state_prefix} Discord message updated.")
+                return
+        response = SESSION.post(webhook.rstrip("/") + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        new_id = str(response.json().get("id", ""))
+        if new_id:
+            conn.execute(
+                "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                (message_key, new_id),
+            )
+            conn.commit()
+            print(f"{state_prefix} Discord message created; ID saved.")
+    except Exception as exc:
+        print(f"{state_prefix} Discord update failed: {type(exc).__name__}: {exc}")
+
+
+def update_btc_live_channel(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
+    """Mirror the live BTC terminal into a dedicated Discord channel."""
+    embed = _dashboard_embed(conn, tech, opinions)
+    update_btc_channel_message(conn, "DISCORD_BTC_LIVE_WEBHOOK_URL",
+                               "btc_live_dashboard", embed, DISCORD_DASHBOARD_UPDATE_SECONDS)
+
+
+def update_btc_chart_channel(conn: sqlite3.Connection, candles: list[list[float]], tech: dict) -> None:
+    """Update one Discord message with a rolling 60-minute chart image."""
+    if not candles:
+        return
+    recent = candles[-60:]
+    closes = [round(float(c[4]), 2) for c in recent]
+    times = [datetime.fromtimestamp(float(c[0]), timezone.utc).strftime("%H:%M") for c in recent]
+    latest = closes[-1]
+    change = ((latest / closes[0]) - 1.0) * 100.0 if closes[0] else 0.0
+    config = {
+        "type": "line",
+        "data": {"labels": times, "datasets": [{
+            "label": "BTC/USD", "data": closes,
+            "borderColor": "#2ecc71" if change >= 0 else "#e74c3c",
+            "borderWidth": 2, "pointRadius": 0, "fill": False, "tension": 0.15
+        }]},
+        "options": {
+            "plugins": {"legend": {"display": False}},
+            "scales": {"x": {"ticks": {"maxTicksLimit": 8}},
+                       "y": {"title": {"display": True, "text": "BTC price (USD)"}}}
+        }
+    }
+    chart_url = "https://quickchart.io/chart?width=900&height=420&format=png&backgroundColor=white&c=" + urllib.parse.quote(json.dumps(config), safe="")
+    embed = {
+        "title": "BTC LIVE PRICE GRAPH",
+        "description": (
+            f"BTC {latest:,.2f} USD · Rolling 60m: {change:+.2f}%\\n"
+            f"Scanner: {tech.get('side', 'WAIT')} · RSI {float(tech.get('rsi', 50)):.1f}\\n"
+            "1-minute candles · refreshes about every 30 seconds"
+        ),
+        "color": 0x19C37D if change >= 0 else 0xEF4444,
+        "image": {"url": chart_url},
+        "footer": {"text": "BTC price visualization · paper trading only"},
+        "timestamp": utc_now().isoformat()
+    }
+    update_btc_channel_message(conn, "DISCORD_BTC_CHART_WEBHOOK_URL",
+                               "btc_live_chart", embed, 30)
+
+
 def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     market = get_market(minutes)
     if not market:
@@ -1218,6 +1316,8 @@ def main() -> int:
                     except Exception as exc:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
                 update_dashboard(conn, tech, dashboard_opinion)
+                update_btc_live_channel(conn, tech, dashboard_opinion)
+                update_btc_chart_channel(conn, candles, tech)
                 update_shared_learning(conn)
                 print_summary(conn)
             except Exception as exc:
