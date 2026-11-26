@@ -1041,7 +1041,25 @@ def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state
     """Create a channel message once, then edit it at a controlled cadence."""
     webhook = os.getenv(webhook_env, "").strip()
     if not webhook:
+        # Log this once for the chart channel so a missing Render variable
+        # is visible without flooding logs on the 1-second scanner loop.
+        if state_prefix == "btc_live_chart":
+            logged_key = state_prefix + "_missing_webhook_logged"
+            logged = conn.execute(
+                "SELECT state_value FROM bot_state WHERE state_key=?", (logged_key,)
+            ).fetchone()
+            if not logged:
+                print(f"{state_prefix} skipped: {webhook_env} is missing from the running Render environment.")
+                conn.execute(
+                    "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                    (logged_key, "1"),
+                )
+                conn.commit()
         return
+    if state_prefix == "btc_live_chart":
+        conn.execute("DELETE FROM bot_state WHERE state_key=?", (state_prefix + "_missing_webhook_logged",))
+        conn.commit()
     if not (webhook.startswith("https://discord.com/api/webhooks/") or
             webhook.startswith("https://discordapp.com/api/webhooks/")):
         print(f"{state_prefix} skipped: invalid Discord webhook URL.")
