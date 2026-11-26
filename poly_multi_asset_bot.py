@@ -177,13 +177,28 @@ def book_stats(token):
     return {"bid":bid,"ask":ask,"spread":ask-bid,"depth":min(bd,ad),"imbalance":(bd-ad)/max(1,bd+ad)}
 
 
+def shared_learning_data():
+    try: return json.loads(Path("data/shared_learning.json").read_text(encoding="utf-8"))
+    except Exception: return {}
+
+def update_shared_learning(c, bot="multi"):
+    rows=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
+    n=len(rows); wins=sum(float(r["pnl"] or 0)>0 for r in rows); losses=sum(float(r["pnl"] or 0)<0 for r in rows)
+    data=shared_learning_data()
+    data[bot]={"sample":n,"wins":wins,"losses":losses,"win_rate":round(100*wins/n,1) if n else None,"updated_at":iso()}
+    data["updated_at"]=iso()
+    Path("data").mkdir(exist_ok=True)
+    Path("data/shared_learning.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
+
 def learning_adjustment(c, asset, tf):
     rows=c.execute("SELECT pnl FROM calls WHERE asset=? AND timeframe=? AND status='RESOLVED' ORDER BY id DESC LIMIT 30",(asset,tf)).fetchall()
     n=len(rows)
-    if n<12:return {"sample":n,"threshold":4,"pause":False,"win_rate":None}
+    peer=shared_learning_data().get("btc",{})
+    peer_pause=peer.get("sample",0)>=10 and peer.get("win_rate") is not None and peer.get("win_rate")<45
+    if n<12:return {"sample":n,"threshold":5 if peer_pause else 4,"pause":peer_pause,"win_rate":None,"peer":peer}
     wins=sum(float(r["pnl"])>0 for r in rows); wr=100*wins/n
-    # Learning can tighten risk, but never loosen the base safety filters.
-    return {"sample":n,"threshold":5 if wr<52 else 4,"pause":wr<42,"win_rate":wr}
+    # Both bots' resolved paper results can tighten filters; never loosen base safety.
+    return {"sample":n,"threshold":5 if wr<52 or peer_pause else 4,"pause":wr<42 or peer_pause,"win_rate":wr,"peer":peer}
 
 
 def save_observation(c, asset, tf, m, tech):
@@ -419,6 +434,7 @@ def position_embeds(c):
     return result
 
 def dashboard(c, lines):
+    update_shared_learning(c)
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
