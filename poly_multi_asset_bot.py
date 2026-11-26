@@ -456,12 +456,15 @@ def market_embeds(lines):
         asset,tf,side,score,rsi,m1,m3,range_position=match.groups()
         tech={'score':int(score),'move1':float(m1),'move3':float(m3),'rsi':float(rsi),'range_position':float(range_position)}
         risk=flip_risk(tech,side)
+        # A directional hold-strength heuristic, not a calibrated probability.
+        hold=max(5,min(95,50+abs(int(score))*8+(6 if float(m1)*int(score)>0 else -8)))
+        if risk>=70: hold=max(5,hold-10)
         body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
         if risk>=70: level='HIGH · reversal warning'
         elif risk>=45: level='MODERATE · stay alert'
         else: level='LOWER · signal currently aligned'
         color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · flip risk is a heuristic estimate, not probability'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · hold and flip percentages are heuristic scores, not probabilities'}})
     return result
 
 def position_embeds(c):
@@ -530,8 +533,9 @@ def dashboard(c, lines):
             detail=card.get('description','').replace('**BOT CALL**','').strip()
             cf=card.get('fields',[])
             signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
+            hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
             flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
-            market_fields.append({'name':card['title'][:256],'value':(detail[:350]+'\n'+signal[:100]+'\n'+flip[:150])[:900],'inline':True})
+            market_fields.append({'name':card['title'][:256],'value':(detail[:250]+'\n'+signal[:100]+'\n'+hold[:130]+'\n'+flip[:150])[:900],'inline':True})
     market_fields=market_fields[:10]
     radar={'title':'CRYPTO RADAR · BTC FIRST · 5m / 15m','description':'Each cell is one coin/timeframe. BTC is listed first; no live orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · flip risk is heuristic, not probability'}}
     pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
@@ -558,15 +562,6 @@ def cycle(c):
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
                 save_observation(c,asset,tf,m,tech)
                 action=maybe_enter(c,asset,tf,m,tech)
-                if tech.get("side") in ("UP","DOWN"):
-                    market_key=str(m.get("id") or m.get("slug") or f"{asset}-{tf}-{int(time.time())//(tf*60)}")
-                    signal_key=f"{asset}:{tf}:{market_key}:{tech['side']}"
-                    send_signal_once(
-                        c, signal_key,
-                        f"📡 PAPER SIGNAL · {asset} {tf}m · {tech['side']} ({tech['score']:+d}/5)\n"
-                        f"RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}%\n"
-                        f"{action}\nNo real orders are placed."
-                    )
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
                 scalp=scalp_call(asset,tf,m,tech)
