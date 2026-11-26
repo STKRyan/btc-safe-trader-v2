@@ -880,6 +880,20 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         else:
             sell_call = f"HOLD / WATCH · {flip}% flip risk"
         positions = f"**SELL CALL: {sell_call}**\n" + positions
+    if open_rows:
+        entry_exit_text = (
+            f"**POSITION:** {open_rows[0]['timeframe']}m {open_rows[0]['side']} · "
+            f"paper entry ${float(open_rows[0]['entry_price']):.3f}\n"
+            f"**NOW:** {open_rows[0]['last_action'] or 'HOLD / MONITOR'}\n"
+            "**SELL / HOLD:** follow the live target, stop, and flip-risk action shown above."
+        )
+    else:
+        entry_exit_text = (
+            f"**ENTRY:** WAIT · current {safe_call} bias is not an entry by itself.\n"
+            "**BUY-IN:** paper entry only when market, timing, edge, spread, depth, and confirmation filters pass.\n"
+            "**SELL / HOLD:** no open paper position; wait for a qualified setup."
+        )
+    fields.append({"name": "〢 ENTRY / SELL / HOLD NOW", "value": entry_exit_text[:1024], "inline": False})
     fields.append({"name": "〢 ACTIVE PAPER POSITIONS", "value": positions[:1024], "inline": False})
 
     latest_scalp = conn.execute(
@@ -968,6 +982,14 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
     row = conn.execute("SELECT state_value FROM bot_state WHERE state_key='dashboard_message_id'").fetchone()
     message_id = row["state_value"] if row else ""
     payload = {"embeds":[_dashboard_embed(conn, tech, opinions)],"allowed_mentions":{"parse":[]}}
+    # Record the attempt time too, so a Discord rate-limit/error cannot cause
+    # repeated requests on every 1-second scanner cycle.
+    conn.execute(
+        "INSERT INTO bot_state(state_key,state_value) VALUES('dashboard_last_update',?) "
+        "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+        (str(time.time()),),
+    )
+    conn.commit()
     try:
         if message_id:
             url = webhook.rstrip("/") + "/messages/" + message_id
