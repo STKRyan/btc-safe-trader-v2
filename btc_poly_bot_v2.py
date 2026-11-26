@@ -28,6 +28,7 @@ COINBASE = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 TIMEFRAMES = (5, 15)
 MIN_VOTES = {5: 3, 15: 4}  # 5m is more flexible; 15m stays strict.
 SCAN_INTERVAL_SECONDS = 1
+DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # keep Discord message edits within rate limits
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 2.00
 MAX_DAILY_PAPER_LOSS_USD = 10.00
@@ -217,21 +218,10 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Send each new directional paper signal once; keep WAIT/status noise dashboard-only."""
-    if key.endswith(":WAIT") or any(tag in key for tag in (":NO_MARKET", ":NO_TOKENS", ":MISSING_TOKEN")):
-        return
-    # Directional signal messages and order-book WATCH calls are useful; generic
-    # WAIT/status updates stay on the dashboard to avoid Discord spam.
-    if not (key.startswith("signal_v4:") or ":NO_BOOK:" in key):
-        return
-    row = conn.execute("SELECT 1 FROM alerts WHERE alert_key=?", (key,)).fetchone()
-    if row:
-        return
-    if discord_send(message):
-        conn.execute("INSERT OR IGNORE INTO alerts(alert_key,sent_at) VALUES(?,?)", (key, time.time()))
-        conn.commit()
-        print(f"Discord BTC paper signal sent: {key}")
-
+    """Keep Discord output consolidated in the single live dashboard message."""
+    # Signal/status alerts are intentionally not posted as separate messages.
+    # update_dashboard() edits the persistent dashboard with the current state.
+    print(f"Signal routed to live dashboard only: {key}")
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
     now_epoch = int(now_epoch or time.time())
@@ -799,10 +789,26 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     call_icon = "🟢" if safe_call == "UP" else "🔴" if safe_call == "DOWN" else "🟡"
     action_label = (("UP CALL" if safe_call == "UP" else "DOWN CALL") + f" · {abs(score)*9+50}% strength") if confirmed else "WAIT · SIGNALS NOT ALIGNED"
 
+    # Clock-based progress bar for elapsed time in the current 5-minute BTC
+    # market window. Indicator gauges below remain separate heuristic scores.
+    market_period_seconds = 5 * 60
+    elapsed_seconds = int(time.time() % market_period_seconds)
+    market_progress = int(elapsed_seconds * 100 / market_period_seconds)
+    seconds_to_close = market_period_seconds - elapsed_seconds
+    progress_bar = gauge_bar(market_progress, 20)
+    countdown = f"{seconds_to_close // 60:02d}:{seconds_to_close % 60:02d}"
+    if not confirmed:
+        action_now = "WAIT — confirmation disagrees; no new paper entry"
+    elif open_rows:
+        action_now = str(open_rows[0]["last_action"] or "HOLD / MONITOR")
+    else:
+        action_now = f"{safe_call} BIAS — WAIT for entry filters; no forced entry"
     # Discord embeds support real color accents, an author line, thumbnail,
     # field columns, and a footer. Keep gauges as indicator scores, not odds.
     description = (
         f"### {call_icon}  {safe_call}  ·  {action_label}\n"
+        f"**ACTION NOW:** {action_now}\n"
+        f"**5M MARKET WINDOW**  {market_progress}%  `{progress_bar}`  ·  closes in **{countdown}**\n"
         f"**BTC / USD**  `${price:,.2f}`\n"
         f"`PRIMARY  {side}`  ·  `CHECK  {second}`  ·  "
         f"{'🟢 MATCH' if confirmed else '🟠 MISMATCH'}\n"
@@ -896,7 +902,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         "name": "〢 EXECUTION GUARDRAILS",
         "value": (
             "🛡️ Two-check disagreement = **WAIT**  ·  Simulated positions only\n"
-            "📡 Coinbase 1-minute candles  ·  ~15-second scan loop while running\n"
+            "📡 Coinbase 1-minute candles · 1-second pause between scan cycles; API time adds to cycle\n"
             "*Bars show rule-based indicator scores, not guaranteed outcomes.*"
         ),
         "inline": False,
@@ -940,8 +946,17 @@ def write_btc_site_data(conn: sqlite3.Connection, tech: dict, opinions: dict) ->
     with open("docs/data_btc.json","w",encoding="utf-8") as handle: json.dump(data,handle,indent=2)
 
 def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
-    """Create once, then edit the same Discord webhook message on each scan."""
+    """Create once, then edit the same Discord webhook message on a safe cadence."""
     write_btc_site_data(conn, tech, opinions)
+    last_update_row = conn.execute(
+        "SELECT state_value FROM bot_state WHERE state_key='dashboard_last_update'"
+    ).fetchone()
+    try:
+        last_update = float(last_update_row["state_value"]) if last_update_row else 0.0
+    except (TypeError, ValueError):
+        last_update = 0.0
+    if time.time() - last_update < DISCORD_DASHBOARD_UPDATE_SECONDS:
+        return
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
         print("Discord dashboard skipped: DISCORD_WEBHOOK_URL secret is missing.")
@@ -962,6 +977,12 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
                 message_id = ""
             else:
                 response.raise_for_status()
+                conn.execute(
+                    "INSERT INTO bot_state(state_key,state_value) VALUES('dashboard_last_update',?) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                    (str(time.time()),),
+                )
+                conn.commit()
                 print("Discord dashboard updated successfully.")
                 return
         response = SESSION.post(webhook.rstrip("/") + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
@@ -970,6 +991,11 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
         new_id = str(result.get("id", ""))
         if new_id:
             conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('dashboard_message_id',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value", (new_id,))
+            conn.execute(
+                "INSERT INTO bot_state(state_key,state_value) VALUES('dashboard_last_update',?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                (str(time.time()),),
+            )
             conn.commit()
             print("Discord dashboard posted successfully; message ID saved.")
         else:
