@@ -57,7 +57,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MULTI_WEBHOOK_URL }}
           POLY_BOT_DB: data/poly_multi_asset.sqlite3
-          SCAN_INTERVAL_SECONDS: "15"
+          SCAN_INTERVAL_SECONDS: "5"
           PAPER_STAKE_USD: "2"
           DAILY_LOSS_LIMIT_USD: "8"
           MAX_OPEN_PAPER_TRADES: "4"
@@ -65,7 +65,7 @@ jobs:
           MAX_SPREAD: "0.035"
         run: |
           mkdir -p data
-          python poly_multi_asset_bot.py --duration 600
+          python poly_multi_asset_bot.py --duration 720
 
       - name: Save shared learning journal
         if: always()
