@@ -191,6 +191,38 @@ def save_observation(c, asset, tf, m, tech):
               (asset,tf,str(m.get("id")),tech["side"],tech["score"],json.dumps(tech),iso())); c.commit()
 
 
+def second_brain(tech, stats, side):
+    """Independent confirmation brain: momentum, RSI and order-book pressure."""
+    if side not in ("UP","DOWN"): return {"agrees":False,"label":"No clear direction","score":0}
+    sign=1 if side=="UP" else -1
+    votes=[1 if float(tech.get("move1",0))*sign>0 else -1,
+           1 if float(tech.get("move3",0))*sign>0 else -1]
+    rsi=float(tech.get("rsi",50))
+    votes.append(1 if (38<=rsi<=68 if side=="UP" else 32<=rsi<=62) else -1)
+    votes.append(1 if float(stats.get("imbalance",0))*sign>=-0.05 else -1)
+    score=sum(votes)
+    return {"agrees":score>=2,"label":"CONFIRMS" if score>=2 else "DISAGREES · SIT OUT","score":score}
+
+def scalp_call(asset, tf, market, tech):
+    """Readable 5m scalp idea only when momentum and liquidity are aligned."""
+    if tf!=5: return "SCALP: 5m only · sit out this timeframe"
+    side=tech.get("side","WAIT")
+    if side not in ("UP","DOWN") or abs(int(tech.get("score",0)))<4:
+        return "SCALP: SIT OUT · direction is not strong enough"
+    m1=float(tech.get("move1",0)); m3=float(tech.get("move3",0)); sign=1 if side=="UP" else -1
+    if m1*sign<=0 or m3*sign<=0:
+        return "SCALP: SIT OUT · 1m and 3m momentum disagree"
+    mapping=tokens(market); tid=mapping.get(side)
+    if not tid: return "SCALP: SIT OUT · outcome token not verified"
+    stats=book_stats(tid)
+    if not stats: return "SCALP: SIT OUT · order book unavailable"
+    if not (0.20<=stats["ask"]<=0.80 and stats["spread"]<=0.02 and stats["depth"]>=1000):
+        return "SCALP: SIT OUT · price, spread, or liquidity is not safe enough"
+    brain=second_brain(tech,stats,side)
+    if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
+    ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree"
+
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
@@ -202,9 +234,11 @@ def maybe_enter(c, asset, tf, m, tech):
     required=learn["threshold"]
     signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
+    brain=second_brain(tech,stats,side)
     reasons=[]
     if abs(tech["score"])<required:reasons.append(f"signal votes {abs(tech['score'])}/5; need {required}")
     if not confirm:reasons.append("short momentum not aligned")
+    if not brain["agrees"]:reasons.append("SECOND BRAIN: "+brain["label"])
     if signed_imb< -0.10:reasons.append("order book opposes signal")
     if stats["spread"]>MAX_SPREAD:reasons.append("spread too wide")
     if stats["depth"]<MIN_DEPTH:reasons.append("book too thin")
@@ -221,7 +255,7 @@ def maybe_enter(c, asset, tf, m, tech):
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f}"
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · BRAIN 2 {brain['label']}"
 
 
 def resolve_calls(c):
