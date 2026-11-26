@@ -217,8 +217,17 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Legacy alert hook intentionally silenced; all live status goes to one dashboard."""
-    print(f"Dashboard-only mode: suppressed alert {key}")
+    """Send each keyed scanner signal once; retry on later scans if Discord fails."""
+    row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
+    if row:
+        return
+    if discord_send(message):
+        conn.execute(
+            "INSERT OR REPLACE INTO alerts(alert_key,sent_at) VALUES(?,?)",
+            (key, time.time()),
+        )
+        conn.commit()
+        print(f"Discord signal sent: {key}")
 
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
@@ -1152,7 +1161,7 @@ def main() -> int:
                 print_summary(conn)
             except Exception as exc:
                 print(f"Scan cycle error: {type(exc).__name__}: {exc}")
-                print("Scan error logged; Discord remains dashboard-only.")
+                print("Scan error logged; scanner will retry signal delivery on the next cycle.")
             # Render worker mode: duration 0 means keep running continuously.
             # GitHub Actions can still pass --duration 180 for a bounded scan job.
             if args.duration > 0 and time.time() - started >= args.duration:
