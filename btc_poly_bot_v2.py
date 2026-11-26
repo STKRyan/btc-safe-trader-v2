@@ -170,6 +170,13 @@ def db_connect() -> sqlite3.Connection:
         """
     )
 
+    # Repair older bot_state tables without deleting saved dashboard state.
+    state_columns = {row[1] for row in conn.execute("PRAGMA table_info(bot_state)")}
+    if "state_value" not in state_columns:
+        conn.execute(
+            "ALTER TABLE bot_state ADD COLUMN state_value TEXT NOT NULL DEFAULT ''"
+        )
+
     # Migrate databases created by earlier bot versions. CREATE TABLE IF NOT
     # EXISTS does not add columns to an existing SQLite table, so add any fields
     # required by this version before the scanner queries them.
@@ -1114,3 +1121,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
