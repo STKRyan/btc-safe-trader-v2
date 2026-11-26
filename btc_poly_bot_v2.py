@@ -839,7 +839,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     fields.append({"name": "〢 PAPER PERFORMANCE", "value": perf_text, "inline": True})
     fields.append({
         "name": "〢 SCALP CALL",
-        "value": f"**{scalp_call}** · **{scalp_live}%**\\n`{gauge_bar(scalp_live, 13)}`\\n`Live setup-strength score · not win odds`",
+        "value": f"**{scalp_call}** · **{scalp_live}%**\n`{gauge_bar(scalp_live, 13)}`\n`Live setup-strength score · not win odds`",
         "inline": True,
     })
 
@@ -863,7 +863,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
             sell_call = f"SELL / REDUCE · {max(flip, 75)}% sell-risk score"
         else:
             sell_call = f"HOLD / WATCH · {flip}% flip risk"
-        positions = f"**SELL CALL: {sell_call}**\\n" + positions
+        positions = f"**SELL CALL: {sell_call}**\n" + positions
     fields.append({"name": "〢 ACTIVE PAPER POSITIONS", "value": positions[:1024], "inline": False})
 
     latest_scalp = conn.execute(
@@ -1144,7 +1144,7 @@ def main() -> int:
                 print_summary(conn)
             except Exception as exc:
                 print(f"Scan cycle error: {type(exc).__name__}: {exc}")
-                discord_send(f"<b>⚠️ Scanner data error</b>\n<code>{type(exc).__name__}: {str(exc)[:300]}</code>", menu_markup())
+                print("Scan error logged; Discord remains dashboard-only.")
             # Render worker mode: duration 0 means keep running continuously.
             # GitHub Actions can still pass --duration 180 for a bounded scan job.
             if args.duration > 0 and time.time() - started >= args.duration:
