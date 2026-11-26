@@ -459,12 +459,17 @@ def market_embeds(lines):
         # A directional hold-strength heuristic, not a calibrated probability.
         hold=max(5,min(95,50+abs(int(score))*8+(6 if float(m1)*int(score)>0 else -8)))
         if risk>=70: hold=max(5,hold-10)
-        body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
+        body=raw.split('\\n',1)[1] if '\\n' in raw else 'No action detail'
+        scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
+        scalp_active='SCALP CALL' in scalp_line
+        # Scalp score is an indicator-strength score, not a chance of winning.
+        scalp_score=max(5,min(95,50+abs(int(score))*8-risk//4)) if scalp_active else 0
         if risk>=70: level='HIGH · reversal warning'
         elif risk>=45: level='MODERATE · stay alert'
         else: level='LOWER · signal currently aligned'
         color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · hold and flip percentages are heuristic scores, not probabilities'}})
+        scalp_value=(f'**{scalp_line}**\\n\\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\\nNo scalp entry approved on this scan.')
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\\n3m **{float(m3):+.3f}%**\\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · scalp/hold/flip scores are heuristic indicators, not probabilities'}})
     return result
 
 def position_embeds(c):
