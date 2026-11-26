@@ -1,6 +1,10 @@
 name: Original BTC Paper Bot
 
 on:
+  push:
+    paths:
+      - "btc_poly_bot_v2.py"
+      - ".github/workflows/original-btc-paper-bot.yml"
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
