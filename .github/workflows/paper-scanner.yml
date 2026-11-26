@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: multi-asset-paper-scanner
@@ -51,6 +51,18 @@ jobs:
           mkdir -p data
           python poly_multi_asset_bot.py --duration 180
 
+      - name: Publish dashboard snapshot
+        if: always()
+        run: |
+          if [ -f docs/data.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add docs/data.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Refresh paper dashboard data"
+              git push
+            fi
+          fi
       - name: Save paper journal
         if: always()
         uses: actions/cache/save@v4
