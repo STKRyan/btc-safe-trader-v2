@@ -334,8 +334,14 @@ def market_embeds(lines):
     import re
     result=[]
     pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
+    missing=re.compile(r'\\*\\*(BTC|ETH) (5|15)m\\*\\* · MARKET NOT FOUND')
     for raw in lines:
         first=raw.split('\n',1)[0]
+        no_market=missing.search(first)
+        if no_market:
+            asset,tf=no_market.groups()
+            result.append({'title':f'{asset} · {tf} MIN · NO VERIFIED MARKET','description':'**NO TRADE**\nThe scanner could not verify an active market for this timeframe. It will check again next scan.','color':0x8794a8,'fields':[{'name':'STATUS','value':'Market unavailable','inline':True},{'name':'FLIP RISK','value':'— · no market data','inline':True}],'footer':{'text':'No signal issued · paper only'}})
+            continue
         match=pattern.search(first)
         if not match: continue
         asset,tf,side,score,rsi,m1,m3=match.groups()
@@ -349,6 +355,26 @@ def market_embeds(lines):
         result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · flip risk is a heuristic estimate, not probability'}})
     return result
 
+def position_embeds(c):
+    result=[]
+    rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC").fetchall()
+    for r in rows:
+        try:
+            b=book_stats(r['token_id']); bid=float(b['bid']) if b else None; entry=float(r['entry'])
+            roi=(bid/entry-1)*100 if bid is not None and entry>0 else None
+            feat=json.loads(r['features'] or '{}'); aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
+            risk=flip_risk(feat,r['side'],float(b.get('imbalance',0)) if b else 0)
+            if roi is not None and roi<=-8: action='PROTECT / EXIT'; reason='Paper position reached the -8% protection level.'
+            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Paper position reached the +10% target.'
+            elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; reason='Paper position reached the +5% partial-profit level.'
+            elif risk>=70 or aligned<=-3: action='EXIT RISK'; reason='Signal is turning against the open paper position.'
+            else: action='HOLD'; reason='No exit threshold currently triggered. Re-check next scan.'
+            color=0x42dba8 if action=='HOLD' else (0xffc45c if 'SELL' in action or 'PROFIT' in action else 0xff657d)
+            roi_text='—' if roi is None else f'{roi:+.2f}%'
+            result.append({'title':f'OPEN PAPER · {r["asset"]} {r["timeframe"]}m · {r["side"]}','description':f'**{action}**\\n{reason}','color':color,'fields':[{'name':'PAPER RETURN','value':roi_text,'inline':True},{'name':'ENTRY / BID','value':f'{entry:.3f} / {bid:.3f}' if bid is not None else f'{entry:.3f} / unavailable','inline':True},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**','inline':False}],'footer':{'text':'Simulated position · no real order'}})
+        except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
+    return result
+
 def dashboard(c, lines):
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
@@ -360,8 +386,8 @@ def dashboard(c, lines):
     write_site_data(c,lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
     summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**Market scan complete**\nBTC + ETH · 5m and 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER RECORD','value':f'{wins}W / {n-wins}L · {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'REALIZED P/L','value':f'${pnl:+.2f}','inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
-    cards=market_embeds(lines)
-    send('',[summary]+cards[:9])
+    cards=market_embeds(lines); positions=position_embeds(c)
+    send('',[summary]+cards[:4]+positions[:5])
 def cycle(c):
     resolve_calls(c); lines=[]
     for asset, tfs in TIMEFRAMES.items():
