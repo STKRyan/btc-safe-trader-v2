@@ -223,6 +223,9 @@ def second_brain(tech, stats, side):
     rsi=float(tech.get("rsi",50))
     votes.append(1 if (38<=rsi<=68 if side=="UP" else 32<=rsi<=62) else -1)
     votes.append(1 if float(stats.get("imbalance",0))*sign>=-0.05 else -1)
+    range_pos=tech.get("range_position")
+    if range_pos is not None:
+        votes.append(-1 if (side=="UP" and float(range_pos)>=90) or (side=="DOWN" and float(range_pos)<=10) else 1 if (side=="UP" and float(range_pos)<=20) or (side=="DOWN" and float(range_pos)>=80) else 0)
     score=sum(votes)
     return {"agrees":score>=2,"label":"CONFIRMS" if score>=2 else "DISAGREES · SIT OUT","score":score}
 
@@ -374,7 +377,8 @@ def write_site_data(c, lines):
         m1=re.search(r'1m\s+([+-]?\d+\.\d+)%',clean); move1=float(m1.group(1)) if m1 else 0
         m3=re.search(r'3m\s+([+-]?\d+\.\d+)%',clean); move3=float(m3.group(1)) if m3 else 0
         m10=re.search(r'10m\s+([+-]?\d+\.\d+)%',clean); move10=float(m10.group(1)) if m10 else 0
-        risk=flip_risk({'score':score,'move1':move1,'move3':move3,'rsi':rsi},side)
+        rangem=re.search(r'RANGE 20m\s+(\d+)%',clean); range_position=float(rangem.group(1)) if rangem else None
+        risk=flip_risk({'score':score,'move1':move1,'move3':move3,'rsi':rsi,'range_position':range_position},side)
         scalp_m=re.search(r'⚡ SCALP:\s*(.+)',clean)
         scalp=scalp_m.group(1).strip() if scalp_m else 'No scalp call yet'
         status='MARKET NOT FOUND' if 'MARKET NOT FOUND' in clean else 'SCANNED'
@@ -403,7 +407,7 @@ def write_site_data(c, lines):
 def market_embeds(lines):
     import re
     result=[]
-    pattern=re.compile(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
+    pattern=re.compile(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)% · RANGE 20m (\d+)%')
     missing=re.compile(r'\*\*([A-Z0-9]{2,12}) (5|15)m\*\* · MARKET NOT FOUND')
     for raw in lines:
         first=raw.split('\n',1)[0]
@@ -414,8 +418,8 @@ def market_embeds(lines):
             continue
         match=pattern.search(first)
         if not match: continue
-        asset,tf,side,score,rsi,m1,m3=match.groups()
-        tech={'score':int(score),'move1':float(m1),'move3':float(m3),'rsi':float(rsi)}
+        asset,tf,side,score,rsi,m1,m3,range_position=match.groups()
+        tech={'score':int(score),'move1':float(m1),'move3':float(m3),'rsi':float(rsi),'range_position':float(range_position)}
         risk=flip_risk(tech,side)
         body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
         if risk>=70: level='HIGH · reversal warning'
@@ -485,7 +489,7 @@ def cycle(c):
                 lr=learning_adjustment(c,asset,tf)
                 wr=f" · recent {lr['win_rate']:.0f}%/{lr['sample']}" if lr["win_rate"] is not None else f" · learning sample {lr['sample']}/12"
                 scalp=scalp_call(asset,tf,m,tech)
-                lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
+                lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
     # Keep the most recent scan for every supported coin so the site shows the full radar.
