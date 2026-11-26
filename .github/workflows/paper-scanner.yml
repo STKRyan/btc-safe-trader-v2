@@ -7,8 +7,8 @@ on:
       - poly_multi_asset_bot.py
       - .github/workflows/paper-scanner.yml
   schedule:
-    # Conservative cadence for GitHub Actions Free usage.
-    - cron: "*/15 * * * *"
+    # Start a four-minute scan every five minutes for fresher signals.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -65,7 +65,7 @@ jobs:
           MAX_SPREAD: "0.035"
         run: |
           mkdir -p data
-          python poly_multi_asset_bot.py --duration 720
+          python poly_multi_asset_bot.py --duration 240
 
       - name: Save shared learning journal
         if: always()
