@@ -217,17 +217,8 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Send each keyed scanner signal once; retry on later scans if Discord fails."""
-    row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
-    if row:
-        return
-    if discord_send(message):
-        conn.execute(
-            "INSERT OR REPLACE INTO alerts(alert_key,sent_at) VALUES(?,?)",
-            (key, time.time()),
-        )
-        conn.commit()
-        print(f"Discord signal sent: {key}")
+    """Legacy alert hook: keep scanner signals in the persistent dashboard only."""
+    print(f"Signal included in BTC dashboard: {key}")
 
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
