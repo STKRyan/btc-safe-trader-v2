@@ -46,7 +46,7 @@ jobs:
 
       - name: Run original BTC paper bot
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_BTC_WEBHOOK_URL }}
           BTC_BOT_DB: data/btc_poly_v2.sqlite3
         run: |
           mkdir -p data
