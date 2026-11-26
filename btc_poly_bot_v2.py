@@ -989,6 +989,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     flip = max(5, min(95, 100 - hold + (12 if rsi_now >= 72 or rsi_now <= 28 else 0)
                        + (10 if move1 * score < 0 else 0)))
     flip = min(95, flip)
+    flip = max(flip, int(opinions.get("flip_risk", flip)))
     if minutes == 15:
         scalp_live = max(0, min(95, 50 + abs(score) * 8 + (8 if confirmed else -12)))
         scalp_call = f"15M {safe_call} LEAN" if confirmed else "15M WAIT"
@@ -1026,6 +1027,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"**BTC / USD**  `${price:,.2f}`\n"
         f"`PRIMARY  {side}`  ·  `CHECK  {second}`  ·  "
         f"{'🟢 MATCH' if confirmed else '🟠 MISMATCH'}\n"
+        f"**SECOND BRAIN:** {opinions.get('label','WAIT')} · FLIP {opinions.get('flip_risk',flip)}% · "
+        f"window flips {opinions.get('market_flips',0)} · memory {opinions.get('memory',{}).get('sample',0)} resolved\n"
         f"*Last refresh <t:{int(time.time())}:R>*"
     )
     fields = [        {
@@ -1382,6 +1385,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         )
         return
     slug = str(market.get("slug") or market_slug(minutes))
+    record_btc_forecast(conn, market, minutes, tech)
     remaining = seconds_remaining(minutes)
     tokens = outcome_tokens(market)
     if not tokens:
@@ -1427,7 +1431,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
             "<i>Signal only · no trade opened.</i>"
         )
         return
-    opinions = second_opinion(tech, stats)
+    opinions = second_opinion(tech, stats, conn=conn, minutes=minutes, slug=slug)
     ask = stats["ask"]
     market_p = ask
     model_p = model_probability(int(tech["score"]), side)
@@ -1452,9 +1456,14 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         reasons.append(f"second opinion {opinions['side']} does not confirm primary {side}")
     # Learn conservatively from completed paper trades: poor recent results can
     # tighten entries, but strong results never loosen the original safety rules.
-    performance = recent_paper_performance(conn, 20)
+    performance = recent_paper_performance(conn, 20, minutes)
     if performance["count"] >= 10 and performance["win_rate"] < 60.0:
-        reasons.append("recent paper results below 60%; adaptive safety pause")
+        reasons.append(f"recent {minutes}m paper results below 60%; adaptive safety pause")
+    memory = opinions["memory"]
+    if memory["caution"]:
+        reasons.append(f"second-brain memory caution: {memory['flip_rate']*100:.0f}% of resolved {minutes}m windows flipped")
+    if memory["pause"]:
+        reasons.append(f"second-brain memory pause: {minutes}m resolved results remain weak")
     peer=shared_learning_data().get("multi",{})
     if peer.get("sample",0)>=10 and peer.get("win_rate") is not None and peer.get("win_rate")<45:
         reasons.append("shared learning caution: multi-asset bot recent win rate below 45%")
@@ -1472,6 +1481,8 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     )
     # Compact visual call: directional bias, hold/flip gauges, scalp fit and hold window.
     signal_hold, signal_flip = hold_and_flip(0.0, int(tech["score"]), side, stats["imbalance"])
+    signal_flip = max(signal_flip, int(opinions.get("flip_risk", signal_flip)))
+    signal_hold = max(0, min(100, 100 - signal_flip))
     range_position=tech.get("range_position")
     if range_position is not None and ((side=="UP" and range_position>=90) or (side=="DOWN" and range_position<=10)):
         signal_flip=min(100,signal_flip+10); signal_hold=max(0,signal_hold-10)
@@ -1502,7 +1513,9 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}% · 20-candle range {float(tech.get('range_position',50)):.0f}% from low\n"
         f"ASK ${ask:.3f} · BID ${stats['bid']:.3f} · DEPTH ${stats['depth']:.0f}\n"
         f"EDGE {edge*100:+.1f}pp\n"
-        f"SECOND BRAIN: {opinions['side']} · {opinions['label']}\n"
+        f"SECOND BRAIN: {opinions['side']} · {opinions['label']} · {opinions.get('debate','')}\n"
+        f"MEMORY: {memory['sample']} resolved · {memory['wins']}W/{memory['losses']}L · "
+        f"{memory['flip_rate']*100:.0f}% windows flipped\n"
         f"{entry_line}\n"
         f"{performance_line}\n"
         "<i>Paper only · bars are indicator scores, not win probabilities. Hold window is a review suggestion.</i>"
@@ -1543,11 +1556,17 @@ def main() -> int:
     try:
         while True:
             try:
+                resolve_btc_forecasts(conn)
                 candles = get_candles()
                 tech = technical_signal(candles)
                 manage_open_trades(conn, tech)
                 scan_scalp(conn, tech)
-                dashboard_opinion = second_opinion(tech)
+                dashboard_opinion = second_opinion(
+                    tech, conn=conn, minutes=5, slug=market_slug(5)
+                )
+                dashboard_opinion_15 = second_opinion(
+                    tech, conn=conn, minutes=15, slug=market_slug(15)
+                )
                 for minutes in TIMEFRAMES:
                     try:
                         scan_one(conn, minutes, tech)
@@ -1555,7 +1574,7 @@ def main() -> int:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
                 update_dashboard(conn, tech, dashboard_opinion)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
-                update_btc_15m_live_channel(conn, tech, dashboard_opinion)
+                update_btc_15m_live_channel(conn, tech, dashboard_opinion_15)
                 # Chart delivery is paused for now. Keep BTC live and signal scanning active.
                 update_shared_learning(conn)
                 print_summary(conn)
