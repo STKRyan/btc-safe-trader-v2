@@ -593,12 +593,14 @@ def publish_board(c, embeds):
                 if not response.ok:
                     print(f"Discord board PATCH rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
                     response.raise_for_status()
+                print("Discord multi-bot board updated successfully.",flush=True)
                 return
         response=S.post(webhook+"?wait=true",json=payload,timeout=12)
         if not response.ok:
             print(f"Discord board POST rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
             response.raise_for_status()
         new_id=str(response.json().get("id",""))
+        print("Discord multi-bot board posted successfully.",flush=True)
         if new_id:
             c.execute("INSERT INTO bot_state(key,value) VALUES('multi_dashboard_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(new_id,))
             c.commit()
