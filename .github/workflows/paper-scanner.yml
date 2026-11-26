@@ -2,8 +2,8 @@ name: Multi-Asset Paper Scanner
 
 on:
   schedule:
-    # Every 15 minutes: stays within typical GitHub Free Actions allowance.
-    - cron: "*/15 * * * *"
+    # Conservative cadence for GitHub Actions Free usage.
+    - cron: "17 */2 * * *"
   workflow_dispatch:
 
 permissions:
