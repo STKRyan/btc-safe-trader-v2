@@ -300,15 +300,11 @@ def write_site_data(c, lines):
         rsi_m=re.search(r'RSI\s+(\d+)',clean); rsi=float(rsi_m.group(1)) if rsi_m else 50
         m1=re.search(r'1m\s+([+-]?\d+\.\d+)%',clean); move1=float(m1.group(1)) if m1 else 0
         m3=re.search(r'3m\s+([+-]?\d+\.\d+)%',clean); move3=float(m3.group(1)) if m3 else 0
-        risk=48-abs(score)*6
-        if (side=='UP' and (move1<0 or move3<0)) or (side=='DOWN' and (move1>0 or move3>0)): risk+=14
-        if (side=='UP' and move1<0 and move3<0) or (side=='DOWN' and move1>0 and move3>0): risk+=12
-        if (side=='UP' and rsi>=72) or (side=='DOWN' and rsi<=28): risk+=12
-        risk=max(5,min(95,int(risk)))
+        risk=flip_risk({'score':score,'move1':move1,'move3':move3,'rsi':rsi},side)
         status='MARKET NOT FOUND' if 'MARKET NOT FOUND' in clean else 'SCANNED'
         action='NO TRADE' if status!='SCANNED' else ('PAPER ENTRY' if 'PAPER ENTRY' in clean else ('WAIT' if 'WAIT' in clean else 'CHECK SIGNAL'))
         if status!='SCANNED': risk=None
-        markets.append({'asset':asset,'timeframe':tf,'side':side,'score':score,'risk':risk,'status':status,'action':action,'details':clean[:700]})
+        markets.append({'asset':asset,'timeframe':tf,'side':side,'score':score,'score_bar':score_bar(score),'risk':risk,'risk_bar':pct_bar(risk) if risk is not None else '', 'risk_label':'HIGH' if risk is not None and risk>=70 else ('MODERATE' if risk is not None and risk>=45 else 'LOW'), 'status':status,'action':action,'details':clean[:700]})
     rr=c.execute("SELECT pnl FROM calls WHERE status='RESOLVED' ORDER BY id DESC LIMIT 50").fetchall()
     wins=sum(float(x['pnl'] or 0)>0 for x in rr); n=len(rr); pnl=sum(float(x['pnl'] or 0) for x in rr)
     positions=[]
@@ -337,7 +333,7 @@ def write_site_data(c, lines):
 def market_embeds(lines):
     import re
     result=[]
-    pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \\(([+-]?\\d+)/5\\) · RSI (\\d+) · 1m ([+-]?\\d+\\.\\d+)% · 3m ([+-]?\\d+\\.\\d+)%')
+    pattern=re.compile(r'\*\*(BTC|ETH) (5|15)m\*\* · \*\*(UP|DOWN|WAIT)\*\* \(([+-]?\d+)/5\) · RSI (\d+) · 1m ([+-]?\d+\.\d+)% · 3m ([+-]?\d+\.\d+)%')
     for raw in lines:
         first=raw.split('\n',1)[0]
         match=pattern.search(first)
