@@ -491,7 +491,11 @@ def dashboard(c, lines):
     market_fields=[]
     for card in cards:
         if card.get('fields') and 'NO VERIFIED MARKET' not in card.get('title',''):
-            market_fields.append({'name':card['title'][:256],'value':card.get('description','')[:900],'inline':True})
+            detail=card.get('description','').replace('**BOT CALL**','').strip()
+            cf=card.get('fields',[])
+            signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
+            flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
+            market_fields.append({'name':card['title'][:256],'value':(detail[:350]+'\n'+signal[:100]+'\n'+flip[:150])[:900],'inline':True})
     market_fields=market_fields[:25]
     radar={'title':'CRYPTO RADAR · BTC FIRST · 5m / 15m','description':'Each cell is one coin/timeframe. BTC is listed first; no live orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · flip risk is heuristic, not probability'}}
     pos_fields=[{'name':p.get('title','Open paper position')[:256],'value':p.get('description','')[:900],'inline':True} for p in positions[:25]]
