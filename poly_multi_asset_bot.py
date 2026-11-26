@@ -80,39 +80,39 @@ def db():
 
 
 def discover(asset, tf):
-    """Find active recurring Up/Down markets using Gamma event-series discovery."""
-    # Gamma search can omit short-duration markets from its generic search index.
-    # Query the recurring series first, then fall back to full-text search.
-    series={
-        ("BTC",5): ["btc-up-or-down-5m", "btc-updown-5m"],
-        ("BTC",15): ["btc-up-or-down-15m", "btc-updown-15m"],
-        ("ETH",5): ["eth-up-or-down-5m", "eth-updown-5m"],
-        ("ETH",15): ["eth-up-or-down-15m", "eth-updown-15m"],
-        ("GOLD",15): ["gold-up-or-down-15m", "gold-updown-15m"],
+    """Discover active short-duration markets from their actual Gamma series."""
+    series_slugs={
+        ("BTC",5): ["btc-up-or-down-5m"],
+        ("BTC",15): ["btc-up-or-down-15m"],
+        ("ETH",5): ["eth-up-or-down-5m"],
+        ("ETH",15): ["eth-up-or-down-15m"],
+        ("GOLD",15): ["gold-up-or-down-15m"],
     }.get((asset,tf), [])
-    found=[]
-    for slug in series:
+    found=[]; series_ids=set()
+    # Gamma's /events filter expects numeric series_id, not series_slug.
+    for slug in series_slugs:
         try:
-            data=get(f"{GAMMA}/events", {"series_slug":slug,"active":"true","closed":"false","limit":500,"order":"endDate","ascending":"true"})
-            events=data if isinstance(data,list) else data.get("events",[]) if isinstance(data,dict) else []
-            for ev in events:
-                found.extend(ev.get("markets",[]) or [])
+            sr=get(f"{GAMMA}/series", {"slug":slug,"limit":50})
+            for series in (sr if isinstance(sr,list) else []):
+                sid=str(series.get("id",""))
+                if sid:
+                    series_ids.add(sid)
+                    evs=get(f"{GAMMA}/events", {"series_id":sid,"active":"true","closed":"false","limit":100,"order":"endDate","ascending":"true"})
+                    if isinstance(evs,list):
+                        for ev in evs: found.extend(ev.get("markets",[]) or [])
         except Exception as e:
-            print(f"Series lookup {asset} {tf}m ({slug}): {type(e).__name__}: {str(e)[:120]}",flush=True)
-    # Search endpoint fallback; collect both nested event markets and direct markets.
+            print(f"Series lookup {asset} {tf}m: {type(e).__name__}: {str(e)[:150]}",flush=True)
+    # Generic search fallback. Correct endpoint is /public-search.
     if not found:
-        terms={"BTC":"Bitcoin BTC","ETH":"Ethereum ETH","GOLD":"Gold XAU"}[asset]
-        for q in (f"{terms} Up or Down {tf}m",f"{terms} {tf} minute"):
-            for endpoint in ("search","public-search"):
-                try:
-                    data=get(f"{GAMMA}/{endpoint}", {"q":q,"limit":100})
-                    events=data.get("events",[]) if isinstance(data,dict) else []
-                    for ev in events:
-                        found.extend(ev.get("markets",[]) or [])
-                    if isinstance(data,dict): found.extend(data.get("markets",[]) or [])
-                    if found: break
-                except Exception as e:
-                    print(f"Market search {asset} {tf}m ({endpoint}): {type(e).__name__}: {str(e)[:120]}",flush=True)
+        terms={"BTC":"Bitcoin","ETH":"Ethereum","GOLD":"Gold"}[asset]
+        for q in (f"{terms} Up or Down",f"{terms} {tf}m"):
+            try:
+                data=get(f"{GAMMA}/public-search", {"q":q,"limit":50})
+                for ev in data.get("events",[]) if isinstance(data,dict) else []:
+                    found.extend(ev.get("markets",[]) or [])
+                if isinstance(data,dict): found.extend(data.get("markets",[]) or [])
+            except Exception as e:
+                print(f"Market search {asset} {tf}m: {type(e).__name__}: {str(e)[:150]}",flush=True)
             if found: break
     unique={str(m.get("id") or m.get("slug")):m for m in found if isinstance(m,dict)}
     candidates=[]
@@ -121,13 +121,15 @@ def discover(asset, tf):
         if asset=="BTC": asset_ok=("bitcoin" in label or "btc" in label)
         elif asset=="ETH": asset_ok=("ethereum" in label or "eth" in label)
         else: asset_ok=("gold" in label or "xau" in label)
-        tf_ok=bool(re.search(rf"(?:^|[^0-9]){tf}\\s*(?:m|min|minute|minutes)?(?:$|[^0-9])",label))
+        # Series membership determines timeframe; don't require it in the title.
+        sid=str(m.get("seriesId") or m.get("series_id") or "")
+        tf_ok=(sid in series_ids) or bool(re.search(rf"(?:^|[^0-9]){tf}\s*(?:m|min|minute|minutes)?(?:$|[^0-9])",label))
         active=m.get("active",True) not in (False,"false",0) and m.get("closed",False) not in (True,"true",1)
-        tokens=jlist(m.get("clobTokenIds")); outcomes=jlist(m.get("outcomes"))
-        if asset_ok and tf_ok and active and len(tokens)>=2 and len(outcomes)>=2:
-            m["_tokens"]=tokens; m["_outcomes"]=outcomes; candidates.append(m)
+        toks=jlist(m.get("clobTokenIds")); outs=jlist(m.get("outcomes"))
+        if asset_ok and tf_ok and active and len(toks)>=2 and len(outs)>=2:
+            m["_tokens"]=toks; m["_outcomes"]=outs; candidates.append(m)
     if not candidates:
-        print(f"Market discovery: no {asset} {tf}m matches from {len(unique)} Gamma records.",flush=True)
+        print(f"Market discovery: no {asset} {tf}m matches from {len(unique)} Gamma records; series IDs={','.join(sorted(series_ids)) or 'none'}.",flush=True)
         return None
     def end_ts(m):
         try: return datetime.fromisoformat(str(m.get("endDate") or m.get("end_date_iso")).replace("Z","+00:00")).timestamp()
