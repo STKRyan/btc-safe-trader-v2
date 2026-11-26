@@ -217,17 +217,8 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
-    if row and time.time() - row["sent_at"] < 3600:
-        return
-    if not discord_send(message, menu_markup()):
-        return
-    conn.execute(
-        "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
-        "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
-        (key, time.time()),
-    )
-    conn.commit()
+    """Legacy alert hook intentionally silenced; all live status goes to one dashboard."""
+    print(f"Dashboard-only mode: suppressed alert {key}")
 
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
@@ -514,16 +505,7 @@ def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, sid
          utc_now().isoformat(), trade_type),
     )
     conn.commit()
-    label = "⚡ SCALP PAPER ENTRY" if trade_type == "SCALP" else "🧪 PAPER ENTRY"
-    target = ask * (1.0 + (SCALP_TAKE_PROFIT if trade_type == "SCALP" else 0.10))
-    stop = ask * (1.0 - (SCALP_STOP_LOSS if trade_type == "SCALP" else 0.08))
-    discord_send(
-        f"<b>{label} · BTC {minutes}m {side}</b>\n"
-        f"🟢 IN <code>${ask:.3f}</code> · 💵 ${PAPER_STAKE_USD:.2f}\n"
-        f"🎯 TP ${target:.3f} · 🛑 SL ${stop:.3f}\n"
-        f"📦 {quantity:.3f} shares\n"
-        "<i>Paper only · simulated fills</i>", menu_markup()
-    )
+    # No separate Discord entry post. The persistent dashboard displays the position.
     return True
 
 
@@ -631,25 +613,10 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
             conn.commit()
             sell_line = f"<b>Simulated exit bid:</b> ${bid:.3f}"
 
-        should_alert = action != trade["last_action"] or (close_qty > 0)
-        if should_alert:
-            label = "⚡ SCALP MANAGEMENT" if trade_type == "SCALP" else "📣 BTC POSITION UPDATE"
-            discord_send(
-                f"<b>{label} · {trade['timeframe']}m {position_side}</b>\n"
-                f"<b>{action_label}</b> · {call}\n\n"
-                f"{gauge_line('HOLD', hold, '🟢')}\n"
-                f"{gauge_line('FLIP RISK', flip, '🟠')}\n\n"
-                f"🎟 IN <code>${entry:.3f}</code> · 📍 BID <code>${bid:.3f}</code>\n"
-                f"{sell_line}\n"
-                f"🎯 TP <code>${full_target:.3f}</code> · 🛑 SL <code>${protective_stop:.3f}</code>\n"
-                f"📈 P/L <b>{roi*100:+.2f}%</b>\n"
-                f"₿ RSI {float(tech.get('rsi',50)):.0f} · 1m {float(tech.get('move1',0)):+.2f}% · 3m {float(tech.get('move3',0)):+.2f}%\n"
-                "<i>Paper only · gauges are heuristic, not calibrated odds.</i>",
-                menu_markup(),
-            )
         if action != trade["last_action"]:
             conn.execute("UPDATE paper_trades SET last_action=? WHERE id=?", (action, trade["id"]))
             conn.commit()
+
 
 
 def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
@@ -697,19 +664,7 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
         (slug, side, ask, target, stop, setup_score, utc_now().isoformat()),
     )
     conn.commit()
-    key = f"scalp:{slug}:{side}"
-    alert_once(
-        conn, key,
-        f"<b>⚡ BTC SCALP SETUP · 5m {side}</b>\n"
-        f"<b>Setup score:</b> {setup_score}/100 <i>(ranking score, not win probability)</i>\n"
-        f"<b>Entry zone:</b> ${ask:.3f}–${min(0.99, ask+stats['spread']):.3f}\n"
-        f"<b>Quick target (+{SCALP_TAKE_PROFIT*100:.1f}%):</b> ${target:.3f}\n"
-        f"<b>Protective stop (-{SCALP_STOP_LOSS*100:.1f}%):</b> ${stop:.3f}\n"
-        f"<b>Current bid:</b> ${bid:.3f} · <b>Spread:</b> {stats['spread']:.3f}\n"
-        f"<b>BTC:</b> 1m {move1:+.3f}% · 3m {move3:+.3f}% · RSI {rsi_value:.1f}\n"
-        f"<b>Time left:</b> {remaining}s\n"
-        "<i>Strict filters passed. Paper-only entry candidate; fees, spread and slippage can erase small gains.</i>",
-    )
+    # Scalp setups are reflected in the dashboard, not sent as separate posts.
     # Reuse the existing conservative daily caps and stake. Avoid duplicate entries in the same 5m market.
     already = conn.execute(
         "SELECT 1 FROM paper_trades WHERE market_slug=? AND side=? AND trade_type='SCALP' LIMIT 1",
@@ -814,13 +769,24 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     safe_call = side if confirmed else "WAIT"
     score = int(tech.get("score", 0))
     up_bias, down_bias = direction_split(score)
-    hold = max(0, min(100, 50 + abs(score) * 8))
-    flip = 100 - hold
+    # Live, rule-based gauges respond to the current indicator score and momentum.
+    # These are signal-strength/risk scores, never calibrated win probabilities.
+    move1 = float(tech.get("move1", 0.0))
+    move3 = float(tech.get("move3", 0.0))
+    rsi_now = float(tech.get("rsi", 50.0))
+    hold = max(5, min(95, 50 + abs(score) * 8 + (6 if move1 * score > 0 else -8)))
+    flip = max(5, min(95, 100 - hold + (12 if rsi_now >= 72 or rsi_now <= 28 else 0)
+                       + (10 if move1 * score < 0 else 0)))
+    flip = min(95, flip)
+    scalp_live = max(0, min(95, 35 + abs(score) * 8
+                            + (12 if move1 * move3 > 0 and abs(move3) >= 0.035 else -5)
+                            + (8 if abs(move1) >= 0.025 else 0)))
+    scalp_call = ("SCALP CALL " + side) if side in ("UP", "DOWN") and scalp_live >= 65 and confirmed else "SCALP STANDBY"
     price = float(tech.get("last_price", 0.0))
     rsi_value = float(tech.get("rsi", 50.0))
     color = 0x19C37D if safe_call == "UP" else 0xEF4444 if safe_call == "DOWN" else 0xF59E0B
     call_icon = "🟢" if safe_call == "UP" else "🔴" if safe_call == "DOWN" else "🟡"
-    action_label = "CONFIRMED DIRECTION" if confirmed else "NO ENTRY · WAIT FOR ALIGNMENT"
+    action_label = (("UP CALL" if safe_call == "UP" else "DOWN CALL") + f" · {abs(score)*9+50}% strength") if confirmed else "WAIT · SIGNALS NOT ALIGNED"
 
     # Discord embeds support real color accents, an author line, thumbnail,
     # field columns, and a footer. Keep gauges as indicator scores, not odds.
@@ -871,6 +837,11 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
     )
     perf_text += f"Today P/L  **${pnl:+.2f}**\nOpen positions  **{len(open_rows)}**"
     fields.append({"name": "〢 PAPER PERFORMANCE", "value": perf_text, "inline": True})
+    fields.append({
+        "name": "〢 SCALP CALL",
+        "value": f"**{scalp_call}** · **{scalp_live}%**\\n`{gauge_bar(scalp_live, 13)}`\\n`Live setup-strength score · not win odds`",
+        "inline": True,
+    })
 
     if open_rows:
         lines = []
@@ -885,6 +856,14 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict) -> di
         positions = "\n".join(lines)
     else:
         positions = "`NO OPEN POSITIONS`\nWatching for the next qualified setup."
+    sell_call = "NO OPEN POSITION"
+    if open_rows:
+        latest_action = str(open_rows[0]["last_action"] or "").upper()
+        if any(word in latest_action for word in ("SELL", "EXIT", "STOP", "FLIP")) or flip >= 75:
+            sell_call = f"SELL / REDUCE · {max(flip, 75)}% sell-risk score"
+        else:
+            sell_call = f"HOLD / WATCH · {flip}% flip risk"
+        positions = f"**SELL CALL: {sell_call}**\\n" + positions
     fields.append({"name": "〢 ACTIVE PAPER POSITIONS", "value": positions[:1024], "inline": False})
 
     latest_scalp = conn.execute(
@@ -1145,15 +1124,7 @@ def main() -> int:
     if args.duration < 0:
         parser.error("--duration must be zero or a positive number")
     conn = db_connect()
-    alert_once(
-        conn,
-        "btc_signal_desk_startup_v3",
-        "<b>🤖 BTC SIGNAL DESK IS ONLINE</b>\n"
-        "Paper trading only · Real-money orders disabled\n"
-        f"Stake ${PAPER_STAKE_USD:.2f} · Daily entry cap {MAX_DAILY_ENTRIES}\n"
-        "5m/15m directional scanner + selective 5m scalp finder\n"
-        "One persistent Discord dashboard is refreshed each scan; changed position calls are sent as alerts.",
-    )
+    print("BTC signal desk starting in paper-only dashboard mode.")
     started = time.time()
     try:
         while True:
