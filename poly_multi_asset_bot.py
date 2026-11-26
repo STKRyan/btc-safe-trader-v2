@@ -224,6 +224,8 @@ def second_brain(tech, stats, side):
 def scalp_call(asset, tf, market, tech):
     """Readable 5m scalp idea only when momentum and liquidity are aligned."""
     if tf!=5: return "SCALP: 5m only · sit out this timeframe"
+    seconds_left=int(300-(time.time()%300))
+    if not 90<=seconds_left<=240: return "SCALP: SIT OUT · wait for the clean 90–240 second window"
     side=tech.get("side","WAIT")
     if side not in ("UP","DOWN") or abs(int(tech.get("score",0)))<4:
         return "SCALP: SIT OUT · direction is not strong enough"
