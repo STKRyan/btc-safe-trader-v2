@@ -138,7 +138,7 @@ def reference_candles(asset):
         cached=_CANDLE_CACHE.get(asset)
         if cached and time.time()-cached[0]<45: return cached[1]
         rows=get("https://data-api.binance.vision/api/v3/klines", {"symbol":SYMBOLS[asset],"interval":"1m","limit":100})
-        candles=[(float(r[4]),float(r[5])) for r in rows[:-1]]
+        candles=[(float(r[4]),float(r[5]),float(r[2]),float(r[3])) for r in rows[:-1]]
         _CANDLE_CACHE[asset]=(time.time(),candles)
         return candles
     # XAUUSD=X is an indicative public reference feed, not the Polymarket settlement oracle.
@@ -150,7 +150,12 @@ def reference_candles(asset):
 
 def indicators(candles):
     closes=[x[0] for x in candles]; vols=[x[1] for x in candles]
+    highs=[x[2] if len(x)>2 else x[0] for x in candles]
+    lows=[x[3] if len(x)>3 else x[0] for x in candles]
     if len(closes)<55: raise RuntimeError(f"Reference feed only returned {len(closes)} completed candles")
+    recent_high=max(highs[-20:]); recent_low=min(lows[-20:])
+    range_position=100*(closes[-1]-recent_low)/max(1e-12,recent_high-recent_low)
+    range_pct=100*(recent_high-recent_low)/max(1e-12,closes[-1])
     def ema(vals,n):
         a=2/(n+1); out=[vals[0]]
         for x in vals[1:]: out.append(a*x+(1-a)*out[-1])
@@ -169,7 +174,7 @@ def indicators(candles):
            1 if move3>=0.035 and move10>0 else -1 if move3<=-0.035 and move10<0 else 0,
            1 if vr>=1.1 and move3>0 else -1 if vr>=1.1 and move3<0 else 0]
     return {"score":sum(votes),"side":"UP" if sum(votes)>0 else "DOWN" if sum(votes)<0 else "WAIT",
-            "rsi":rsi,"move1":move1,"move3":move3,"move10":move10,"volume_ratio":vr,"price":closes[-1],"votes":votes}
+            "rsi":rsi,"move1":move1,"move3":move3,"move10":move10,"volume_ratio":vr,"price":closes[-1],"range_high":recent_high,"range_low":recent_low,"range_position":range_position,"range_pct":range_pct,"votes":votes}
 
 
 def book_stats(token):
@@ -343,6 +348,8 @@ def flip_risk(tech, side, imbalance=0.0):
     if (side=='UP' and rsi>=72) or (side=='DOWN' and rsi<=28): risk+=12
     opposing=imbalance*(1 if side=='DOWN' else -1)
     if opposing>0.10: risk+=min(18,int((opposing-0.10)*60))
+    range_pos=tech.get("range_position")
+    if range_pos is not None and ((side=="UP" and float(range_pos)>=90) or (side=="DOWN" and float(range_pos)<=10)): risk+=8
     return max(5,min(95,int(round(risk))))
 
 def pct_bar(value, width=12):
