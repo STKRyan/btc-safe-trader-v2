@@ -29,6 +29,9 @@ TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","ADA","A
 SYMBOLS = {a: f"{a}USDT" for a in TIMEFRAMES}
 _DISCOVERY_CACHE = {}
 _CANDLE_CACHE = {}
+_ASSET_CYCLE = 0
+_ASSETS_PER_CYCLE = 3
+_LATEST_LINES = {}
 S = requests.Session(); S.headers.update({"User-Agent": "Poly-Multi-Asset-Paper-Scanner/1.0"})
 
 
@@ -450,8 +453,15 @@ def dashboard(c, lines):
     all_cards=[summary]+cards+positions
     for i in range(0,len(all_cards),10): send('',all_cards[i:i+10])
 def cycle(c):
+    global _ASSET_CYCLE
     resolve_calls(c); lines=[]
-    for asset, tfs in TIMEFRAMES.items():
+    all_assets=list(TIMEFRAMES)
+    start=(_ASSET_CYCLE*_ASSETS_PER_CYCLE)%len(all_assets)
+    selected=all_assets[start:start+_ASSETS_PER_CYCLE]
+    if len(selected)<_ASSETS_PER_CYCLE: selected+=all_assets[:_ASSETS_PER_CYCLE-len(selected)]
+    _ASSET_CYCLE+=1
+    for asset in selected:
+        tfs=TIMEFRAMES[asset]
         try: tech=indicators(reference_candles(asset))
         except Exception as e:
             msg=f"**{asset}** · FEED ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg); continue
@@ -469,7 +479,12 @@ def cycle(c):
                 lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
-    dashboard(c,lines)
+    # Keep the most recent scan for every supported coin so the site shows the full radar.
+    import re
+    for raw in lines:
+        m=re.search(r'\\*\\*([A-Z0-9]{2,12}) (5|15)m\\*\\*',raw)
+        if m: _LATEST_LINES[(m.group(1),int(m.group(2)))]=raw
+    dashboard(c,list(_LATEST_LINES.values()) or lines)
 
 
 def main():
