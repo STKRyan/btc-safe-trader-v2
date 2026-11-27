@@ -30,7 +30,7 @@ TIMEFRAMES = (5, 15)
 # RISK-FIRST MODE: fewer, stricter paper calls; protection beats activity.
 MIN_VOTES = {5: 3, 15: 3}  # majority of five directional checks; second brain/risk gates still apply
 SCAN_INTERVAL_SECONDS = 1
-DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # refresh live BTC dashboards every 5 seconds for smoother market tracking
+DISCORD_DASHBOARD_UPDATE_SECONDS = 3  # refresh live BTC dashboards every 3 seconds without pushing Discord too hard
 SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 1.00
