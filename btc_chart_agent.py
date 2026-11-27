@@ -12,7 +12,7 @@ UPDATE_SECONDS = max(15, int(os.getenv("BTC_CHART_UPDATE_SECONDS", "15")))
 SAMPLE_SECONDS = max(5, int(os.getenv("BTC_CHART_SAMPLE_SECONDS", "5")))
 CANDLE_SECONDS = 15
 MAX_SAMPLES = 720  # approximately one hour at 5-second sampling
-MAX_CANDLES = 60  # keep Discord embed image URL compact; 15 minutes of 15-second candles
+MAX_CANDLES = 240  # approximately one hour of 15-second candles
 STATE_PATH = Path(os.getenv("BTC_CHART_STATE_PATH", "data/btc_chart_state.json"))
 WEBHOOK_ENV = "DISCORD_BTC_CHART_WEBHOOK_URL"
 SESSION = requests.Session()
@@ -112,11 +112,6 @@ def make_embed(samples):
             },
         },
     }
-    chart_url = (
-        "https://quickchart.io/chart?version=4&width=1000&height=560&devicePixelRatio=2"
-        "&format=png&backgroundColor=%23111627&c="
-        + urllib.parse.quote(json.dumps(config), safe="")
-    )
     return {
         "title": "₿ BTC LIVE · 15-SECOND CANDLESTICKS",
         "description": (
@@ -130,25 +125,49 @@ def make_embed(samples):
             "they are sampled candles, not exchange-native 15-second candles."
         ),
         "color": 0x19C37D if change >= 0 else 0xEF4444,
-        "image": {"url": chart_url},
+        "image": {"url": "attachment://btc_15s_chart.png"},
         "footer": {"text": "Coinbase BTC-USD · read-only chart · paper trading only"},
         "timestamp": utc_now().isoformat()
     }
 
-def update_discord(webhook, state, embed):
+def update_discord(webhook, state, embed, chart_config):
+    chart_response = SESSION.post(
+        "https://quickchart.io/chart",
+        json={
+            "version": "4", "width": 1000, "height": 560,
+            "devicePixelRatio": 2, "format": "png",
+            "backgroundColor": "#111627", "chart": chart_config,
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    if chart_response.status_code >= 400:
+        detail = chart_response.headers.get("X-quickchart-error", chart_response.text[:600])
+        raise RuntimeError(f"QuickChart HTTP {chart_response.status_code}: {detail}")
+    if not chart_response.headers.get("Content-Type", "").startswith("image/"):
+        raise RuntimeError("QuickChart did not return a chart image")
     message_id = state.get("message_id", "")
-    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    payload = {
+        "embeds": [embed],
+        "attachments": [{"id": 0, "filename": "btc_15s_chart.png"}],
+        "allowed_mentions": {"parse": []},
+    }
+    files = {"files[0]": ("btc_15s_chart.png", chart_response.content, "image/png")}
+    data = {"payload_json": json.dumps(payload)}
     if message_id:
-        response = SESSION.patch(webhook.rstrip("/") + "/messages/" + message_id,
-                                json=payload, timeout=HTTP_TIMEOUT)
+        response = SESSION.patch(
+                webhook.rstrip("/") + "/messages/" + message_id,
+                data=data, files=files, timeout=HTTP_TIMEOUT,
+            )
         if response.status_code != 404:
             if response.status_code >= 400:
                 raise RuntimeError(f"Discord edit HTTP {response.status_code}: {response.text[:600]}")
             print("BTC 15-second candlestick chart message updated.", flush=True)
             return
         print("Saved chart message was missing; recreating one.", flush=True)
-    response = SESSION.post(webhook.rstrip("/") + "?wait=true",
-                            json=payload, timeout=HTTP_TIMEOUT)
+    response = SESSION.post(
+        webhook.rstrip("/") + "?wait=true",
+        data=data, files=files, timeout=HTTP_TIMEOUT,
+    )
     if response.status_code >= 400:
         raise RuntimeError(f"Discord post HTTP {response.status_code}: {response.text[:600]}")
     new_id = str(response.json().get("id", ""))
@@ -182,7 +201,8 @@ def main():
             state["samples"] = state["samples"][-MAX_SAMPLES:]
             save_state(state)
             if sampled_at - float(state.get("last_chart_update", 0.0) or 0.0) >= UPDATE_SECONDS:
-                update_discord(webhook, state, make_embed(state["samples"]))
+                embed, chart_config = make_embed(state["samples"])
+                update_discord(webhook, state, embed, chart_config)
                 state["last_chart_update"] = sampled_at
                 save_state(state)
             retry_delay = 5
