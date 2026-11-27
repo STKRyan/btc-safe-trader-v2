@@ -153,9 +153,11 @@ def discover(asset, tf):
                 except Exception:return 10**18
             now_ts=time.time()
             live=[m for m in candidates if start(m)<=now_ts<start(m)+seconds]
-            chosen=live[0] if live else min(candidates,key=start)
-            _DISCOVERY_CACHE[cache_key]=(time.time(),chosen)
-            return chosen
+            upcoming=[m for m in candidates if start(m)>now_ts]
+            chosen=live[0] if live else min(upcoming,key=start) if upcoming else None
+            if chosen is not None:
+                _DISCOVERY_CACHE[cache_key]=(time.time(),chosen)
+                return chosen
         print(f"Market discovery: exact {asset} {tf}m event slugs not returned.",flush=True)
         _DISCOVERY_CACHE[cache_key]=(time.time(),None)
         return None
