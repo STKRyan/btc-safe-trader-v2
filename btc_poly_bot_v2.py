@@ -749,7 +749,7 @@ def btc_saved_loss_review_text(conn: sqlite3.Connection, minutes: int) -> str:
         except Exception: tags=[]
         for tag in set(tags): tally[tag]=tally.get(tag,0)+1
     top=sorted(tally.items(),key=lambda kv:-kv[1])[:3]
-    return f"n={len(rows)} · "+" · ".join(f"{tag} {count}/20" for tag,count in top) if rows else "building sample"
+    return f"n={len(rows)} · "+" · ".join(f"{tag} {count}/{len(rows)}" for tag,count in top) if rows else "building sample"
 
 
 def btc_loss_report_text(conn: sqlite3.Connection) -> str:
@@ -1244,9 +1244,10 @@ def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> d
     sample = len(rows)
     wins = sum(row["outcome"] == "WIN" for row in rows)
     losses = sum(row["outcome"] == "LOSS" for row in rows)
-    flips = sum(row["outcome"] == "FLIP" for row in rows)
-    decisive = wins + flips + losses
-    win_rate = (100.0 * (wins + flips) / decisive) if decisive else None
+    flips = sum(int(row["flip_count"] or 0) > 0 or row["outcome"] == "FLIP" for row in rows)
+    correct_flips = sum(row["outcome"] == "FLIP" for row in rows)
+    decisive = wins + correct_flips + losses
+    win_rate = (100.0 * (wins + correct_flips) / decisive) if decisive else None
     flip_rate = flips / sample if sample else 0.0
     caution = sample >= 8 and ((win_rate is not None and win_rate < 50.0) or flip_rate >= 0.35)
     pause = sample >= 12 and ((win_rate is not None and win_rate < 40.0) or flip_rate >= 0.50)
