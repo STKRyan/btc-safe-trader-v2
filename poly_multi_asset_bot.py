@@ -95,6 +95,11 @@ def db():
     CREATE TABLE IF NOT EXISTS snipe_ticks(
       market_id TEXT NOT NULL, side TEXT NOT NULL, ask REAL NOT NULL, ts REAL NOT NULL,
       PRIMARY KEY(market_id,side));
+    CREATE TABLE IF NOT EXISTS snipe_journal(
+      id INTEGER PRIMARY KEY, market_id TEXT NOT NULL, asset TEXT NOT NULL,
+      timeframe INTEGER NOT NULL, side TEXT NOT NULL, entry REAL NOT NULL,
+      created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
+      result TEXT, resolved_at TEXT, UNIQUE(market_id,asset,timeframe,side));
     CREATE TABLE IF NOT EXISTS forecast_journal(
       market_id TEXT NOT NULL, timeframe INTEGER NOT NULL, slug TEXT NOT NULL,
       asset TEXT NOT NULL, initial_side TEXT NOT NULL, current_side TEXT NOT NULL,
@@ -543,6 +548,21 @@ def maybe_enter(c, asset, tf, m, tech):
 
 def resolve_calls(c):
     resolve_forecasts(c)
+    # Resolve saved snipe-direction calls separately from ordinary paper entries.
+    snipe_rows=c.execute("SELECT * FROM snipe_journal WHERE status='OPEN' ORDER BY id").fetchall()
+    for sr in snipe_rows:
+        try:
+            data=get(f"{GAMMA}/markets/{sr['market_id']}")
+            if not data.get("closed"): continue
+            outcomes=jlist(data.get("outcomes")); prices=jlist(data.get("outcomePrices"))
+            mapping={str(o).lower():float(p) for o,p in zip(outcomes,prices)}
+            winning="UP" if mapping.get("up",mapping.get("yes",0))>=0.99 else "DOWN" if mapping.get("down",mapping.get("no",0))>=0.99 else None
+            if not winning: continue
+            result="WIN" if winning==sr["side"] else "LOSS"
+            c.execute("UPDATE snipe_journal SET status='RESOLVED',result=?,resolved_at=? WHERE id=?",
+                      (result,iso(),sr["id"]))
+            c.commit()
+        except Exception as e: print(f"Snipe resolve {sr['market_id']}: {type(e).__name__}: {e}",flush=True)
     rows=c.execute("SELECT * FROM calls WHERE status='OPEN'").fetchall()
     for r in rows:
         try:
@@ -821,6 +841,66 @@ def publish_board(c, embeds):
     except Exception as e:
         print(f"Multi-bot Discord board update failed: {type(e).__name__}: {e}")
 
+def record_snipe_signal(c, asset, tf, market, side, entry):
+    """Journal a qualifying scalp signal once; score direction at market settlement."""
+    market_id=str(market.get("id",""))
+    if not market_id or side not in ("UP","DOWN"): return
+    c.execute(
+        "INSERT OR IGNORE INTO snipe_journal(market_id,asset,timeframe,side,entry,created_at) VALUES(?,?,?,?,?,?)",
+        (market_id,asset,int(tf),side,float(entry),iso()))
+    c.commit()
+
+
+def asset_paper_stats(c, asset, snipe=False):
+    """Per-asset settled W/L and independent current/best streak."""
+    if snipe:
+        rows=c.execute(
+            "SELECT result,resolved_at FROM snipe_journal WHERE asset=? AND status='RESOLVED' "
+            "ORDER BY resolved_at ASC,id ASC",(asset,)).fetchall()
+        key=f"asset_snipe_best_streak_{asset}"
+    else:
+        rows=c.execute(
+            "SELECT CASE WHEN pnl>0 THEN 'WIN' WHEN pnl<0 THEN 'LOSS' ELSE 'BREAKEVEN' END result,"
+            "resolved_at FROM calls WHERE asset=? AND status='RESOLVED' ORDER BY resolved_at ASC,id ASC",
+            (asset,)).fetchall()
+        key=f"asset_paper_best_streak_{asset}"
+    wins=sum(r["result"]=="WIN" for r in rows)
+    losses=sum(r["result"]=="LOSS" for r in rows)
+    breakeven=sum(r["result"]=="BREAKEVEN" for r in rows)
+    current=0; best=0
+    for r in rows:
+        if r["result"]=="WIN":
+            current+=1; best=max(best,current)
+        elif r["result"]=="LOSS":
+            current=0
+        # Breakeven does not count as a win or loss and preserves the win run.
+    saved=c.execute("SELECT value FROM bot_state WHERE key=?",(key,)).fetchone()
+    best=max(best,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              (key,str(best)))
+    n=wins+losses
+    return {"wins":wins,"losses":losses,"breakeven":breakeven,"sample":n,
+            "win_rate":100*wins/n if n else None,"loss_rate":100*losses/n if n else None,
+            "current_streak":current,"best_streak":best}
+
+
+def per_asset_tracker_field(c, asset):
+    trade=asset_paper_stats(c,asset,False)
+    snipe=asset_paper_stats(c,asset,True)
+    wr=f"{trade['win_rate']:.1f}%" if trade["win_rate"] is not None else "—"
+    lr=f"{trade['loss_rate']:.1f}%" if trade["loss_rate"] is not None else "—"
+    swr=f"{snipe['win_rate']:.1f}%" if snipe["win_rate"] is not None else "—"
+    slr=f"{snipe['loss_rate']:.1f}%" if snipe["loss_rate"] is not None else "—"
+    return (
+        f"📊 **{asset} PAPER RECORD** · W/L **{trade['wins']}/{trade['losses']}** "
+        f"(n={trade['sample']}) · Win {wr} / Loss {lr}\n"
+        f"🔥 Current streak **{trade['current_streak']}** · 🏆 Best **{trade['best_streak']}**\n"
+        f"🎯 **SNIPE DIRECTIONAL** · W/L **{snipe['wins']}/{snipe['losses']}** "
+        f"(n={snipe['sample']}) · Win {swr} / Loss {slr}\n"
+        f"🔥 Snipe current **{snipe['current_streak']}** · 🏆 Best **{snipe['best_streak']}**"
+    )
+
+
 def dashboard(c, lines):
     update_shared_learning(c)
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
@@ -910,6 +990,7 @@ def dashboard(c, lines):
             snipe_text=str(item.get('snipe') or 'SNIPE WATCH · no confirmed contract move yet')
             value=f'{value}\n🎯 SNIPE: {snipe_text}'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
+        card_fields.append({'name':'📈 PAPER W/L + STREAK TRACKER','value':per_asset_tracker_field(c,asset)[:1024],'inline':False})
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
             'description':'  |  '.join(desc)+'\n🔄 Refreshing from latest scan',
@@ -946,6 +1027,11 @@ def cycle(c):
                     if lr["win_rate"] is not None else
                     f" · learning sample {lr['sample']}/12 · flips {lr['flip_rate']*100:.0f}%")
                 scalp=scalp_call(c,asset,tf,m,tech)
+                if scalp.startswith("SCALP CALL "):
+                    smatch=re.search(r"entry ([0-9.]+)",scalp)
+                    sside=re.search(r"SCALP CALL (UP|DOWN)",scalp)
+                    if smatch and sside:
+                        record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)))
                 side=tech["side"]
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
