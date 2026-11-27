@@ -30,7 +30,7 @@ TIMEFRAMES = (5, 15)
 # RISK-FIRST MODE: fewer, stricter paper calls; protection beats activity.
 MIN_VOTES = {5: 3, 15: 3}  # majority of five directional checks; second brain/risk gates still apply
 SCAN_INTERVAL_SECONDS = 1
-DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # keep Discord message edits within rate limits
+DISCORD_DASHBOARD_UPDATE_SECONDS = 15  # refresh the persistent radar card every 15 seconds
 SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 1.00
@@ -316,28 +316,123 @@ def db_connect() -> sqlite3.Connection:
     return conn
 
 
-def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Send real Discord call/status messages with a per-alert cooldown."""
+def update_live_call_message(conn: sqlite3.Connection, message: str) -> bool:
+    """Create one call card, then edit it in place every 15 seconds."""
     now = time.time()
     row = conn.execute(
-        "SELECT sent_at FROM alerts WHERE alert_key=?", (key,)
+        "SELECT state_value FROM bot_state WHERE state_key='live_call_last_update'"
     ).fetchone()
-    if row:
-        try:
-            if now - float(row["sent_at"]) < SIGNAL_REPEAT_SECONDS:
-                return
-        except (TypeError, ValueError):
-            pass
+    try:
+        last_update = float(row["state_value"]) if row else 0.0
+    except (TypeError, ValueError):
+        last_update = 0.0
+    if now - last_update < 15:
+        return False
 
-    # Reserve this alert before sending so a webhook failure cannot cause
-    # a one-second retry loop and flood Render logs or Discord.
+    webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook:
+        webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
+    if not (webhook.startswith("https://discord.com/api/webhooks/") or
+            webhook.startswith("https://discordapp.com/api/webhooks/")):
+        print("Crypto Radar live call skipped: no valid Discord webhook configured.")
+        return False
+
+    text = message
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*b\s*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*/\s*b\s*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*i\s*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*/\s*i\s*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*code\s*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*/\s*code\s*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text).strip()
+
+    upper = text.upper()
+    head = " ".join(text.splitlines()[:3]).upper()
+    if any(term in head for term in ("SELL / REDUCE", "PROTECT / EXIT", "TAKE PROFIT", "STOP LOSS")):
+        color, badge, fill = 0xF97316, "🟧 SELL / PROTECT", "🟧"
+    elif "FLIP" in head:
+        color, badge, fill = 0xF97316, "🟧 FLIP", "🟧"
+    elif "WAIT" in head or "NO ENTRY" in head:
+        color, badge, fill = 0x8B949E, "⬜ WAIT / HOLD", "⬜"
+    elif "DOWN" in head:
+        color, badge, fill = 0xEF4444, "🔴 DOWN", "🟥"
+    elif "UP" in head:
+        color, badge, fill = 0x22C55E, "🟢 UP", "🟩"
+    elif "HOLD" in head:
+        color, badge, fill = 0x8B949E, "⬜ HOLD", "⬜"
+    else:
+        color, badge, fill = 0x8B949E, "📡 LIVE SIGNAL", "⬜"
+
+    strength_match = re.search(r"CALL STRENGTH:\s*\**\s*(\d{1,3})\s*/\s*100", upper)
+    strength = max(0, min(100, int(strength_match.group(1)))) if strength_match else 0
+    bar = color_meter(strength, fill, 20)
+    # The embed has a fixed, saved message ID; the visible progress meter changes
+    # with the market's indicator score on each 15-second edit.
+    description = f"## {badge}\n**LIVE CALL STRENGTH · {strength}%**\n{bar}\n\n{text}"
+    if len(description) > 4000:
+        description = description[:3990] + "\n…"
+    payload = {
+        "embeds": [{
+            "title": "🟠 CRYPTO RADAR · LIVE CALL",
+            "description": description,
+            "color": color,
+            "footer": {"text": "AUTO-UPDATED EVERY 15 SECONDS · PAPER SIGNALS ONLY"},
+            "timestamp": utc_now().isoformat()
+        }],
+        "allowed_mentions": {"parse": []}
+    }
+    id_row = conn.execute(
+        "SELECT state_value FROM bot_state WHERE state_key='live_call_message_id'"
+    ).fetchone()
+    message_id = str(id_row["state_value"]) if id_row else ""
+    try:
+        if message_id:
+            response = SESSION.patch(
+                webhook.rstrip("/") + "/messages/" + message_id,
+                json=payload, timeout=HTTP_TIMEOUT
+            )
+            if response.status_code == 404:
+                message_id = ""
+            else:
+                response.raise_for_status()
+        if not message_id:
+            response = SESSION.post(
+                webhook.rstrip("/") + "?wait=true",
+                json=payload, timeout=HTTP_TIMEOUT
+            )
+            response.raise_for_status()
+            new_id = str(response.json().get("id", ""))
+            if new_id:
+                conn.execute(
+                    "INSERT INTO bot_state(state_key,state_value) VALUES('live_call_message_id',?) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                    (new_id,)
+                )
+        conn.execute(
+            "INSERT INTO bot_state(state_key,state_value) VALUES('live_call_last_update',?) "
+            "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+            (str(now),)
+        )
+        conn.commit()
+        print("Crypto Radar live call message edited.")
+        return True
+    except Exception as exc:
+        print(f"Crypto Radar live call edit failed: {type(exc).__name__}: {exc}")
+        return False
+
+
+def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
+    """Refresh the single persistent Crypto Radar call card instead of posting alerts."""
+    now = time.time()
+    update_live_call_message(conn, message)
     conn.execute(
         "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
         "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
         (key, now),
     )
     conn.commit()
-    discord_send(message)
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
     now_epoch = int(now_epoch or time.time())
@@ -1414,9 +1509,10 @@ def _live_market_odds(minutes: int) -> dict:
     return result
 
 def color_meter(value: int, fill: str="🟩", width: int=10) -> str:
+    """Compact segmented meter with dark empty segments for contrast."""
     value=max(0,min(100,int(value)))
     filled=round(value*width/100)
-    return fill*filled+"⬜"*(width-filled)
+    return fill*filled+"⬛"*(width-filled)
 
 def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
                       live_odds: dict, confirmed: bool, flip_risk: int) -> dict:
@@ -1490,11 +1586,12 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         + (8 if momentum_aligned else 0)
         + min(10, int(abs(move1) * 500))
     ))
-    # Every meter uses orange so the card has one bold, consistent visual language.
-    strength_bar = color_meter(signal_strength, "🟧", 18)
-    hold_bar = color_meter(hold, "🟧", 12)
+    # Use the requested directional/status colors throughout the live card.
+    direction_fill = "🟩" if safe_call == "UP" else "🟥" if safe_call == "DOWN" else "⬜"
+    strength_bar = color_meter(signal_strength, direction_fill, 18)
+    hold_bar = color_meter(hold, "⬜", 12)
     flip_bar = color_meter(flip, "🟧", 12)
-    snipe_bar = color_meter(snipe["strength"], "🟧", 12)
+    snipe_bar = color_meter(snipe["strength"], "🩵", 12)
 
     period = minutes * 60
     elapsed = int(time.time() % period)
@@ -1504,15 +1601,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     progress_bar = color_meter(progress, "🟧", 14)
 
     if safe_call == "UP":
-        call_icon, call_color = "🟢", 0xFF7A00
+        call_icon, call_color = "🟢", 0x22C55E
         call_words = "UP · PRICE MAY GO UP"
         plain_reason = "The checks lean UP and agree."
     elif safe_call == "DOWN":
-        call_icon, call_color = "🔴", 0xFF7A00
+        call_icon, call_color = "🔴", 0xEF4444
         call_words = "DOWN · PRICE MAY GO DOWN"
         plain_reason = "The checks lean DOWN and agree."
     else:
-        call_icon, call_color = "⚪", 0xFF7A00
+        call_icon, call_color = "⚪", 0x8B949E
         call_words = "WAIT · NO CLEAR CALL"
         plain_reason = "The checks do not agree. Wait for a clearer setup."
 
@@ -1523,8 +1620,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         position_line = "📂 OPEN PAPER: **No open position**"
 
     odds = (
-        f"UP **{up_odds}%**  {color_meter(up_odds, '🟧', 8)}\n"
-        f"DOWN **{down_odds}%**  {color_meter(down_odds, '🟧', 8)}"
+        f"🟢 **UP {up_odds}%**  {color_meter(up_odds, '🟩', 8)}\n"
+        f"🔴 **DOWN {down_odds}%**  {color_meter(down_odds, '🟥', 8)}"
         if up_odds is not None and down_odds is not None
         else "Waiting for live contract prices."
     )
@@ -1577,15 +1674,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"Contract move: **{snipe_move}**"
     )
     risk_text = (
-        f"🩵 HOLD **{hold}%**  {hold_bar}\n"
+        f"⬜ HOLD **{hold}%**  {hold_bar}\n"
         f"🟧 FLIP RISK **{flip}%**  {flip_bar}\n"
         f"Scalp: **{'READY TO CHECK' if confirmed and abs(score)>=3 else 'WAITING'}**"
     )
 
     fields = [
-        {"name":"🟠 LIVE STRENGTH","value":f"**{signal_strength} / 100**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
+        {"name":f"{call_icon} LIVE STRENGTH","value":f"**{signal_strength}%**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
         {"name":"🧒 WHAT DOES IT MEAN?","value":f"**{call_words}**\n{plain_reason}\n{position_line}","inline":False},
-        {"name":"🎯 LIVE SNIPE METER","value":snipe_text[:900],"inline":False},
+        {"name":"🩵 LIVE SNIPE METER","value":snipe_text[:900],"inline":False},
         {"name":"📊 WINS · FLIPS · LOSSES","value":forecast_record[:900],"inline":False},
         {"name":"🔥 WINS & STREAK","value":(perf_line+"\n"+streak_line)[:900],"inline":True},
         {"name":"🛡️ HOLD / FLIP","value":risk_text[:900],"inline":True},
