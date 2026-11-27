@@ -21,11 +21,11 @@ WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 SCAN_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "15"))
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
-STAKE = float(os.getenv("PAPER_STAKE_USD", "1"))
-DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT_USD", "4"))
-MAX_OPEN = int(os.getenv("MAX_OPEN_PAPER_TRADES", "2"))
-MIN_DEPTH = float(os.getenv("MIN_BOOK_DEPTH_USD", "1000"))
-MAX_SPREAD = float(os.getenv("MAX_SPREAD", "0.025"))
+STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
+DAILY_LOSS_LIMIT = min(4.00, float(os.getenv("DAILY_LOSS_LIMIT_USD", "4")))
+MAX_OPEN = min(2, int(os.getenv("MAX_OPEN_PAPER_TRADES", "2")))
+MIN_DEPTH = max(1000.00, float(os.getenv("MIN_BOOK_DEPTH_USD", "1000")))
+MAX_SPREAD = min(0.025, float(os.getenv("MAX_SPREAD", "0.025")))
 MIN_ASK, MAX_ASK = 0.25, 0.75
 # Polymarket's actively listed short-window crypto set; do not emit false NO-MARKET cards for unsupported tickers.
 TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","HYPE")}
