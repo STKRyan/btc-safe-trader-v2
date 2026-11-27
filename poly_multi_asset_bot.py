@@ -18,8 +18,8 @@ CLOB = "https://clob.polymarket.com"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-# Faster risk-aware refresh: full radar cycle targets 5 seconds; API/network delays can extend it.
-SCAN_SECONDS = 3
+# Faster risk-aware refresh: target a 2-second pause between full cycles; sequential feeds may make each cycle longer.
+SCAN_SECONDS = 2
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
 STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
@@ -133,7 +133,7 @@ def discover(asset, tf):
     slot = int(time.time()) // seconds * seconds
     cache_key = (asset, tf, slot)
     cached = _DISCOVERY_CACHE.get(cache_key)
-    if cached and time.time() - cached[0] < 12:
+    if cached and time.time() - cached[0] < 4:
         return cached[1]
 
     now_ts = time.time()
@@ -1069,7 +1069,7 @@ def main():
                 print(f"Cycle error: {type(e).__name__}: {e}")
                 print(f"Cycle error (dashboard will show next successful scan): {type(e).__name__}: {str(e)[:180]}",flush=True)
             if args.duration and time.time()-start>=args.duration:break
-            time.sleep(max(5,SCAN_SECONDS))
+            time.sleep(max(2,SCAN_SECONDS))
     finally:c.close()
     return 0
 
