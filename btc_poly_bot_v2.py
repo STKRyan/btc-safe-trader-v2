@@ -92,14 +92,16 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
         color,badge=0xEF4444,"🔴 EXIT / PROTECT"
     elif any(word in upper for word in ("SELL 50%","TAKE PROFIT","TAKE-PROFIT")):
         color,badge=0xF59E0B,"🟠 TAKE PROFIT"
+    elif "FLIP" in upper:
+        color,badge=0xF59E0B,"🟠 FLIP"
+    elif "HOLD" in upper:
+        color,badge=0x14B8A6,"🩵 HOLD"
     elif "WAIT" in upper or "NO ENTRY" in upper or "NO MARKET" in upper:
-        color,badge=0xF59E0B,"🟡 WAIT"
+        color,badge=0x8794A8,"⚪ WAIT"
     elif re.search(r"\bDOWN\b",upper):
         color,badge=0xEF4444,"🔴 DOWN"
     elif re.search(r"\bUP\b",upper):
         color,badge=0x19C37D,"🟢 UP"
-    elif "HOLD" in upper:
-        color,badge=0x19C37D,"🟢 HOLD"
     else:
         color,badge=0x4BD9FF,"📡 UPDATE"
 
@@ -1088,10 +1090,16 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         color=0xEF4444; action_now="🔴 "+action_now
     elif any(word in action_upper for word in ("TAKE PROFIT","REDUCE")):
         color=0xF59E0B; action_now="🟠 "+action_now
+    elif "FLIP" in action_upper or flip>=70:
+        color=0xF59E0B; action_now="🟠 FLIP · "+action_now
     elif "HOLD" in action_upper or "MONITOR" in action_upper:
-        color=0x19C37D; action_now="🟢 "+action_now
+        color=0x14B8A6; action_now="🩵 "+action_now
     elif "WAIT" in action_upper:
-        color=0xF59E0B
+        color=0x8794A8; action_now="⚪ "+action_now
+    elif safe_call=="UP":
+        color=0x19C37D; action_now="🟢 "+action_now
+    elif safe_call=="DOWN":
+        color=0xEF4444; action_now="🔴 "+action_now
     sell_meter=max(flip,75 if any(word in action_upper for word in ("SELL","EXIT","STOP","PROTECT")) else 0)
     hold_meter=max(0,min(100,100-sell_meter))
     odds_text=(f"UP **{up_odds}%** {color_meter(up_odds,'🟩')}  ·  DOWN **{down_odds}%** {color_meter(down_odds,'🟥')}"
@@ -1103,7 +1111,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"**LIVE ODDS** {odds_text}\n"
         f"**BTC** USD {price:,.2f}  ·  **{minutes}M** closes **{countdown}**\n"
         f"{progress_bar} **{market_progress}%** elapsed\n"
-        f"**HOLD** {hold_meter}% {color_meter(hold_meter,'🟩')}  ·  **EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
+        f"**🩵 HOLD** {hold_meter}% {color_meter(hold_meter,'🟦')}  ·  **🟥 EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
         f"*Updated <t:{int(time.time())}:R>*"
     )
 
