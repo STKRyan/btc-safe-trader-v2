@@ -972,6 +972,35 @@ def second_opinion(tech: dict, stats: Optional[dict] = None,
             "flip_risk": risk, "market_flips": market_flips, "memory": memory,
             "debate": debate}
 
+def _live_market_odds(minutes: int) -> dict:
+    """Cached current Polymarket UP/DOWN best-ask prices for dashboard meters."""
+    now=time.time()
+    cache=getattr(_live_market_odds,"_cache",{})
+    cached=cache.get(int(minutes))
+    if cached and now-cached[0]<10:
+        return cached[1]
+    result={"up":None,"down":None}
+    try:
+        market=get_market(minutes)
+        if market:
+            tokens=outcome_tokens(market)
+            for side in ("UP","DOWN"):
+                token=tokens.get(side)
+                book=get_book(token) if token else None
+                stats=book_stats(book) if book else None
+                if stats and 0<float(stats["ask"])<1:
+                    result[side.lower()]=int(round(float(stats["ask"])*100))
+    except Exception as exc:
+        print(f"BTC {minutes}m live odds refresh failed: {type(exc).__name__}: {exc}")
+    cache[int(minutes)]=(now,result)
+    _live_market_odds._cache=cache
+    return result
+
+def color_meter(value: int, fill: str="🟩", width: int=10) -> str:
+    value=max(0,min(100,int(value)))
+    filled=round(value*width/100)
+    return fill*filled+"⬜"*(width-filled)
+
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
     """Build the branded BTC SIGNAL TERMINAL dashboard for one market window."""
@@ -1022,32 +1051,44 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     call_icon = "🟢" if safe_call == "UP" else "🔴" if safe_call == "DOWN" else "🟡"
     action_label = (("UP CALL" if safe_call == "UP" else "DOWN CALL") + f" · {abs(score)*9+50}% strength") if confirmed else "WAIT · SIGNALS NOT ALIGNED"
 
-    # Clock-based progress bar for this Polymarket BTC market window.
-    # Indicator gauges below remain separate heuristic scores.
-    market_period_seconds = minutes * 60
-    elapsed_seconds = int(time.time() % market_period_seconds)
-    market_progress = int(elapsed_seconds * 100 / market_period_seconds)
-    seconds_to_close = market_period_seconds - elapsed_seconds
-    progress_bar = gauge_bar(market_progress, 20)
-    countdown = f"{seconds_to_close // 60:02d}:{seconds_to_close % 60:02d}"
+    # Live market-price meters (ask price = buy-side contract pricing).
+    live_odds=_live_market_odds(minutes)
+    up_odds=live_odds.get("up"); down_odds=live_odds.get("down")
+    market_period_seconds=minutes*60
+    elapsed_seconds=int(time.time()%market_period_seconds)
+    market_progress=int(elapsed_seconds*100/market_period_seconds)
+    seconds_to_close=market_period_seconds-elapsed_seconds
+    progress_bar=color_meter(market_progress,"🟦",16)
+    countdown=f"{seconds_to_close//60:02d}:{seconds_to_close%60:02d}"
     if not confirmed:
-        action_now = "🟡 WAIT — confirmation disagrees; no new paper entry"
+        action_now="🟡 WAIT · checks disagree"
     elif open_rows:
-        action_now = str(open_rows[0]["last_action"] or "HOLD / MONITOR")
+        action_now=str(open_rows[0]["last_action"] or "HOLD / MONITOR")
     else:
-        action_now = f"🟡 {safe_call} BIAS — wait for entry filters"
-    action_upper = action_now.upper()
-    if any(word in action_upper for word in ("SELL", "EXIT", "STOP", "PROTECT")):
-        color = 0xEF4444
-        action_now = "🔴 " + action_now
-    elif any(word in action_upper for word in ("TAKE PROFIT", "REDUCE")):
-        color = 0xF59E0B
-        action_now = "🟠 " + action_now
+        action_now=f"🟡 {safe_call} BIAS · wait for entry filters"
+    action_upper=action_now.upper()
+    if any(word in action_upper for word in ("SELL","EXIT","STOP","PROTECT")):
+        color=0xEF4444; action_now="🔴 "+action_now
+    elif any(word in action_upper for word in ("TAKE PROFIT","REDUCE")):
+        color=0xF59E0B; action_now="🟠 "+action_now
     elif "HOLD" in action_upper or "MONITOR" in action_upper:
-        color = 0x19C37D
-        action_now = "🟢 " + action_now
+        color=0x19C37D; action_now="🟢 "+action_now
     elif "WAIT" in action_upper:
-        color = 0xF59E0B
+        color=0xF59E0B
+    sell_meter=max(flip,75 if any(word in action_upper for word in ("SELL","EXIT","STOP","PROTECT")) else 0)
+    hold_meter=max(0,min(100,100-sell_meter))
+    odds_text=(f"UP **{up_odds}%** {color_meter(up_odds,'🟩')}  ·  DOWN **{down_odds}%** {color_meter(down_odds,'🟥')}"
+               if up_odds is not None and down_odds is not None else
+               "Live contract prices temporarily unavailable")
+    description=(
+        f"### {call_icon} **{safe_call}** · {action_label}\n"
+        f"**{action_now}**\n"
+        f"**LIVE ODDS** {odds_text}\n"
+        f"**BTC** USD {price:,.2f}  ·  **{minutes}M** closes **{countdown}**\n"
+        f"{progress_bar} **{market_progress}%** elapsed\n"
+        f"**HOLD** {hold_meter}% {color_meter(hold_meter,'🟩')}  ·  **EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
+        f"*Updated <t:{int(time.time())}:R>*"
+    )
 
     # Discord embeds support real color accents, an author line, thumbnail,
     # field columns, and a footer. Keep gauges as indicator scores, not odds.
