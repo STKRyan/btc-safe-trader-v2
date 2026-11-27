@@ -51,7 +51,7 @@ services:
       - key: POLY_BOT_DB
         value: /opt/render/project/src/data/poly_multi_asset.sqlite3
       - key: SCAN_INTERVAL_SECONDS
-        value: "10"
+        value: "2"
       - key: SIGNAL_REPEAT_SECONDS
         value: "30"
       - key: DISCORD_WEBHOOK_URL
