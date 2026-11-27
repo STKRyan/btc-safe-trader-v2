@@ -598,6 +598,7 @@ def market_embeds(lines):
         elif float(range_position)<=15:
             plain_reason += " Near the recent low: a DOWN entry may be late."
         plain_reason += " The second brain and market checks can still block the entry."
+        plain_reason += f" Flip-risk meter: {risk} out of 100. If the short moves turn against this direction, or the second brain changes its view, the bot may switch to WAIT or the other side."
         flip_rate_match=re.search(r'\bflips\s+(\d+)%',body)
         flip_sample_match=re.search(r'(?:recent \d+%/|learning sample )(\d+)',body)
         flip_rate=int(flip_rate_match.group(1)) if flip_rate_match else None
