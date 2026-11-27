@@ -19,7 +19,7 @@ YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 # Faster risk-aware refresh: target a 2-second pause between full cycles; sequential feeds may make each cycle longer.
-SCAN_SECONDS = 2
+SCAN_SECONDS = max(2.0, float(os.getenv("SCAN_INTERVAL_SECONDS", "2")))
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
 STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
@@ -99,7 +99,8 @@ def db():
       id INTEGER PRIMARY KEY, market_id TEXT NOT NULL, asset TEXT NOT NULL,
       timeframe INTEGER NOT NULL, side TEXT NOT NULL, entry REAL NOT NULL,
       created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
-      result TEXT, resolved_at TEXT, last_check REAL NOT NULL DEFAULT 0, UNIQUE(market_id,asset,timeframe,side));
+      result TEXT, resolved_at TEXT, last_check REAL NOT NULL DEFAULT 0,
+      features TEXT NOT NULL DEFAULT '{}', UNIQUE(market_id,asset,timeframe,side));
     CREATE TABLE IF NOT EXISTS forecast_journal(
       market_id TEXT NOT NULL, timeframe INTEGER NOT NULL, slug TEXT NOT NULL,
       asset TEXT NOT NULL, initial_side TEXT NOT NULL, current_side TEXT NOT NULL,
@@ -113,6 +114,8 @@ def db():
     snipe_cols={r[1] for r in c.execute("PRAGMA table_info(snipe_journal)")}
     if "last_check" not in snipe_cols:
         c.execute("ALTER TABLE snipe_journal ADD COLUMN last_check REAL NOT NULL DEFAULT 0")
+    if "features" not in snipe_cols:
+        c.execute("ALTER TABLE snipe_journal ADD COLUMN features TEXT NOT NULL DEFAULT '{}'")
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
     for name,decl in {
         "remaining_qty":"REAL NOT NULL DEFAULT 0", "realized_pnl":"REAL NOT NULL DEFAULT 0",
@@ -410,6 +413,49 @@ def save_observation(c, asset, tf, m, tech):
               (asset,tf,str(m.get("id")),tech["side"],tech["score"],json.dumps(tech),iso())); c.commit()
 
 
+def snipe_learning_adjustment(c, asset, tf):
+    """Learn from settled snipes and identify recurring features in losing setups."""
+    if c is None:
+        return {"sample":0,"wins":0,"losses":0,"win_rate":None,"loss_streak":0,
+                "caution":False,"pause":False,"patterns":{}}
+    rows=c.execute(
+        "SELECT result,side,features FROM snipe_journal WHERE asset=? AND timeframe=? "
+        "AND status='RESOLVED' AND result IN ('WIN','LOSS') "
+        "ORDER BY resolved_at DESC,id DESC LIMIT 20",(asset,tf)
+    ).fetchall()
+    n=len(rows); wins=sum(r["result"]=="WIN" for r in rows); losses=n-wins
+    win_rate=100*wins/n if n else None
+    loss_streak=0
+    for row in rows:
+        if row["result"]=="LOSS": loss_streak+=1
+        else: break
+    loss_rows=[r for r in rows if r["result"]=="LOSS"]
+    patterns={"momentum_conflict_rate":0.0,"low_score_rate":0.0,
+              "range_exhaustion_rate":0.0,"rsi_extreme_rate":0.0}
+    if loss_rows:
+        counts={key:0 for key in patterns}
+        for row in loss_rows:
+            try:
+                feat=json.loads(row["features"] or "{}")
+                sign=1 if row["side"]=="UP" else -1
+                m1=float(feat.get("move1",0)); m3=float(feat.get("move3",0))
+                score=abs(float(feat.get("score",0)))
+                rsi=float(feat.get("rsi",50)); pos=float(feat.get("range_position",50))
+                if m1*sign<=0 or m3*sign<=0: counts["momentum_conflict_rate"]+=1
+                if score<4: counts["low_score_rate"]+=1
+                if (row["side"]=="UP" and pos>=85) or (row["side"]=="DOWN" and pos<=15):
+                    counts["range_exhaustion_rate"]+=1
+                if (row["side"]=="UP" and rsi>=72) or (row["side"]=="DOWN" and rsi<=28):
+                    counts["rsi_extreme_rate"]+=1
+            except Exception:
+                continue
+        patterns={key:count/max(1,len(loss_rows)) for key,count in counts.items()}
+    caution=(n>=8 and win_rate is not None and win_rate<55) or loss_streak>=3
+    pause=(n>=12 and win_rate is not None and win_rate<45) or loss_streak>=4
+    return {"sample":n,"wins":wins,"losses":losses,"win_rate":win_rate,
+            "loss_streak":loss_streak,"caution":caution,"pause":pause,"patterns":patterns}
+
+
 def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
     """Challenge a directional call with current evidence and resolved flip memory."""
     if side not in ("UP","DOWN"):
@@ -438,6 +484,9 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
         elif (side=="UP" and p<=25) or (side=="DOWN" and p>=75): support.append("price location leaves room")
     memory=learning_adjustment(c,asset,tf) if c is not None else {
         "sample":0,"flip_rate":0.0,"caution":False,"pause":False,"win_rate":None}
+    snipe_memory=snipe_learning_adjustment(c,asset,tf) if c is not None else {
+        "sample":0,"wins":0,"losses":0,"win_rate":None,"loss_streak":0,
+        "caution":False,"pause":False,"patterns":{}}
     current_flips=0
     if c is not None and market_id:
         row=c.execute("SELECT flip_count FROM forecast_journal WHERE market_id=? AND timeframe=?",
@@ -448,19 +497,41 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
         objections.append(f"resolved {tf}m windows flip often ({memory['flip_rate']*100:.0f}%)")
     if memory["caution"]: objections.append("recent resolved memory asks for stronger confirmation")
     if memory["pause"]: objections.append("resolved-paper safety pause is active")
+    if snipe_memory["sample"]>=8 and snipe_memory["caution"]:
+        objections.append(f"snipe memory weak ({snipe_memory['win_rate']:.0f}% from {snipe_memory['sample']})")
+    if snipe_memory["pause"]:
+        objections.append(f"snipe loss guard active ({snipe_memory['loss_streak']} losses in a row)")
+    patterns=snipe_memory.get("patterns",{})
+    if snipe_memory["losses"]>=4:
+        current_conflict=(m1*sign<=0 or m3*sign<=0)
+        current_low_score=abs(float(tech.get("score",0)))<4
+        current_exhaustion=(side=="UP" and pos is not None and float(pos)>=85) or (side=="DOWN" and pos is not None and float(pos)<=15)
+        current_rsi_extreme=(side=="UP" and rsi>=72) or (side=="DOWN" and rsi<=28)
+        if current_conflict and patterns.get("momentum_conflict_rate",0)>=0.50:
+            objections.append("past snipe losses often had conflicting momentum")
+        if current_low_score and patterns.get("low_score_rate",0)>=0.50:
+            objections.append("past snipe losses often had weak votes")
+        if current_exhaustion and patterns.get("range_exhaustion_rate",0)>=0.50:
+            objections.append("past snipe losses often entered near range exhaustion")
+        if current_rsi_extreme and patterns.get("rsi_extreme_rate",0)>=0.50:
+            objections.append("past snipe losses often had stretched RSI")
     score=len(support)-len(objections)
-    required_score=3 if current_flips>=2 or memory["caution"] else 2
-    agrees=(score>=required_score and len(support)>=3 and not memory["pause"] and current_flips<3)
+    required_score=3 if current_flips>=2 or memory["caution"] or snipe_memory["caution"] else 2
+    agrees=(score>=required_score and len(support)>=3 and not memory["pause"] and
+            not snipe_memory["pause"] and current_flips<3)
     risk=flip_risk(tech,side,float(stats.get("imbalance",0)))
-    risk=min(95,risk+min(24,current_flips*8)+int(memory["flip_rate"]*20))
+    risk=min(95,risk+min(24,current_flips*8)+int(memory["flip_rate"]*20)+
+             min(20,snipe_memory["loss_streak"]*5)+(8 if snipe_memory["caution"] else 0))
     verdict="DEFENSE WINS · CONFIRMED" if agrees else "PROSECUTION WINS · WAIT"
+    snipe_wr=f"{snipe_memory['win_rate']:.0f}%" if snipe_memory["win_rate"] is not None else "—"
     debate=(f"FOR: {', '.join(support[:3]) or 'no strong evidence'} | "
             f"AGAINST: {', '.join(objections[:3]) or 'no strong objection'} | "
-            f"MEMORY: {memory['sample']} resolved, {memory['flip_rate']*100:.0f}% flip rate | "
+            f"FORECAST MEMORY: {memory['sample']} resolved, {memory['flip_rate']*100:.0f}% flip rate | "
+            f"SNIPE MEMORY: {snipe_memory['sample']} settled, {snipe_wr}, loss streak {snipe_memory['loss_streak']} | "
             f"CURRENT WINDOW: {current_flips} flips | VERDICT: {verdict}")
     return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT",
             "score":score,"flip_risk":risk,"market_flips":current_flips,
-            "memory":memory,"debate":debate}
+            "memory":memory,"snipe_memory":snipe_memory,"debate":debate}
 
 def scalp_call(c, asset, tf, market, tech):
     """Readable 5m scalp idea only when momentum and liquidity are aligned."""
@@ -482,7 +553,10 @@ def scalp_call(c, asset, tf, market, tech):
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
     if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
-    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree"
+    sm=brain.get("snipe_memory",{})
+    wr=f"{sm['win_rate']:.0f}%" if sm.get("win_rate") is not None else "new sample"
+    memory_note=f" · snipe memory {wr}/{sm.get('sample',0)} · loss streak {sm.get('loss_streak',0)}"
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}"
 
 def snipe_update(c, market_id, side, stats, tech, brain):
     """Track real Polymarket contract ask movement; meter is strength, not win odds."""
@@ -525,7 +599,7 @@ def maybe_enter(c, asset, tf, m, tech):
     snipe=snipe_update(c,m.get("id"),side,stats,tech,brain)
     # Journal every confirmed snipe once per market/direction; resolve at settlement.
     if "SNIPE CONFIRMED" in snipe:
-        record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]))
+        record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]),features=tech)
     current_risk=int(brain.get("flip_risk",95))
     pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% {pct_bar(round(stats['ask']*100))} (contract price, not bot win probability)")
     reasons=[]
@@ -851,13 +925,13 @@ def publish_board(c, embeds):
     except Exception as e:
         print(f"Multi-bot Discord board update failed: {type(e).__name__}: {e}")
 
-def record_snipe_signal(c, asset, tf, market, side, entry):
-    """Journal a qualifying scalp signal once; score direction at market settlement."""
+def record_snipe_signal(c, asset, tf, market, side, entry, features=None):
+    """Journal each qualifying snipe with its setup so losses can teach the next call."""
     market_id=str(market.get("id",""))
     if not market_id or side not in ("UP","DOWN"): return
     c.execute(
-        "INSERT OR IGNORE INTO snipe_journal(market_id,asset,timeframe,side,entry,created_at) VALUES(?,?,?,?,?,?)",
-        (market_id,asset,int(tf),side,float(entry),iso()))
+        "INSERT OR IGNORE INTO snipe_journal(market_id,asset,timeframe,side,entry,created_at,features) VALUES(?,?,?,?,?,?,?)",
+        (market_id,asset,int(tf),side,float(entry),iso(),json.dumps(features or {})))
     c.commit()
 
 
@@ -1067,7 +1141,7 @@ def cycle(c):
                     smatch=re.search(r"entry ([0-9.]+)",scalp)
                     sside=re.search(r"SCALP CALL (UP|DOWN)",scalp)
                     if smatch and sside:
-                        record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)))
+                        record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)),features=tech)
                 side=tech["side"]
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
