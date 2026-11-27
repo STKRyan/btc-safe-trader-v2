@@ -588,6 +588,8 @@ def market_embeds(lines):
         hold=max(5,min(95,50+abs(int(score))*8+(6 if float(m1)*int(score)>0 else -8)))
         if risk>=70: hold=max(5,hold-10)
         body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
+        pm_match=re.search(r'(POLYMARKET (?:UP|DOWN) · bid [^·]+ · buy-side implied [^·]+)',body)
+        pm_value=pm_match.group(1) if pm_match else 'Live Polymarket bid/ask unavailable this scan'
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
@@ -597,7 +599,7 @@ def market_embeds(lines):
         else: level='LOWER · signal currently aligned'
         color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
@@ -676,10 +678,11 @@ def dashboard(c, lines):
             signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
             hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
             flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
+            pm=next((x.get('value','') for x in cf if x.get('name')=='POLYMARKET LIVE ODDS'),'')
             action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
             court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'⚖️ Courtroom evidence is being collected.')
             scalp=next((x.get('value','') for x in cf if x.get('name','').startswith('SCALP SETUP')),'')
-            compact='\n'.join([f'**{action_line[:100]}**',signal[:65],hold[:75],flip[:85],court[:120],('⚡ '+scalp[:70] if scalp else '')]).strip()
+            compact='\n'.join([f'**{action_line[:100]}**',pm[:150],signal[:65],hold[:75],flip[:85],court[:120],('⚡ '+scalp[:70] if scalp else '')]).strip()
             market_fields.append({'name':card['title'][:90],'value':compact[:420],'inline':True})
     # Discord caps all embeds in one message at 6000 total characters.
     # Keep the board comfortably below that limit so PATCH succeeds.
