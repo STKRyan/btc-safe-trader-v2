@@ -249,9 +249,10 @@ def learning_adjustment(c, asset, tf):
         losses=sum(r["outcome"]=="LOSS" for r in rows)
         decisive=wins+losses
         wr=100*wins/decisive if decisive else None
-        weak=wr is not None and wr<52
-        caution=(wr is not None and wr<52) or flip_rate>=0.35
-        pause=(wr is not None and wr<42) or flip_rate>=0.50 or peer_pause
+        weak=wr is not None and wr<55
+        caution=(wr is not None and wr<55) or flip_rate>=0.30
+        # Risk-first: pause earlier when enough resolved calls show a weak edge.
+        pause=(wr is not None and wr<48) or flip_rate>=0.40 or peer_pause
         return {"sample":n,"threshold":5 if weak or peer_pause or flip_rate>=0.35 else 4,
                 "pause":pause,"caution":caution,"win_rate":wr,"flips":flips,
                 "flip_rate":flip_rate,"peer":peer}
@@ -261,9 +262,10 @@ def learning_adjustment(c, asset, tf):
     ).fetchall()
     old_n=len(old); old_w=sum(float(r["pnl"] or 0)>0 for r in old)
     old_wr=100*old_w/old_n if old_n else None
-    weak=old_n>=12 and old_wr<52
-    caution=(n>=8 and flip_rate>=0.35) or weak
-    pause=peer_pause or (old_n>=12 and old_wr<42) or (n>=12 and flip_rate>=0.50)
+    weak=old_n>=12 and old_wr<55
+    caution=(n>=8 and flip_rate>=0.30) or weak
+    # Pause earlier on weak historical paper performance or frequent flips.
+    pause=peer_pause or (old_n>=12 and old_wr<48) or (n>=12 and flip_rate>=0.40)
     return {"sample":n,"threshold":5 if peer_pause or weak or (n>=8 and flip_rate>=0.35) else 4,
             "pause":pause,"caution":caution,"win_rate":old_wr,"flips":flips,
             "flip_rate":flip_rate,"peer":peer}
