@@ -1769,7 +1769,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     performance = recent_paper_performance(conn, 20, minutes)
     if performance["count"] >= 10 and performance["win_rate"] < 60.0:
         reasons.append(f"recent {minutes}m paper results below 60%; adaptive safety pause")
-    streak = btc_streak_guard(conn, minutes)
+    streak = btc_streak_guard(conn, minutes, "STANDARD")
     trade_streak = streak["trades"]
     # After two paper losses, wait for two independently resolved forecast wins
     # before re-entering. A single loss tightens selection; it never loosens caps.
