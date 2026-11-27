@@ -706,7 +706,7 @@ def btc_forecast_score_text(conn: sqlite3.Connection) -> str:
     best=max(best,int(saved["state_value"]) if saved else 0)
     conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('btc_forecast_best_streak',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",(str(best),)); conn.commit()
     n=len(rows); rate=100*(wins+flips)/n if n else None
-    return (f"FORECAST W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\\n🔥 Current **{current}** · 🏆 Record **{best}**") if n else "Forecast W/F/L · waiting for first settled market"
+    return (f"FORECAST W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\n🔥 Current **{current}** · 🏆 Record **{best}**") if n else "Forecast W/F/L · waiting for first settled market"
 
 
 def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
@@ -720,7 +720,7 @@ def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
     best=max(best,int(saved["state_value"]) if saved else 0)
     conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('btc_snipe_best_streak',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",(str(best),)); conn.commit()
     n=len(rows); rate=100*(wins+flips)/n if n else None
-    return (f"SNIPE W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\\n🎯 Current **{current}** · 🏆 Record **{best}**") if n else "Snipe W/F/L · waiting for first settled snipe"
+    return (f"SNIPE W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\n🎯 Current **{current}** · 🏆 Record **{best}**") if n else "Snipe W/F/L · waiting for first settled snipe"
 
 
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
