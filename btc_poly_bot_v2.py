@@ -908,11 +908,14 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
                 action, close_qty = "🛑 STOP / EXIT 100%", qty
             elif roi >= 0.10:
                 action, close_qty = "🎯 TAKE PROFIT / EXIT 100%", qty
-            elif flip >= 80 or hold < 35:
+            elif (market_side != position_side and abs(int(tech["score"])) >= 4
+                  and stats["imbalance"] * (1 if market_side == "UP" else -1) >= 0.10):
+                action, close_qty = "🔄 CONFIRMED REVERSAL / EXIT 100%", qty
+            elif flip >= 75 or hold < 40:
                 action, close_qty = "🔴 HIGH FLIP RISK / EXIT 100%", qty
             elif roi >= 0.05 and not partial_taken:
                 action, close_qty = "🟠 TAKE PROFIT / SELL 50%", qty / 2.0
-            elif flip >= 65:
+            elif flip >= 60:
                 if not partial_taken:
                     action, close_qty = "🟠 FLIP RISK / SELL 50%", qty / 2.0
                 else:
@@ -1039,7 +1042,7 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     if not stats:
         return
     ask, bid = stats["ask"], stats["bid"]
-    scalp_opinion = second_opinion(tech, stats, conn=conn, minutes=5, slug=slug)
+    scalp_opinion = second_opinion(tech, stats, conn=conn, minutes=5, slug=slug, trade_type="SCALP")
     if not scalp_opinion["agrees"]:
         return
     scalp_streak = btc_streak_guard(conn, 5, "SCALP")
@@ -1299,10 +1302,12 @@ def record_btc_loss_reviews(conn: sqlite3.Connection) -> None:
 
 
 def btc_loss_pattern_guard(conn: Optional[sqlite3.Connection], minutes: int,
-                           tech: dict, stats: Optional[dict], current_flip_risk: int) -> dict:
+                           tech: dict, stats: Optional[dict], current_flip_risk: int,
+                           trade_type: str = "STANDARD") -> dict:
     """Block a repeated condition only after it appears in multiple saved losing reviews."""
     if conn is None: return {"sample":0,"active":[],"block":False}
-    rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? ORDER BY reviewed_at DESC LIMIT 20",(int(minutes),)).fetchall()
+    rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? AND UPPER(trade_type)=? ORDER BY reviewed_at DESC LIMIT 20",
+        (int(minutes), str(trade_type).upper())).fetchall()
     tally={}
     for row in rows:
         try: tags=json.loads(row["tags"] or "[]")
@@ -1327,7 +1332,7 @@ def btc_loss_pattern_guard(conn: Optional[sqlite3.Connection], minutes: int,
 
 def second_opinion(tech: dict, stats: Optional[dict] = None,
                    conn: Optional[sqlite3.Connection] = None, minutes: int = 5,
-                   slug: Optional[str] = None) -> dict:
+                   slug: Optional[str] = None, trade_type: str = "STANDARD") -> dict:
     """Second-brain challenge: momentum, book pressure, exhaustion and resolved memory."""
     move1 = float(tech.get("move1", 0.0))
     move3 = float(tech.get("move3", 0.0))
@@ -1373,7 +1378,7 @@ def second_opinion(tech: dict, stats: Optional[dict] = None,
     risk += min(20, market_flips * 7)
     risk += min(15, int(memory["flip_rate"] * 30))
     risk = max(5, min(95, risk))
-    loss_guard=btc_loss_pattern_guard(conn,minutes,tech,stats,risk)
+    loss_guard=btc_loss_pattern_guard(conn,minutes,tech,stats,risk,trade_type=trade_type)
     risk=max(5,min(95,risk+min(24,8*len(loss_guard["active"]))))
     if market_flips >= 2: agrees = False
     if memory["pause"] or loss_guard["block"]: agrees = False
