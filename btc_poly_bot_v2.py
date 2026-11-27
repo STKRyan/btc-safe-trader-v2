@@ -95,10 +95,10 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
         color, badge = 0xF59E0B, "🟠 TAKE PROFIT"
     elif "WAIT" in upper or "NO ENTRY" in upper or "NO MARKET" in upper:
         color, badge = 0xF59E0B, "🟡 WAIT"
-    elif "UP" in upper:
-        color, badge = 0x19C37D, "🟢 UP"
-    elif "DOWN" in upper:
+    elif re.search(r"\bDOWN\b", upper):
         color, badge = 0xEF4444, "🔴 DOWN"
+    elif re.search(r"\bUP\b", upper):
+        color, badge = 0x19C37D, "🟢 UP"
     elif "HOLD" in upper:
         color, badge = 0x19C37D, "🟢 HOLD"
     else:
