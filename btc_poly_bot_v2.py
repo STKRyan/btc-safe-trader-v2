@@ -724,8 +724,16 @@ def btc_forecast_score_text(conn: sqlite3.Connection) -> str:
 
 
 def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
-    rows=conn.execute("SELECT outcome FROM btc_snipe_journal WHERE status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at ASC,id ASC").fetchall()
+    rows=conn.execute("SELECT outcome,features FROM btc_snipe_journal WHERE status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at ASC,id ASC").fetchall()
     wins=sum(r["outcome"]=="WIN" for r in rows); flips=sum(r["outcome"]=="FLIP" for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
+    shadow_wins=shadow_losses=shadow_count=0
+    for row in rows:
+        try: features=json.loads(row["features"] or "{}")
+        except Exception: features={}
+        if features.get("streak_guard_blocked"):
+            shadow_count+=1
+            if row["outcome"] in ("WIN","FLIP"): shadow_wins+=1
+            elif row["outcome"]=="LOSS": shadow_losses+=1
     current=best=0
     for r in rows:
         if r["outcome"] in ("WIN","FLIP"): current+=1; best=max(best,current)
@@ -734,9 +742,10 @@ def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
     best=max(best,int(saved["state_value"]) if saved else 0)
     conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('btc_snipe_best_streak',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",(str(best),)); conn.commit()
     n=len(rows); rate=100*(wins+flips)/n if n else None
-    return (f"SNIPE W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\n🎯 Current **{current}** · 🏆 Record **{best}**") if n else "Snipe W/F/L · waiting for first settled snipe"
-
-
+    if not n: return "Snipe journal · waiting for first settled setup"
+    shadow_text=(f" · guard-blocked shadow {shadow_wins}W/{shadow_losses}L n={shadow_count}" if shadow_count else "")
+    return (f"SNIPE W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}"
+            f"{shadow_text}\n🎯 Current **{current}** · 🏆 Record **{best}**")
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
     five = btc_trade_tracker(conn, timeframe=5, limit=1000000)
     fifteen = btc_trade_tracker(conn, timeframe=15, limit=1000000)
