@@ -86,6 +86,9 @@ def make_embed(samples):
     recent_price = float(samples[-7][1]) if len(samples) >= 7 else first
     short_change = ((latest / recent_price) - 1.0) * 100.0 if recent_price else 0.0
     direction = "📈 BULLISH" if short_change > 0.025 else "📉 BEARISH" if short_change < -0.025 else "➡️ NEUTRAL"
+    range_high = max(float(c["h"]) for c in candles)
+    range_low = min(float(c["l"]) for c in candles)
+    range_position = 100.0 * (latest - range_low) / max(0.000001, range_high - range_low)
     candle_data = [
         {"x": c["x"], "o": round(c["o"], 2), "h": round(c["h"], 2),
          "l": round(c["l"], 2), "c": round(c["c"], 2)}
@@ -102,13 +105,16 @@ def make_embed(samples):
         }]},
         "options": {
             "plugins": {"legend": {"display": False}},
+            "title": {"display": True, "text": "BTC / USD · 15 SECOND SAMPLED CANDLES", "color": "#f1f5f9",
+                      "font": {"size": 22, "weight": "bold"}, "padding": 16},
             "scales": {
                 "x": {"type": "time", "time": {"unit": "minute"},
-                     "ticks": {"color": "#cbd5e1", "maxTicksLimit": 8},
+                     "ticks": {"color": "#f1f5f9", "font": {"size": 16}, "maxTicksLimit": 7},
                      "grid": {"color": "#263244"}},
-                "y": {"position": "right", "ticks": {"color": "#cbd5e1"},
+                "y": {"position": "right", "ticks": {"color": "#f1f5f9", "font": {"size": 16}, "maxTicksLimit": 7},
                       "grid": {"color": "#263244"},
-                      "title": {"display": True, "text": "BTC / USD", "color": "#cbd5e1"}},
+                      "title": {"display": True, "text": "BTC PRICE · USD", "color": "#f1f5f9",
+                                "font": {"size": 18, "weight": "bold"}}},
             },
         },
     }
@@ -118,8 +124,14 @@ def make_embed(samples):
             f"💰 **BTC/USD: ${latest:,.2f}**\n"
             f"📊 Window change: **{change:+.2f}%**\n"
             f"⚡ Short trend: **{direction}**\n"
+            f"🔺 1-hour high: **${range_high:,.2f}**\n"
+            f"🔻 1-hour low: **${range_low:,.2f}**\n"
+            f"📍 Price is **{range_position:.0f}%** from the low toward the high.\n"
             f"🕯️ Candles: **{len(candles)}** · chart refresh: **{UPDATE_SECONDS}s**\n\n"
-            "Dark TradingView-style layout · green = candle closed up, red = closed down. "
+            "EASY GUIDE: green candle = price went up in that candle; red = price went down. "
+            "High = highest sampled price in this chart. Low = lowest sampled price. "
+            "Near the high can mean price is stretched; near the low can mean price is weak. "
+            "Neither guarantees the next move.\n"
             "Candles are built from Coinbase last-trade snapshots collected every "
             f"{SAMPLE_SECONDS}s and grouped into {CANDLE_SECONDS}s OHLC bars; "
             "they are sampled candles, not exchange-native 15-second candles."
@@ -134,7 +146,7 @@ def update_discord(webhook, state, embed, chart_config):
     chart_response = SESSION.post(
         "https://quickchart.io/chart",
         json={
-            "version": "4", "width": 1000, "height": 560,
+            "version": "4", "width": 1400, "height": 800,
             "devicePixelRatio": 2, "format": "png",
             "backgroundColor": "#111627", "chart": chart_config,
         },
