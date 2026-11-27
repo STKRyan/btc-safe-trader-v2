@@ -597,9 +597,10 @@ def btc_trade_tracker(conn: sqlite3.Connection, timeframe: Optional[int] = None,
             "best_win_streak":best_wins,"net_pnl":sum(pnls)}
 
 
-def btc_streak_guard(conn: sqlite3.Connection, timeframe: int) -> dict:
+def btc_streak_guard(conn: sqlite3.Connection, timeframe: int,
+                      trade_type: Optional[str] = None) -> dict:
     """Protect paper entry streaks; forecast recovery is independent of trade entry."""
-    trades = btc_trade_tracker(conn, timeframe=timeframe, limit=100)
+    trades = btc_trade_tracker(conn, timeframe=timeframe, trade_type=trade_type, limit=100)
     forecasts = conn.execute(
         "SELECT outcome FROM btc_forecasts WHERE timeframe=? AND status='RESOLVED' "
         "ORDER BY resolved_at DESC LIMIT 12", (int(timeframe),)
@@ -683,7 +684,8 @@ def btc_tracker_text(conn: sqlite3.Connection) -> str:
         f"BTC 5M: {record(five)}\nBTC 15M: {record(fifteen)}\n"
         f"⚡ SNIPE/SCALP 5M: {record(snipes)}\n"
         f"🔥 STREAK 5M: {five['current_win_streak']}W/{five['current_loss_streak']}L · best {five['best_win_streak']}\n"
-        f"STREAK 15M: {fifteen['current_win_streak']}W/{fifteen['current_loss_streak']}L · best {fifteen['best_win_streak']}"
+        f"STREAK 15M: {fifteen['current_win_streak']}W/{fifteen['current_loss_streak']}L · best {fifteen['best_win_streak']}\n"
+        f"SNIPE STREAK: {snipes['current_win_streak']}W/{snipes['current_loss_streak']}L · best {snipes['best_win_streak']}"
     )
 
 
@@ -895,13 +897,18 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     scalp_opinion = second_opinion(tech, stats, conn=conn, minutes=5, slug=slug)
     if not scalp_opinion["agrees"]:
         return
-    scalp_streak = btc_streak_guard(conn, 5)
-    scalp_losses = scalp_streak["trades"]["current_loss_streak"]
+    scalp_streak = btc_streak_guard(conn, 5, "SCALP")
+    scalp_stats = scalp_streak["trades"]
+    scalp_losses = scalp_stats["current_loss_streak"]
+    scalp_flip = int(scalp_opinion.get("flip_risk",100))
     if scalp_losses >= 2 and scalp_streak["forecast_recovery_wins"] < 2:
-        print(f"BTC 5m scalp streak guard: {scalp_losses} paper losses; waiting for 2 forecast wins.")
+        print(f"BTC 5m scalp streak guard: {scalp_losses} snipe losses; waiting for 2 forecast wins.")
         return
-    if scalp_losses == 1 and (abs(score) < 4 or int(scalp_opinion.get("flip_risk",100)) > 50):
-        print("BTC 5m scalp streak guard: after one loss require 4/5 votes and flip risk <=50.")
+    if scalp_losses == 1 and (abs(score) < 4 or scalp_flip > 50):
+        print("BTC 5m scalp streak guard: after one snipe loss require 4/5 votes and flip risk <=50.")
+        return
+    if scalp_stats["current_win_streak"] >= 3 and (abs(score) < 4 or scalp_flip > 45 or ask > 0.65):
+        print("BTC 5m scalp streak protection: preserving 3+ wins; skip weak/late setup.")
         return
     filters_ok = (
         SCALP_MIN_ASK <= ask <= SCALP_MAX_ASK
@@ -1735,6 +1742,9 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     elif trade_streak["current_loss_streak"] == 1:
         if abs(int(tech["score"])) < 4 or not opinions["agrees"] or int(opinions.get("flip_risk", 100)) > 50:
             reasons.append("STREAK PROTECTION after 1 loss: require 4/5 votes, second-brain agreement, and flip risk ≤50")
+    elif trade_streak["current_win_streak"] >= 3:
+        if abs(int(tech["score"])) < 4 or int(opinions.get("flip_risk",100)) > 45 or ask > 0.65:
+            reasons.append("WIN-STREAK PROTECTION: skip weak/late entries; require 4/5 votes, flip risk ≤45, and ask ≤$0.65")
     memory = opinions["memory"]
     if memory["caution"]:
         reasons.append(f"second-brain memory caution: {memory['flip_rate']*100:.0f}% of resolved {minutes}m windows flipped")
