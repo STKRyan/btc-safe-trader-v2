@@ -859,52 +859,54 @@ def record_snipe_signal(c, asset, tf, market, side, entry):
 
 
 def asset_paper_stats(c, asset, snipe=False):
-    """Per-asset settled W/L and independent current/best streak."""
+    """Per-asset settled forecast outcomes: WIN, FLIP, LOSS, independent streak."""
     if snipe:
         rows=c.execute(
-            "SELECT result,resolved_at FROM snipe_journal WHERE asset=? AND status='RESOLVED' "
-            "ORDER BY resolved_at ASC,id ASC",(asset,)).fetchall()
+            "SELECT result AS outcome,resolved_at FROM snipe_journal "
+            "WHERE asset=? AND status='RESOLVED' ORDER BY resolved_at ASC,id ASC",(asset,)).fetchall()
         key=f"asset_snipe_best_streak_{asset}"
+        positive=("WIN",)
     else:
         rows=c.execute(
-            "SELECT CASE WHEN pnl>0 THEN 'WIN' WHEN pnl<0 THEN 'LOSS' ELSE 'BREAKEVEN' END result,"
-            "resolved_at FROM calls WHERE asset=? AND status='RESOLVED' ORDER BY resolved_at ASC,id ASC",
-            (asset,)).fetchall()
-        key=f"asset_paper_best_streak_{asset}"
-    wins=sum(r["result"]=="WIN" for r in rows)
-    losses=sum(r["result"]=="LOSS" for r in rows)
-    breakeven=sum(r["result"]=="BREAKEVEN" for r in rows)
+            "SELECT outcome,resolved_at FROM forecast_journal "
+            "WHERE asset=? AND status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') "
+            "ORDER BY resolved_at ASC,market_id ASC,timeframe ASC",(asset,)).fetchall()
+        key=f"asset_forecast_best_streak_{asset}"
+        positive=("WIN","FLIP")
+    wins=sum(r["outcome"]=="WIN" for r in rows)
+    flips=sum(r["outcome"]=="FLIP" for r in rows)
+    losses=sum(r["outcome"]=="LOSS" for r in rows)
     current=0; best=0
     for r in rows:
-        if r["result"]=="WIN":
+        if r["outcome"] in positive:
             current+=1; best=max(best,current)
-        elif r["result"]=="LOSS":
+        elif r["outcome"]=="LOSS":
             current=0
-        # Breakeven does not count as a win or loss and preserves the win run.
     saved=c.execute("SELECT value FROM bot_state WHERE key=?",(key,)).fetchone()
     best=max(best,int(saved["value"]) if saved else 0)
     c.execute("INSERT INTO bot_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
               (key,str(best)))
-    n=wins+losses
-    return {"wins":wins,"losses":losses,"breakeven":breakeven,"sample":n,
-            "win_rate":100*wins/n if n else None,"loss_rate":100*losses/n if n else None,
+    n=wins+flips+losses
+    return {"wins":wins,"flips":flips,"losses":losses,"sample":n,
+            "win_rate":100*(wins+flips)/n if n else None,
+            "loss_rate":100*losses/n if n else None,
             "current_streak":current,"best_streak":best}
 
 
 def per_asset_tracker_field(c, asset):
-    trade=asset_paper_stats(c,asset,False)
-    snipe=asset_paper_stats(c,asset,True)
-    wr=f"{trade['win_rate']:.1f}%" if trade["win_rate"] is not None else "—"
-    lr=f"{trade['loss_rate']:.1f}%" if trade["loss_rate"] is not None else "—"
-    swr=f"{snipe['win_rate']:.1f}%" if snipe["win_rate"] is not None else "—"
-    slr=f"{snipe['loss_rate']:.1f}%" if snipe["loss_rate"] is not None else "—"
+    stats=asset_paper_stats(c,asset,False)
+    sn=asset_paper_stats(c,asset,True)
+    rate=f"{stats['win_rate']:.1f}%" if stats["win_rate"] is not None else "—"
+    loss_rate=f"{stats['loss_rate']:.1f}%" if stats["loss_rate"] is not None else "—"
+    srate=f"{sn['win_rate']:.1f}%" if sn["win_rate"] is not None else "—"
+    sloss=f"{sn['loss_rate']:.1f}%" if sn["loss_rate"] is not None else "—"
     return (
-        f"📊 **{asset} PAPER RECORD** · W/L **{trade['wins']}/{trade['losses']}** "
-        f"(n={trade['sample']}) · Win {wr} / Loss {lr}\n"
-        f"🔥 Current streak **{trade['current_streak']}** · 🏆 Best **{trade['best_streak']}**\n"
-        f"🎯 **SNIPE DIRECTIONAL** · W/L **{snipe['wins']}/{snipe['losses']}** "
-        f"(n={snipe['sample']}) · Win {swr} / Loss {slr}\n"
-        f"🔥 Snipe current **{snipe['current_streak']}** · 🏆 Best **{snipe['best_streak']}**"
+        f"📊 **{asset} FORECAST RECORD (5m + 15m)**\n"
+        f"WIN **{stats['wins']}** · FLIP **{stats['flips']}** · LOSS **{stats['losses']}** · Resolved **{stats['sample']}**\n"
+        f"Correct incl. flips **{rate}** · Loss rate **{loss_rate}**\n"
+        f"🔥 Current streak **{stats['current_streak']}** · 🏆 Best **{stats['best_streak']}**\n"
+        f"🎯 **SNIPE** W/L **{sn['wins']}/{sn['losses']}** · Win {srate} / Loss {sloss} "
+        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}"
     )
 
 
