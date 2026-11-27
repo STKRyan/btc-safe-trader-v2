@@ -1649,7 +1649,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
 
 def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Create once, then edit the same Discord webhook message on a safe cadence."""
-    write_btc_site_data(conn, tech, opinions)
+    # Optional site-data writer was removed; keep Discord dashboard independent.
     last_update_row = conn.execute(
         "SELECT state_value FROM bot_state WHERE state_key='dashboard_last_update'"
     ).fetchone()
