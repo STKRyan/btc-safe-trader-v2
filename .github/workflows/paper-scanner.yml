@@ -1,14 +1,8 @@
 name: Multi-Asset Paper Scanner
 
+# The continuous multi-asset scanner now runs on Render.
+# Keep this workflow manual-only to prevent duplicate scans and Discord updates.
 on:
-  push:
-    branches: [main]
-    paths:
-      - poly_multi_asset_bot.py
-      - .github/workflows/paper-scanner.yml
-  schedule:
-    # Start a four-minute scan every five minutes for fresher signals.
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
