@@ -92,7 +92,7 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
         color,badge=0xEF4444,"🔴 EXIT / PROTECT"
     elif any(word in upper for word in ("SELL 50%","TAKE PROFIT","TAKE-PROFIT")):
         color,badge=0xF59E0B,"🟠 TAKE PROFIT"
-    elif "FLIP" in upper:
+    elif re.search(r"\bFLIP(?:PED)?\b", (lines[0] if lines else "").upper()):
         color,badge=0xF59E0B,"🟠 FLIP"
     elif "HOLD" in upper:
         color,badge=0x14B8A6,"🩵 HOLD"
@@ -1111,7 +1111,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"**LIVE ODDS** {odds_text}\n"
         f"**BTC** USD {price:,.2f}  ·  **{minutes}M** closes **{countdown}**\n"
         f"{progress_bar} **{market_progress}%** elapsed\n"
-        f"**🩵 HOLD** {hold_meter}% {color_meter(hold_meter,'🟦')}  ·  **🟥 EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
+        f"**🩵 HOLD** {hold_meter}% {color_meter(hold_meter,'🩵')}  ·  **🟥 EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
         f"*Updated <t:{int(time.time())}:R>*"
     )
 
