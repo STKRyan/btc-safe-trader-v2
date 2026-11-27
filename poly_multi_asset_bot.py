@@ -401,7 +401,7 @@ def maybe_enter(c, asset, tf, m, tech):
     signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
-    pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% (contract price, not bot win probability)")
+    pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% {pct_bar(round(stats['ask']*100))} (contract price, not bot win probability)")
     reasons=[]
     if abs(tech["score"])<required:reasons.append(f"signal votes {abs(tech['score'])}/5; need {required}")
     if not confirm:reasons.append("short momentum not aligned")
