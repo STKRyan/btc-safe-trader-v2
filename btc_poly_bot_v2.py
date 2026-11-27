@@ -88,19 +88,20 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     headline = re.sub(r"\*\*", "", lines[0] if lines else "BTC SIGNAL UPDATE").strip()[:220]
     upper = text.upper()
-    if any(word in upper for word in ("SELL / REDUCE","PROTECT / EXIT","EXIT RISK","STOP LOSS")):
+    status_text = " ".join(lines[:2]).upper()
+    if any(word in status_text for word in ("SELL / REDUCE","PROTECT / EXIT","EXIT RISK","STOP LOSS")):
         color,badge=0xEF4444,"🔴 EXIT / PROTECT"
-    elif any(word in upper for word in ("SELL 50%","TAKE PROFIT","TAKE-PROFIT")):
+    elif any(word in status_text for word in ("SELL 50%","TAKE PROFIT","TAKE-PROFIT")):
         color,badge=0xF59E0B,"🟠 TAKE PROFIT"
-    elif re.search(r"\bFLIP(?:PED)?\b", (lines[0] if lines else "").upper()):
+    elif re.search(r"\bFLIP(?:PED)?\b", status_text):
         color,badge=0xF59E0B,"🟠 FLIP"
-    elif "HOLD" in upper:
-        color,badge=0x14B8A6,"🩵 HOLD"
-    elif "WAIT" in upper or "NO ENTRY" in upper or "NO MARKET" in upper:
+    elif "WAIT" in status_text or "NO ENTRY" in status_text or "NO MARKET" in status_text:
         color,badge=0x8794A8,"⚪ WAIT"
-    elif re.search(r"\bDOWN\b",upper):
+    elif "HOLD" in status_text:
+        color,badge=0x14B8A6,"🩵 HOLD"
+    elif re.search(r"\bDOWN\b",status_text):
         color,badge=0xEF4444,"🔴 DOWN"
-    elif re.search(r"\bUP\b",upper):
+    elif re.search(r"\bUP\b",status_text):
         color,badge=0x19C37D,"🟢 UP"
     else:
         color,badge=0x4BD9FF,"📡 UPDATE"
@@ -1518,7 +1519,7 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         f"<b>₿ BTC {minutes}m  |  {action}</b>\n"
         f"<b>{'🟢 UP' if side == 'UP' else '🔴 DOWN'} BIAS</b>  {up_bias}% / {down_bias}%\n"
         f"<code>UP   {gauge_bar(up_bias, 10)}\nDOWN {gauge_bar(down_bias, 10)}</code>\n\n"
-        f"{gauge_line('HOLD', signal_hold, '🟢')}\n"
+        f"{gauge_line('HOLD', signal_hold, '🩵')}\n"
         f"{gauge_line('FLIP RISK', signal_flip, '🟠')}\n"
         f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{gauge_bar(scalp_fit)}</code>\n"
         f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
