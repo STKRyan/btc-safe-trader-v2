@@ -36,3 +36,23 @@ services:
         value: "15"
       - key: DISCORD_BTC_CHART_WEBHOOK_URL
         sync: false
+
+  - type: worker
+    name: multi-asset-paper-scanner
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python poly_multi_asset_bot.py
+    disk:
+      name: multi-asset-paper-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: POLY_BOT_DB
+        value: /opt/render/project/src/data/poly_multi_asset.sqlite3
+      - key: SCAN_INTERVAL_SECONDS
+        value: "10"
+      - key: SIGNAL_REPEAT_SECONDS
+        value: "30"
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
