@@ -685,9 +685,22 @@ def dashboard(c, lines):
     bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
     write_site_data(c,display_lines)
     print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
-    frows=c.execute("SELECT outcome FROM forecast_journal WHERE status='RESOLVED' ORDER BY resolved_at DESC LIMIT 100").fetchall()
-    fw=sum(x["outcome"]=="WIN" for x in frows); ff=sum(x["outcome"]=="FLIP" for x in frows); fl=sum(x["outcome"]=="LOSS" for x in frows)
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST SCORE · W / F / L','value':f'**{fw} / {ff} / {fl}**\nFLIP is neutral · {len(frows)} resolved','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
+    frows=c.execute("SELECT outcome FROM forecast_journal WHERE status='RESOLVED' ORDER BY resolved_at ASC").fetchall()
+    fw=sum(x["outcome"]=="WIN" for x in frows)
+    ff=sum(x["outcome"]=="FLIP" for x in frows)
+    fl=sum(x["outcome"]=="LOSS" for x in frows)
+    current_streak=0; best_streak=0
+    for item in frows:
+        if item["outcome"] in ("WIN","FLIP"):
+            current_streak+=1; best_streak=max(best_streak,current_streak)
+        else:
+            current_streak=0
+    # Persist the all-time record so it survives restarts and remains visible.
+    saved=c.execute("SELECT value FROM bot_state WHERE key='forecast_win_streak_record'").fetchone()
+    best_streak=max(best_streak,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES('forecast_win_streak_record',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best_streak),))
+    c.commit()
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\\nMulti-crypto · courtroom review · 5m / 15m\\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     # Five concise coin cards, refreshed with the latest scan values.
