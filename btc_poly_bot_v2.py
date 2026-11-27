@@ -1006,7 +1006,7 @@ def _live_market_odds(minutes: int) -> dict:
     now=time.time()
     cache=getattr(_live_market_odds,"_cache",{})
     cached=cache.get(int(minutes))
-    if cached and now-cached[0]<10:
+    if cached and now-cached[0]<5:
         return cached[1]
     result={"up":None,"down":None,"raw":{}}
     try:
@@ -1062,7 +1062,7 @@ def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
         status="SNIPE WAIT · selected contract weakening"
     else:
         status="SNIPE WATCH · move not strong enough"
-    strength=0 if move is None else max(0,min(100,round(abs(move)*3+(20 if move>0 else 0)+(20 if confirmed else 0))))
+    strength=0 if move is None else max(0,min(100,round(max(0.0,move)*3+(20 if move>=1 and confirmed else 0))))
     return {"strength":strength,"move":move,"status":status}
 
 
