@@ -18,7 +18,8 @@ CLOB = "https://clob.polymarket.com"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-SCAN_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "15"))
+# Faster risk-aware refresh: full radar cycle targets 5 seconds; API/network delays can extend it.
+SCAN_SECONDS = 5
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
 STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
@@ -797,10 +798,9 @@ def dashboard(c, lines):
 def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
-    # Scan BTC every cycle; rotate two other assets alongside it.
-    other_assets=[a for a in TOP_ASSETS if a!="BTC"]
-    start=(_ASSET_CYCLE*2)%len(other_assets)
-    selected=["BTC"]+[other_assets[(start+i)%len(other_assets)] for i in range(2)]
+    # Scan every supported top asset each cycle instead of rotating only two.
+    # The service remains paper-only; API latency may make a cycle exceed 5 seconds.
+    selected=list(TOP_ASSETS)
     _ASSET_CYCLE+=1
     for asset in selected:
         tfs=TIMEFRAMES[asset]
