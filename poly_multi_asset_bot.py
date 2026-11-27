@@ -523,6 +523,9 @@ def maybe_enter(c, asset, tf, m, tech):
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
     snipe=snipe_update(c,m.get("id"),side,stats,tech,brain)
+    # Journal every confirmed snipe once per market/direction; resolve at settlement.
+    if "SNIPE CONFIRMED" in snipe:
+        record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]))
     current_risk=int(brain.get("flip_risk",95))
     pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% {pct_bar(round(stats['ask']*100))} (contract price, not bot win probability)")
     reasons=[]
@@ -858,6 +861,29 @@ def record_snipe_signal(c, asset, tf, market, side, entry):
     c.commit()
 
 
+def all_snipe_stats(c):
+    """Global settled snipe scoreboard and persistent all-time win streak."""
+    rows=c.execute("SELECT result FROM snipe_journal WHERE status='RESOLVED' "
+                   "AND result IN ('WIN','LOSS') ORDER BY resolved_at ASC,id ASC").fetchall()
+    wins=sum(r["result"]=="WIN" for r in rows)
+    losses=sum(r["result"]=="LOSS" for r in rows)
+    current=0; best=0
+    for r in rows:
+        if r["result"]=="WIN":
+            current+=1; best=max(best,current)
+        else:
+            current=0
+    saved=c.execute("SELECT value FROM bot_state WHERE key='global_snipe_best_streak'").fetchone()
+    best=max(best,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES('global_snipe_best_streak',?) "
+              "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best),))
+    c.commit()
+    n=wins+losses
+    return {"wins":wins,"losses":losses,"sample":n,
+            "win_rate":100*wins/n if n else None,
+            "current_streak":current,"best_streak":best}
+
+
 def asset_paper_stats(c, asset, snipe=False):
     """Per-asset settled forecast outcomes: WIN, FLIP, LOSS, independent streak."""
     if snipe:
@@ -916,6 +942,7 @@ def dashboard(c, lines):
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
     opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
+    snipe_stats=all_snipe_stats(c)
     top_assets=select_top_assets(lines)
     display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
     desc='\n'.join(display_lines)[:2500] or 'No matching active markets found.'
@@ -938,7 +965,7 @@ def dashboard(c, lines):
     best_streak=max(best_streak,int(saved["value"]) if saved else 0)
     c.execute("INSERT INTO bot_state(key,value) VALUES('forecast_win_streak_record',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best_streak),))
     c.commit()
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 SNIPE SCORE','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES**\\nWin rate {snipe_stats["win_rate"]:.1f}%' if snipe_stats['sample'] else 'Waiting for first confirmed snipe to settle','inline':True},{'name':'SNIPE STREAK','value':f'🔥 **{snipe_stats["current_streak"]}** current\\n🏆 **{snipe_stats["best_streak"]}** all-time','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     # Five concise coin cards, refreshed with the latest scan values.
