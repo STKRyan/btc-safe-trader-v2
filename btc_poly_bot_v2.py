@@ -218,6 +218,29 @@ def db_connect() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             UNIQUE(market_slug, side)
         );
+        CREATE TABLE IF NOT EXISTS btc_snipe_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market_id TEXT NOT NULL,
+            market_slug TEXT NOT NULL,
+            timeframe INTEGER NOT NULL,
+            side TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            features TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            outcome TEXT,
+            winning_side TEXT,
+            created_at TEXT NOT NULL,
+            last_check REAL NOT NULL DEFAULT 0,
+            resolved_at TEXT,
+            UNIQUE(market_id,timeframe,side)
+        );
+        CREATE TABLE IF NOT EXISTS btc_loss_reviews (
+            trade_id INTEGER PRIMARY KEY,
+            timeframe INTEGER NOT NULL,
+            trade_type TEXT NOT NULL,
+            tags TEXT NOT NULL DEFAULT '[]',
+            reviewed_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS btc_forecasts (
             market_id TEXT NOT NULL,
             market_slug TEXT NOT NULL,
@@ -672,6 +695,34 @@ def btc_loss_diagnosis(conn: sqlite3.Connection, timeframe: Optional[int] = None
     return f"Losses n={len(rows)} · exits: {exit_text}\nEntry details: older trades have no saved feature snapshot; new trades will be analyzed."
 
 
+def btc_forecast_score_text(conn: sqlite3.Connection) -> str:
+    rows=conn.execute("SELECT outcome FROM btc_forecasts WHERE status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at ASC,market_id ASC,timeframe ASC").fetchall()
+    wins=sum(r["outcome"]=="WIN" for r in rows); flips=sum(r["outcome"]=="FLIP" for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
+    current=best=0
+    for r in rows:
+        if r["outcome"] in ("WIN","FLIP"): current+=1; best=max(best,current)
+        else: current=0
+    saved=conn.execute("SELECT state_value FROM bot_state WHERE state_key='btc_forecast_best_streak'").fetchone()
+    best=max(best,int(saved["state_value"]) if saved else 0)
+    conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('btc_forecast_best_streak',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",(str(best),)); conn.commit()
+    n=len(rows); rate=100*(wins+flips)/n if n else None
+    return (f"FORECAST W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\\n🔥 Current **{current}** · 🏆 Record **{best}**") if n else "Forecast W/F/L · waiting for first settled market"
+
+
+def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
+    rows=conn.execute("SELECT outcome FROM btc_snipe_journal WHERE status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at ASC,id ASC").fetchall()
+    wins=sum(r["outcome"]=="WIN" for r in rows); flips=sum(r["outcome"]=="FLIP" for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
+    current=best=0
+    for r in rows:
+        if r["outcome"] in ("WIN","FLIP"): current+=1; best=max(best,current)
+        else: current=0
+    saved=conn.execute("SELECT state_value FROM bot_state WHERE state_key='btc_snipe_best_streak'").fetchone()
+    best=max(best,int(saved["state_value"]) if saved else 0)
+    conn.execute("INSERT INTO bot_state(state_key,state_value) VALUES('btc_snipe_best_streak',?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",(str(best),)); conn.commit()
+    n=len(rows); rate=100*(wins+flips)/n if n else None
+    return (f"SNIPE W/F/L **{wins}/{flips}/{losses}** · correct {rate:.1f}% · n={n}\\n🎯 Current **{current}** · 🏆 Record **{best}**") if n else "Snipe W/F/L · waiting for first settled snipe"
+
+
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
     five = btc_trade_tracker(conn, timeframe=5, limit=100)
     fifteen = btc_trade_tracker(conn, timeframe=15, limit=100)
@@ -685,7 +736,8 @@ def btc_tracker_text(conn: sqlite3.Connection) -> str:
         f"⚡ SNIPE/SCALP 5M: {record(snipes)}\n"
         f"🔥 STREAK 5M: {five['current_win_streak']}W/{five['current_loss_streak']}L · best {five['best_win_streak']}\n"
         f"STREAK 15M: {fifteen['current_win_streak']}W/{fifteen['current_loss_streak']}L · best {fifteen['best_win_streak']}\n"
-        f"SNIPE STREAK: {snipes['current_win_streak']}W/{snipes['current_loss_streak']}L · best {snipes['best_win_streak']}"
+        f"SNIPE STREAK: {snipes['current_win_streak']}W/{snipes['current_loss_streak']}L · best {snipes['best_win_streak']}\n"
+        f"{btc_forecast_score_text(conn)}\n{btc_snipe_score_text(conn)}"
     )
 
 
@@ -867,6 +919,59 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
 
 
 
+def record_btc_snipe(conn: sqlite3.Connection, market: dict, minutes: int,
+                       side: str, entry: float, features: dict) -> None:
+    """Save every qualified snipe once, whether or not a paper position opens."""
+    market_id=str(market.get("id") or "")
+    if not market_id or side not in ("UP","DOWN") or not 0<float(entry)<1: return
+    conn.execute("INSERT OR IGNORE INTO btc_snipe_journal(market_id,market_slug,timeframe,side,entry_price,features,created_at) VALUES(?,?,?,?,?,?,?)",
+        (market_id,str(market.get("slug") or market_slug(minutes)),int(minutes),side,float(entry),
+         json.dumps(features,separators=(",",":"),default=str),utc_now().isoformat()))
+    conn.commit()
+
+
+def resolve_btc_snipes(conn: sqlite3.Connection) -> None:
+    """Resolve saved snipes and credit a FLIP only when the final forecast corrected direction."""
+    stamp=time.time()
+    rows=conn.execute("SELECT * FROM btc_snipe_journal WHERE status='OPEN' ORDER BY id").fetchall()
+    for row in rows:
+        try:
+            if stamp-float(row["last_check"] or 0)<180: continue
+            conn.execute("UPDATE btc_snipe_journal SET last_check=? WHERE id=?",(stamp,row["id"])); conn.commit()
+            data=http_json(f"{GAMMA}/markets/{row['market_id']}")
+            if not isinstance(data,dict) or not data.get("closed"): continue
+            outs=parse_list(data.get("outcomes")); prices=parse_list(data.get("outcomePrices"))
+            mapping={str(name).lower():float(price) for name,price in zip(outs,prices)}
+            winning="UP" if mapping.get("up",mapping.get("yes",0))>=0.99 else ("DOWN" if mapping.get("down",mapping.get("no",0))>=0.99 else None)
+            if not winning: continue
+            forecast=conn.execute("SELECT current_side,flip_count FROM btc_forecasts WHERE market_id=? AND timeframe=?",(row["market_id"],row["timeframe"])).fetchone()
+            final_side=str(forecast["current_side"]) if forecast else str(row["side"])
+            flips=int(forecast["flip_count"] or 0) if forecast else 0
+            outcome="WIN" if str(row["side"])==winning else ("FLIP" if final_side==winning and flips>0 else "LOSS")
+            conn.execute("UPDATE btc_snipe_journal SET status='RESOLVED',outcome=?,winning_side=?,resolved_at=? WHERE id=?",
+                (outcome,winning,utc_now().isoformat(),row["id"])); conn.commit()
+            print(f"BTC snipe settled: {row['timeframe']}m {outcome} · {row['side']} -> {winning}",flush=True)
+        except Exception as exc: print(f"BTC snipe resolve error: {type(exc).__name__}: {exc}",flush=True)
+
+
+def btc_snipe_streak_guard(conn: sqlite3.Connection, tech: dict, brain: dict, ask: float) -> dict:
+    """Tighten snipe selection after losses and protect winning streaks."""
+    rows=conn.execute("SELECT outcome FROM btc_snipe_journal WHERE status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at DESC,id DESC LIMIT 20").fetchall()
+    wins=sum(r["outcome"] in ("WIN","FLIP") for r in rows); losses=sum(r["outcome"]=="LOSS" for r in rows)
+    current_loss=current_win=0
+    for r in rows:
+        if r["outcome"]=="LOSS" and current_win==0: current_loss+=1
+        elif r["outcome"] in ("WIN","FLIP") and current_loss==0: current_win+=1
+        else: break
+    recovery=btc_streak_guard(conn,5,"SCALP")["forecast_recovery_wins"]
+    score=abs(int(tech.get("score",0) or 0)); risk=int(brain.get("flip_risk",95)); reasons=[]
+    if current_loss>=2 and recovery<2: reasons.append(f"{current_loss} snipe losses; wait for 2 forecast wins ({recovery}/2)")
+    elif current_loss==1 and (score<4 or risk>50): reasons.append("after a snipe loss require 4/5 votes and flip risk <=50")
+    if current_win>=3 and (score<4 or risk>45 or ask>0.65): reasons.append("protecting 3+ snipe wins; skip weak/late setup")
+    if len(rows)>=12 and wins/(wins+losses)<0.50 and recovery<2: reasons.append("recent snipe results below 50%; learning pause")
+    return {"sample":len(rows),"wins":wins,"losses":losses,"current_win_streak":current_win,"current_loss_streak":current_loss,"blocked":bool(reasons),"reasons":reasons}
+
+
 def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     """Find selective short-horizon 5m contract scalps; paper trade only."""
     market = get_market(5)
@@ -917,6 +1022,17 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     )
     if not filters_ok:
         return
+    snipe_guard=btc_snipe_streak_guard(conn,tech,scalp_opinion,ask)
+    if snipe_guard["blocked"]:
+        print("BTC snipe streak protection: "+"; ".join(snipe_guard["reasons"]),flush=True)
+        return
+    record_btc_snipe(conn,market,5,side,ask,{
+        "score":score,"rsi":rsi_value,"move1":move1,"move3":move3,
+        "range_position":tech.get("range_position"),"ask":ask,"bid":bid,
+        "spread":stats["spread"],"depth":stats["depth"],"imbalance":stats["imbalance"],
+        "second_brain_agrees":bool(scalp_opinion["agrees"]),"second_brain_side":scalp_opinion["side"],
+        "flip_risk":scalp_flip,"remaining_seconds":remaining
+    })
     # A setup score ranks agreement of independent filters; it is not a win probability.
     setup_score = min(95, 45 + abs(score)*7 + min(12, abs(move3)*100) + (8 if stats["imbalance"] * (1 if side == "UP" else -1) > 0 else 0))
     target = ask * (1.0 + SCALP_TAKE_PROFIT)
@@ -1087,6 +1203,7 @@ def resolve_btc_forecasts(conn: sqlite3.Connection) -> None:
             print(f"BTC forecast resolved: {row['timeframe']}m {outcome} · flips={row['flip_count']}", flush=True)
         except Exception as exc:
             print(f"BTC forecast resolve error: {type(exc).__name__}: {exc}", flush=True)
+    resolve_btc_snipes(conn)
 
 
 def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> dict:
@@ -1101,15 +1218,70 @@ def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> d
     sample = len(rows)
     wins = sum(row["outcome"] == "WIN" for row in rows)
     losses = sum(row["outcome"] == "LOSS" for row in rows)
-    flips = sum(int(row["flip_count"] or 0) > 0 or row["outcome"] == "FLIP" for row in rows)
-    decisive = wins + losses
-    win_rate = (100.0 * wins / decisive) if decisive else None
+    flips = sum(row["outcome"] == "FLIP" for row in rows)
+    decisive = wins + flips + losses
+    win_rate = (100.0 * (wins + flips) / decisive) if decisive else None
     flip_rate = flips / sample if sample else 0.0
     caution = sample >= 8 and ((win_rate is not None and win_rate < 50.0) or flip_rate >= 0.35)
     pause = sample >= 12 and ((win_rate is not None and win_rate < 40.0) or flip_rate >= 0.50)
     return {"sample": sample, "wins": wins, "losses": losses, "flips": flips,
             "win_rate": win_rate, "flip_rate": flip_rate,
             "caution": caution, "pause": pause}
+
+
+def record_btc_loss_reviews(conn: sqlite3.Connection) -> None:
+    """Persist a post-loss review so repeated mistakes tighten future calls."""
+    rows=conn.execute(
+        "SELECT id,timeframe,trade_type,last_action,entry_features FROM paper_trades "
+        "WHERE status='CLOSED' AND realized_pnl<0 AND id NOT IN "
+        "(SELECT trade_id FROM btc_loss_reviews) ORDER BY id"
+    ).fetchall()
+    for row in rows:
+        try:
+            f=json.loads(row["entry_features"] or "{}")
+            if not isinstance(f,dict): f={}
+        except Exception: f={}
+        tags=[]
+        if abs(int(f.get("score",0) or 0))<4: tags.append("weak votes <4")
+        if int(f.get("flip_risk",0) or 0)>=65: tags.append("high flip risk >=65")
+        if float(f.get("spread",0) or 0)>0.015: tags.append("wide spread >1.5c")
+        if float(f.get("depth",0) or 0)<2000: tags.append("thin depth <$2k")
+        if float(f.get("ask",0) or 0)>0.65: tags.append("expensive entry >$0.65")
+        if float(f.get("move1",0) or 0)*float(f.get("move3",0) or 0)<=0: tags.append("momentum conflict")
+        rp=float(f.get("range_position",50) or 50)
+        if rp>=85 or rp<=15: tags.append("near range extreme")
+        if f.get("second_brain_agrees") is False: tags.append("second brain disagreed")
+        if "FLIP" in str(row["last_action"] or "").upper(): tags.append("exit after reversal")
+        conn.execute("INSERT OR IGNORE INTO btc_loss_reviews(trade_id,timeframe,trade_type,tags,reviewed_at) VALUES(?,?,?,?,?)",
+            (row["id"],int(row["timeframe"]),str(row["trade_type"] or "STANDARD"),json.dumps(tags),utc_now().isoformat()))
+    conn.commit()
+
+
+def btc_loss_pattern_guard(conn: Optional[sqlite3.Connection], minutes: int,
+                           tech: dict, stats: Optional[dict], current_flip_risk: int) -> dict:
+    """Block a repeated condition only after it appears in multiple saved losing reviews."""
+    if conn is None: return {"sample":0,"active":[],"block":False}
+    rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? ORDER BY reviewed_at DESC LIMIT 20",(int(minutes),)).fetchall()
+    tally={}
+    for row in rows:
+        try: tags=json.loads(row["tags"] or "[]")
+        except Exception: tags=[]
+        for tag in set(tags): tally[tag]=tally.get(tag,0)+1
+    score=abs(int(tech.get("score",0) or 0))
+    move1=float(tech.get("move1",0) or 0); move3=float(tech.get("move3",0) or 0)
+    rp=float(tech.get("range_position",50) or 50)
+    current={
+        "weak votes <4":score<4,
+        "high flip risk >=65":int(current_flip_risk)>=65,
+        "wide spread >1.5c":bool(stats and float(stats.get("spread",0) or 0)>0.015),
+        "thin depth <$2k":bool(stats and float(stats.get("depth",0) or 0)<2000),
+        "expensive entry >$0.65":bool(stats and float(stats.get("ask",0) or 0)>0.65),
+        "momentum conflict":move1*move3<=0,
+        "near range extreme":rp>=85 or rp<=15,
+    }
+    active=[tag for tag,matched in current.items() if matched and tally.get(tag,0)>=3]
+    block=len(rows)>=5 and any(tally.get(tag,0)>=4 for tag in active)
+    return {"sample":len(rows),"active":active,"counts":{tag:tally.get(tag,0) for tag in active},"block":block}
 
 
 def second_opinion(tech: dict, stats: Optional[dict] = None,
@@ -1160,24 +1332,25 @@ def second_opinion(tech: dict, stats: Optional[dict] = None,
     risk += min(20, market_flips * 7)
     risk += min(15, int(memory["flip_rate"] * 30))
     risk = max(5, min(95, risk))
-    if market_flips >= 2:
-        agrees = False
-    if memory["pause"]:
-        agrees = False
-    if memory["caution"] and score < 3:
-        agrees = False
+    loss_guard=btc_loss_pattern_guard(conn,minutes,tech,stats,risk)
+    risk=max(5,min(95,risk+min(24,8*len(loss_guard["active"]))))
+    if market_flips >= 2: agrees = False
+    if memory["pause"] or loss_guard["block"]: agrees = False
+    if memory["caution"] and score < 3: agrees = False
     label = "CONFIRMED" if agrees else (
         "CHOPPY WINDOW · WAIT" if market_flips >= 2 else
+        "LOSS-PATTERN PAUSE · WAIT" if loss_guard["block"] else
         "LEARNING PAUSE · WAIT" if memory["pause"] else "DISAGREEMENT / WAIT"
     )
+    loss_text=(" · repeated loss patterns: "+", ".join(loss_guard["active"])) if loss_guard["active"] else ""
     debate = (
         f"PRIMARY {primary} / CHECK {side} ({score:+d}) · "
         f"window flips {market_flips} · resolved {memory['sample']} "
-        f"with {memory['flip_rate']*100:.0f}% flip history"
+        f"with {memory['flip_rate']*100:.0f}% flip history{loss_text}"
     )
     return {"side": side, "score": score, "agrees": agrees, "label": label,
             "flip_risk": risk, "market_flips": market_flips, "memory": memory,
-            "debate": debate}
+            "loss_guard":loss_guard,"debate": debate}
 
 def _live_market_odds(minutes: int) -> dict:
     """Cached current Polymarket UP/DOWN best-ask prices for dashboard meters."""
@@ -1724,6 +1897,8 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         reasons.append("edge proxy below threshold")
     if not opinions["agrees"]:
         reasons.append(f"second opinion {opinions['side']} does not confirm primary {side}")
+    if opinions.get("loss_guard",{}).get("block"):
+        reasons.append("LOSS-PATTERN PAUSE: repeated conditions found in saved losing-trade reviews")
     # Learn conservatively from completed paper trades: poor recent results can
     # tighten entries, but strong results never loosen the original safety rules.
     performance = recent_paper_performance(conn, 20, minutes)
@@ -1856,6 +2031,7 @@ def main() -> int:
                 candles = get_candles()
                 tech = technical_signal(candles)
                 manage_open_trades(conn, tech)
+                record_btc_loss_reviews(conn)
                 scan_scalp(conn, tech)
                 dashboard_opinion = second_opinion(
                     tech, conn=conn, minutes=5, slug=market_slug(5)
