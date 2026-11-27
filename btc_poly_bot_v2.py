@@ -1465,6 +1465,9 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     up_odds, down_odds = live_odds.get("up"), live_odds.get("down")
     snipe = btc_snipe_meter(conn, minutes, side, live_odds, confirmed, flip)
     snipe_move = "—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
+    # Visible indicator-alignment score; deliberately not a calibrated win probability.
+    signal_strength = max(0, min(100, abs(score) * 18 + (10 if confirmed else -10)))
+    strength_bar = color_meter(signal_strength, "🟩" if safe_call == "UP" else "🟥" if safe_call == "DOWN" else "🟧", 16)
 
     period = minutes * 60
     elapsed = int(time.time() % period)
@@ -1492,7 +1495,9 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             "Live contract prices unavailable")
     description = (
         f"## {'🟢' if safe_call=='UP' else '🔴' if safe_call=='DOWN' else '⚪'} **{safe_call}**\n"
-        f"**{action}**\n\n"
+        f"**{action}**\n"
+        f"**SIGNAL STRENGTH · {signal_strength}/100**\n{strength_bar}\n"
+        f"*Indicator alignment · not win probability*\n\n"
         f"**BTC/USD**  ${price:,.2f}\n"
         f"**{minutes} MIN** · closes in **{countdown}**\n"
         f"{progress_bar}  {progress}% elapsed\n\n"
@@ -1522,6 +1527,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                  f"**FLIP RISK** {flip}% {color_meter(flip,'🟠',8)}\n"
                  f"**Scalp:** {'SETUP' if confirmed and abs(score)>=3 else 'STANDBY'}")
     fields = [
+        {"name":"📶 LIVE SIGNAL STRENGTH","value":f"**{signal_strength}/100**\n{strength_bar}\nIndicator alignment · not win probability","inline":False},
         {"name":"🧠 WHY THIS CALL?","value":why[:900],"inline":False},
         {"name":"🎯 LIVE SNIPE","value":snipe_text[:900],"inline":False},
         {"name":"📊 PAPER RECORD","value":perf_line[:900],"inline":True},
