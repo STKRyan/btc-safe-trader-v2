@@ -682,11 +682,16 @@ def btc_tracker_text(conn: sqlite3.Connection) -> str:
     return (
         f"BTC 5M: {record(five)}\nBTC 15M: {record(fifteen)}\n"
         f"⚡ SNIPE/SCALP 5M: {record(snipes)}\n"
-        f"🔥 PAPER STREAK: {five['current_win_streak']} wins / "
-        f"{five['current_loss_streak']} losses · best {five['best_win_streak']}\n"
-        f"5M LOSS REVIEW: {btc_loss_diagnosis(conn,5)[:450]}\n"
-        f"15M LOSS REVIEW: {btc_loss_diagnosis(conn,15)[:300]}\n"
-        f"SNIPE LOSS REVIEW: {btc_loss_diagnosis(conn,5,'SCALP')[:300]}"
+        f"🔥 STREAK 5M: {five['current_win_streak']}W/{five['current_loss_streak']}L · best {five['best_win_streak']}\n"
+        f"STREAK 15M: {fifteen['current_win_streak']}W/{fifteen['current_loss_streak']}L · best {fifteen['best_win_streak']}"
+    )
+
+
+def btc_loss_report_text(conn: sqlite3.Connection) -> str:
+    return (
+        f"BTC 5M · {btc_loss_diagnosis(conn,5)[:280]}\n"
+        f"BTC 15M · {btc_loss_diagnosis(conn,15)[:220]}\n"
+        f"⚡ SNIPE 5M · {btc_loss_diagnosis(conn,5,'SCALP')[:280]}"
     )
 
 
@@ -887,7 +892,16 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     if not stats:
         return
     ask, bid = stats["ask"], stats["bid"]
-    if not second_opinion(tech, stats)["agrees"]:
+    scalp_opinion = second_opinion(tech, stats, conn=conn, minutes=5, slug=slug)
+    if not scalp_opinion["agrees"]:
+        return
+    scalp_streak = btc_streak_guard(conn, 5)
+    scalp_losses = scalp_streak["trades"]["current_loss_streak"]
+    if scalp_losses >= 2 and scalp_streak["forecast_recovery_wins"] < 2:
+        print(f"BTC 5m scalp streak guard: {scalp_losses} paper losses; waiting for 2 forecast wins.")
+        return
+    if scalp_losses == 1 and (abs(score) < 4 or int(scalp_opinion.get("flip_risk",100)) > 50):
+        print("BTC 5m scalp streak guard: after one loss require 4/5 votes and flip risk <=50.")
         return
     filters_ok = (
         SCALP_MIN_ASK <= ask <= SCALP_MAX_ASK
@@ -921,7 +935,9 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
         "score":score,"rsi":rsi_value,"move1":move1,"move3":move3,
         "range_position":tech.get("range_position"),"ask":ask,"bid":bid,
         "spread":stats["spread"],"depth":stats["depth"],
-        "imbalance":stats["imbalance"],"second_brain_agrees":True,
+        "imbalance":stats["imbalance"],"second_brain_agrees":bool(scalp_opinion["agrees"]),
+        "second_brain_side":scalp_opinion["side"],
+        "flip_risk":int(scalp_opinion.get("flip_risk",0)),
         "setup_score":setup_score,"remaining_seconds":remaining
     }
     create_paper_trade(conn, market, 5, side, token_id, ask, "SCALP", scalp_features)
@@ -1391,7 +1407,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         {"name":"⚡ SCALP","value":scalp_text,"inline":True},
         {"name":"📂 POSITION","value":position_text[:900],"inline":True},
         {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False},
-        {"name":"🔥 BTC WIN/LOSS + SNIPE TRACKER","value":btc_tracker_text(conn)[:1000],"inline":False}
+        {"name":"🔥 BTC WIN/LOSS + SNIPE TRACKER","value":btc_tracker_text(conn)[:900],"inline":False},
+        {"name":"🔎 LOSS DIAGNOSIS · ENTRY PATTERNS / EXIT CAUSES","value":btc_loss_report_text(conn)[:1000],"inline":False}
     ]
 
     return {
