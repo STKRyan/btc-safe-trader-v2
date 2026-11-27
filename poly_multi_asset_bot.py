@@ -28,6 +28,8 @@ MAX_SPREAD = float(os.getenv("MAX_SPREAD", "0.035"))
 MIN_ASK, MAX_ASK = 0.20, 0.82
 # Polymarket's actively listed short-window crypto set; do not emit false NO-MARKET cards for unsupported tickers.
 TIMEFRAMES = {a: (5, 15) for a in ("BTC","ETH","SOL","XRP","DOGE","BNB","HYPE")}
+# Fixed top-five major assets supported by the short-window market scanner.
+TOP_ASSETS = ("BTC","ETH","SOL","XRP","BNB")
 SYMBOLS = {a: f"{a}USDT" for a in TIMEFRAMES}
 _DISCOVERY_CACHE = {}
 _CANDLE_CACHE = {}
@@ -509,20 +511,9 @@ def line_asset(raw):
     return m.group(1) if m else None
 
 def select_top_assets(lines):
-    """Choose BTC plus the four strongest other assets; retain both timeframes."""
-    import re
-    scores={}
-    verified=set()
-    for raw in lines:
-        asset=line_asset(raw)
-        if not asset or "MARKET NOT FOUND" in raw or "FEED ERROR" in raw or "SCAN ERROR" in raw:
-            continue
-        m=re.search(r"\(([+-]?\d+)/5\)",raw)
-        if not m: continue
-        scores[asset]=max(scores.get(asset,0),abs(int(m.group(1))))
-        verified.add(asset)
-    ranked=sorted((a for a in verified if a!="BTC"),key=lambda a:(-scores.get(a,0),a))
-    return set((["BTC"] if "BTC" in verified else [])+ranked[:4])
+    """Show the same five major crypto assets consistently, not whichever score is highest."""
+    return set(TOP_ASSETS)
+
 
 def write_site_data(c, lines):
     import re
@@ -589,7 +580,14 @@ def market_embeds(lines):
         if risk>=70: hold=max(5,hold-10)
         body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
         pm_match=re.search(r'(POLYMARKET (?:UP|DOWN) · bid [^·]+ · buy-side implied [^·]+)',body)
-        pm_value=pm_match.group(1) if pm_match else 'Live Polymarket bid/ask unavailable this scan'
+        if pm_match:
+            pm_value=pm_match.group(1)
+            odds_match=re.search(r'buy-side implied ([0-9.]+)%',pm_value)
+            if odds_match:
+                odds=max(0,min(100,round(float(odds_match.group(1)))))
+                pm_value=f'{pm_value} {pct_bar(odds)} **{odds}%**'
+        else:
+            pm_value='Live Polymarket bid/ask unavailable this scan'
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
@@ -671,22 +669,30 @@ def dashboard(c, lines):
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     market_fields=[]
+    # Group both 5m and 15m windows under each of the fixed top-five coins.
+    # The live contract-price bar is extracted from the current CLOB ask on each scan.
+    by_asset={}
+    import re
     for card in cards:
-        if card.get('fields') and 'NO VERIFIED MARKET' not in card.get('title',''):
-            detail=card.get('description','').replace('**BOT CALL**','').strip()
-            cf=card.get('fields',[])
-            signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
-            hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
-            flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
-            pm=next((x.get('value','') for x in cf if x.get('name')=='POLYMARKET LIVE ODDS'),'')
-            action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
-            court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'⚖️ Courtroom evidence is being collected.')
-            scalp=next((x.get('value','') for x in cf if x.get('name','').startswith('SCALP SETUP')),'')
-            compact='\n'.join([f'**{action_line[:100]}**',pm[:150],signal[:65],hold[:75],flip[:85],court[:120],('⚡ '+scalp[:70] if scalp else '')]).strip()
-            market_fields.append({'name':card['title'][:90],'value':compact[:420],'inline':True})
-    # Discord caps all embeds in one message at 6000 total characters.
-    # Keep the board comfortably below that limit so PATCH succeeds.
+        title=card.get('title','')
+        mt=re.match(r'([A-Z0-9]{2,12}) · (5|15) MIN ·',title)
+        if not mt or 'NO VERIFIED MARKET' in title: continue
+        asset,tf=mt.group(1),mt.group(2)
+        detail=card.get('description','').replace('**BOT CALL**','').strip()
+        cf=card.get('fields',[])
+        signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
+        hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
+        flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
+        pm=next((x.get('value','') for x in cf if x.get('name')=='POLYMARKET LIVE ODDS'),'')
+        action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
+        court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'Courtroom evidence is being collected.')
+        compact='\n'.join([f'**{tf}m · {action_line[:75]}**',pm[:190],signal[:55],hold[:60],flip[:60],court[:100]]).strip()
+        by_asset.setdefault(asset,[]).append(compact)
+    for asset in TOP_ASSETS:
+        if asset in by_asset:
+            market_fields.append({'name':f'{asset} · TOP-5 CRYPTO RADAR','value':'\n\n'.join(by_asset[asset])[:1024],'inline':False})
     market_fields=market_fields[:5]
+    # Five asset fields keep both timeframes readable and within Discord limits.
     # One compact, color-coded radar message is edited in place each scan.
     radar={'title':'⚡ CRYPTO RADAR · BTC FIRST · COURTROOM EDITION','description':'**LIVE PAPER BOARD** · Calls, courtroom verdicts, scalp status and flip-risk gauges update in this same message.\nBTC first · 5m / 15m · no real orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · signal/hold/flip meters are heuristics, not win probabilities'}}
     pos_fields=[{'name':p.get('title','Open paper position')[:90],'value':p.get('description','')[:180],'inline':True} for p in positions[:6]]
@@ -696,7 +702,7 @@ def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
     # Scan BTC every cycle; rotate two other assets alongside it.
-    other_assets=[a for a in TIMEFRAMES if a!="BTC"]
+    other_assets=[a for a in TOP_ASSETS if a!="BTC"]
     start=(_ASSET_CYCLE*2)%len(other_assets)
     selected=["BTC"]+[other_assets[(start+i)%len(other_assets)] for i in range(2)]
     _ASSET_CYCLE+=1
