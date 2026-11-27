@@ -1647,6 +1647,45 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     }
 
 
+def fit_discord_embed(embed: dict, max_total: int = 5700) -> dict:
+    """Keep rich dashboard embeds safely inside Discord's character limits."""
+    result = json.loads(json.dumps(embed))
+    result["title"] = str(result.get("title", ""))[:256]
+    result["description"] = str(result.get("description", ""))[:4096]
+    if isinstance(result.get("author"), dict):
+        result["author"]["name"] = str(result["author"].get("name", ""))[:256]
+    if isinstance(result.get("footer"), dict):
+        result["footer"]["text"] = str(result["footer"].get("text", ""))[:2048]
+    fields = []
+    for field in result.get("fields", [])[:25]:
+        name = str(field.get("name", "Field"))[:256] or "Field"
+        value = str(field.get("value", "—"))[:1024] or "—"
+        fields.append({"name": name, "value": value, "inline": bool(field.get("inline", False))})
+    result["fields"] = fields
+
+    def total_chars():
+        count = len(result.get("title", "")) + len(result.get("description", ""))
+        count += len(result.get("author", {}).get("name", ""))
+        count += len(result.get("footer", {}).get("text", ""))
+        count += sum(len(f["name"]) + len(f["value"]) for f in result.get("fields", []))
+        return count
+
+    # Dashboard fields can be verbose; compact each field first while keeping
+    # every category visible, then trim values further if the total is still high.
+    for field in result["fields"]:
+        if len(field["value"]) > 430:
+            field["value"] = field["value"][:427] + "…"
+    while total_chars() > max_total and result["fields"]:
+        largest = max(result["fields"], key=lambda f: len(f["value"]))
+        excess = total_chars() - max_total
+        new_length = max(80, len(largest["value"]) - excess - 1)
+        if new_length >= len(largest["value"]):
+            result["fields"].pop()
+        else:
+            largest["value"] = largest["value"][:new_length] + "…"
+    return result
+
+
 def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Create once, then edit the same Discord webhook message on a safe cadence."""
     # Optional site-data writer was removed; keep Discord dashboard independent.
@@ -1675,7 +1714,7 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
         return
     row = conn.execute("SELECT state_value FROM bot_state WHERE state_key='dashboard_message_id'").fetchone()
     message_id = row["state_value"] if row else ""
-    payload = {"embeds":[_dashboard_embed(conn, tech, opinions)],"allowed_mentions":{"parse":[]}}
+    payload = {"embeds":[fit_discord_embed(_dashboard_embed(conn, tech, opinions))],"allowed_mentions":{"parse":[]}}
     # Record the attempt time too, so a Discord rate-limit/error cannot cause
     # repeated requests on every 1-second scanner cycle.
     conn.execute(
@@ -1758,7 +1797,7 @@ def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state
         return
     row = conn.execute("SELECT state_value FROM bot_state WHERE state_key=?", (message_key,)).fetchone()
     message_id = row["state_value"] if row else ""
-    payload = {"embeds": [embed], "allowed_mentions": {"parse": []}}
+    payload = {"embeds": [fit_discord_embed(embed)], "allowed_mentions": {"parse": []}}
     conn.execute(
         "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
         "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
