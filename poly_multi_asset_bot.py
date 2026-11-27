@@ -668,36 +668,108 @@ def dashboard(c, lines):
     summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST SCORE · W / F / L','value':f'**{fw} / {ff} / {fl}**\nFLIP is neutral · {len(frows)} resolved','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
-    market_fields=[]
-    # Group both 5m and 15m windows under each of the fixed top-five coins.
-    # The live contract-price bar is extracted from the current CLOB ask on each scan.
-    by_asset={}
+    # Build a compact, color-accented card for each coin instead of one crowded text wall.
     import re
+    by_asset={}
     for card in cards:
         title=card.get('title','')
-        mt=re.match(r'([A-Z0-9]{2,12}) · (5|15) MIN ·',title)
-        if not mt or 'NO VERIFIED MARKET' in title: continue
-        asset,tf=mt.group(1),mt.group(2)
-        detail=card.get('description','').replace('**BOT CALL**','').strip()
+        mt=re.match(r'([A-Z0-9]{2,12}) · (5|15) MIN · (.+)$',title)
+        if not mt: continue
+        asset,tf,side_text=mt.groups()
+        side=side_text if side_text in ('UP','DOWN','WAIT') else 'WAIT'
+        no_market='NO VERIFIED MARKET' in side_text
         cf=card.get('fields',[])
-        signal=next((x.get('value','') for x in cf if x.get('name')=='SIGNAL STRENGTH'),'')
-        hold=next((x.get('value','') for x in cf if x.get('name')=='HOLD STRENGTH'),'')
-        flip=next((x.get('value','') for x in cf if x.get('name')=='FLIP RISK'),'')
-        pm=next((x.get('value','') for x in cf if x.get('name')=='POLYMARKET LIVE ODDS'),'')
-        action_line=next((line.strip() for line in detail.splitlines() if line.strip()),'Status unavailable')
-        court=next((line.replace('COURT:','⚖️ COURT:').strip() for line in detail.splitlines() if 'COURT:' in line),'Courtroom evidence is being collected.')
-        compact='\n'.join([f'**{tf}m · {action_line[:75]}**',pm[:190],signal[:55],hold[:60],flip[:60],court[:100]]).strip()
-        by_asset.setdefault(asset,[]).append(compact)
+        get_field=lambda label: next((x.get('value','') for x in cf if x.get('name')==label),'')
+        pm=get_field('POLYMARKET LIVE ODDS')
+        hold=get_field('HOLD STRENGTH')
+        flip=get_field('FLIP RISK')
+        scalp=get_field('SCALP SETUP · ENTRY / TARGET / STOP')
+        detail=card.get('description','').replace('**BOT CALL**','').strip()
+        action_line=next((line.strip().replace('**','') for line in detail.splitlines() if line.strip()),'WAIT')
+        by_asset.setdefault(asset,{})[tf]={
+            'side':side,'no_market':no_market,'pm':pm,'hold':hold,'flip':flip,
+            'scalp':scalp,'action':action_line
+        }
+
+    asset_embeds=[]
     for asset in TOP_ASSETS:
-        if asset in by_asset:
-            market_fields.append({'name':f'{asset} · TOP-5 CRYPTO RADAR','value':'\n\n'.join(by_asset[asset])[:1024],'inline':False})
-    market_fields=market_fields[:5]
-    # Five asset fields keep both timeframes readable and within Discord limits.
-    # One compact, color-coded radar message is edited in place each scan.
-    radar={'title':'⚡ CRYPTO RADAR · BTC FIRST · COURTROOM EDITION','description':'**LIVE PAPER BOARD** · Calls, courtroom verdicts, scalp status and flip-risk gauges update in this same message.\nBTC first · 5m / 15m · no real orders.','color':0x53d8ff,'fields':market_fields or [{'name':'NO VERIFIED WINDOWS','value':'No active supported market was found in this scan.','inline':False}],'footer':{'text':'Paper only · signal/hold/flip meters are heuristics, not win probabilities'}}
-    pos_fields=[{'name':p.get('title','Open paper position')[:90],'value':p.get('description','')[:180],'inline':True} for p in positions[:6]]
-    pos={'title':'POSITION BOARD · HOLD / EXIT','color':0xffc86b,'fields':pos_fields or [{'name':'NO OPEN PAPER POSITIONS','value':'Waiting for a qualified setup.','inline':False}]}
-    publish_board(c,[summary,radar,pos])
+        windows=by_asset.get(asset,{})
+        if not windows: continue
+        primary=windows.get('5',windows.get('15',{}))
+        side=primary.get('side','WAIT')
+        flip_text=primary.get('flip','')
+        risk_match=re.search(r'\*\*(\d+)%\*\*',flip_text)
+        risk=int(risk_match.group(1)) if risk_match else 0
+        if primary.get('no_market'):
+            color,emoji=0x8794a8,'⚪'
+        elif risk>=70:
+            color,emoji=0xF59E0B,'🟠'
+        elif side=='UP':
+            color,emoji=0x19C37D,'🟢'
+        elif side=='DOWN':
+            color,emoji=0xEF4444,'🔴'
+        else:
+            color,emoji=0xF59E0B,'🟡'
+        desc=[]
+        fields=[]
+        for tf in ('5','15'):
+            item=windows.get(tf)
+            if not item:
+                desc.append(f'**{tf}M**  ·  waiting for scan')
+                continue
+            signal_emoji='🟢' if item['side']=='UP' else '🔴' if item['side']=='DOWN' else '🟡'
+            if item['no_market']:
+                value='⚪ **NO VERIFIED MARKET**\nNo call until market data is confirmed.'
+            else:
+                odds=item['pm'] or 'Market odds unavailable this scan'
+                value=(f'{signal_emoji} **{item["side"]}**  ·  {item["action"][:90]}\n'
+                       f'🎯 **MARKET PRICE**  {odds[:180]}\n'
+                       f'{item["hold"][:90]}  ·  {item["flip"][:90]}')
+            fields.append({'name':f'⏱ {tf} MIN · LIVE CALL','value':value[:1024],'inline':False})
+            desc.append(f'**{tf}M** {signal_emoji} **{item["side"]}**')
+        asset_embeds.append({
+            'title':f'{emoji}  {asset}  ·  LIVE SIGNAL CARD',
+            'description':'  |  '.join(desc)+'\n📡 Updating live · paper signals only',
+            'color':color,
+            'fields':fields,
+            'footer':{'text':'Market price is contract pricing · signal/hold/flip meters are heuristic'},
+            'timestamp':iso()
+        })
+
+    position_embeds=[]
+    for p in positions[:4]:
+        action=str(p.get('action','CHECK'))
+        upper=action.upper()
+        if any(word in upper for word in ('EXIT','PROTECT','STOP')):
+            color,emoji=0xEF4444,'🔴'
+        elif any(word in upper for word in ('SELL','PROFIT','REDUCE')):
+            color,emoji=0xF59E0B,'🟠'
+        elif 'HOLD' in upper:
+            color,emoji=0x19C37D,'🟢'
+        else:
+            color,emoji=0x8794a8,'⚪'
+        roi='—' if p.get('roi_pct') is None else f'{float(p["roi_pct"]):+.2f}%'
+        entry=float(p.get('entry',0) or 0)
+        bid=p.get('bid')
+        entry_bid=f'{entry:.3f} / {float(bid):.3f}' if bid is not None else f'{entry:.3f} / —'
+        risk=p.get('risk')
+        risk_text=f'{pct_bar(int(risk))} **{int(risk)}%**' if risk is not None else '—'
+        position_embeds.append({
+            'title':f'{emoji}  {action}  ·  {p.get("asset","CRYPTO")} {p.get("timeframe","")}M',
+            'description':p.get('explanation','Paper position status')[:250],
+            'color':color,
+            'fields':[
+                {'name':'PAPER RETURN','value':f'**{roi}**','inline':True},
+                {'name':'ENTRY / BID','value':entry_bid,'inline':True},
+                {'name':'FLIP RISK','value':risk_text,'inline':False}
+            ],
+            'footer':{'text':'SIMULATED POSITION · no real order'}
+        })
+
+    if not asset_embeds:
+        asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No active verified windows in this scan.','color':0x8794a8}]
+    # Discord permits 10 embeds: summary + five coin cards + up to four position cards.
+    publish_board(c,[summary]+asset_embeds[:5]+position_embeds[:4])
 def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
