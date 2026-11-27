@@ -18,7 +18,7 @@ CLOB = "https://clob.polymarket.com"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-# Faster risk-aware refresh: target a 2-second pause between full cycles; sequential feeds may make each cycle longer.
+# Faster risk-aware refresh: configurable 2-second pause between cycles; network/API latency can make a full cycle longer.
 SCAN_SECONDS = max(2.0, float(os.getenv("SCAN_INTERVAL_SECONDS", "2")))
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
