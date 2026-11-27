@@ -584,6 +584,20 @@ def market_embeds(lines):
         hold=max(5,min(95,50+abs(int(score))*8+(6 if float(m1)*int(score)>0 else -8)))
         if risk>=70: hold=max(5,hold-10)
         body=raw.split('\n',1)[1] if '\n' in raw else 'No action detail'
+        # Explain the call in everyday language, using the same measured inputs.
+        momentum_words = "short moves are going up" if float(m1)>0 and float(m3)>0 else "short moves are going down" if float(m1)<0 and float(m3)<0 else "short moves disagree"
+        if side == "UP":
+            plain_reason = f"{abs(int(score))} of 5 checks lean UP. {momentum_words}. RSI is {rsi}/100."
+        elif side == "DOWN":
+            plain_reason = f"{abs(int(score))} of 5 checks lean DOWN. {momentum_words}. RSI is {rsi}/100."
+        else:
+            plain_reason = f"Checks are mixed ({int(score):+d}/5). {momentum_words}. WAIT is safer than guessing."
+        plain_reason += f" Price is {float(range_position):.0f}% from the recent low toward the recent high."
+        if float(range_position)>=85:
+            plain_reason += " Near the recent high: an UP entry may be late."
+        elif float(range_position)<=15:
+            plain_reason += " Near the recent low: a DOWN entry may be late."
+        plain_reason += " The second brain and market checks can still block the entry."
         flip_rate_match=re.search(r'\bflips\s+(\d+)%',body)
         flip_sample_match=re.search(r'(?:recent \d+%/|learning sample )(\d+)',body)
         flip_rate=int(flip_rate_match.group(1)) if flip_rate_match else None
@@ -609,7 +623,7 @@ def market_embeds(lines):
         elif side=='DOWN': color=0xEF4444
         else: color=0x8794A8
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
