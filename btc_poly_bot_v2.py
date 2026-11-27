@@ -274,16 +274,16 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Send each new directional paper signal once; keep WAIT/status noise dashboard-only."""
-    # Send directional calls, neutral WAIT updates, and order-book WATCH calls.
-    # WAIT updates are throttled below, so the BTC channel stays active without
-    # flooding Discord every scan.
+    """Send a signal alert once per market/side; the live dashboard handles frequent updates."""
+    # Keep the channel clean: the persistent dashboard is edited in place every
+    # few seconds. Alerts are only posted once for each unique market/timeframe/
+    # side (or WAIT/order-book state), rather than repeating on a timer.
     if not (key.startswith("signal_v4:") or
             (key.startswith("signal_v3:") and key.endswith(":WAIT")) or
             ":NO_BOOK:" in key):
         return
     row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
-    if row and time.time() - float(row["sent_at"]) < SIGNAL_REPEAT_SECONDS:
+    if row:
         return
     if discord_send(message):
         conn.execute(
@@ -292,7 +292,7 @@ def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
             (key, time.time()),
         )
         conn.commit()
-        print(f"Discord BTC paper signal sent: {key}")
+        print(f"Discord BTC paper signal sent once: {key}")
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
     now_epoch = int(now_epoch or time.time())
