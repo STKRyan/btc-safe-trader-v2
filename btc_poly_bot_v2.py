@@ -356,12 +356,12 @@ def update_live_call_message(conn: sqlite3.Connection, message: str) -> bool:
         color, badge, fill = 0xF97316, "🟧 FLIP", "🟧"
     elif "WAIT" in head or "NO ENTRY" in head:
         color, badge, fill = 0x8B949E, "⬜ WAIT / HOLD", "⬜"
+    elif "HOLD" in head:
+        color, badge, fill = 0x8B949E, "⬜ HOLD", "⬜"
     elif "DOWN" in head:
         color, badge, fill = 0xEF4444, "🔴 DOWN", "🟥"
     elif "UP" in head:
         color, badge, fill = 0x22C55E, "🟢 UP", "🟩"
-    elif "HOLD" in head:
-        color, badge, fill = 0x8B949E, "⬜ HOLD", "⬜"
     else:
         color, badge, fill = 0x8B949E, "📡 LIVE SIGNAL", "⬜"
 
@@ -2052,15 +2052,16 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     signal_key = f"signal_v4:{slug}:{minutes}:{side}"
     live_snipe = btc_snipe_meter(conn, minutes, side, _live_market_odds(minutes), bool(opinions["agrees"]), signal_flip)
     live_strength = max(0, min(100, 8 + abs(int(tech["score"])) * 14 + (14 if opinions["agrees"] else 0) + (8 if float(tech.get("move1",0))*float(tech.get("move3",0))>0 else 0)))
+    call_fill = "🟩" if side == "UP" else "🟥" if side == "DOWN" else "⬜"
     message = (
         f"<b>🟠 CRYPTO RADAR · BTC {minutes}m  |  {action}</b>\n"
         f"<b>{'🟢 UP' if side == 'UP' else '🔴 DOWN'} BIAS</b>  {up_bias}% / {down_bias}%\n"
-        f"UP {up_bias}% {color_meter(up_bias, '🟧', 10)}\nDOWN {down_bias}% {color_meter(down_bias, '🟧', 10)}\n\n"
-        f"🟠 CALL STRENGTH: <b>{live_strength}/100</b>  <code>{color_meter(live_strength, '🟧', 12)}</code>\n"
-        f"{gauge_line('HOLD', signal_hold, '🟧')}\n"
+        f"🟢 UP {up_bias}% {color_meter(up_bias, '🟩', 10)}\n🔴 DOWN {down_bias}% {color_meter(down_bias, '🟥', 10)}\n\n"
+        f"🟠 CALL STRENGTH: <b>{live_strength}/100</b>  <code>{color_meter(live_strength, call_fill, 12)}</code>\n"
+        f"{gauge_line('HOLD', signal_hold, '⬜')}\n"
         f"{gauge_line('FLIP RISK', signal_flip, '🟧')}\n"
         f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{color_meter(scalp_fit, '🟧', 10)}</code>\n"
-        f"🎯 SNIPE METER: <b>{live_snipe['strength']}/100</b>  <code>{color_meter(live_snipe['strength'], '🟧', 10)}</code>\n"
+        f"🎯 SNIPE METER: <b>{live_snipe['strength']}/100</b>  <code>{color_meter(live_snipe['strength'], '🩵', 10)}</code>\n"
         f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
         f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
         f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}% · 20-candle range {float(tech.get('range_position',50)):.0f}% from low\n"
