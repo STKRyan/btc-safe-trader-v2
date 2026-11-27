@@ -41,6 +41,18 @@ body{background:radial-gradient(ellipse at 12% -8%,#1b355b 0,transparent 42%),ra
 .foot{line-height:1.8;font-size:12px}
 @media(max-width:700px){.wrap{padding:14px 11px 30px}.hero{border-radius:20px}.card{padding:16px}.section h3{font-size:18px}.metric-grid{gap:7px}.metric{padding:9px}.chartcard{padding:13px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{transition:none!important;scroll-behavior:auto!important}}
+
+/* Accessibility pass: larger text, clearer labels, and easier phone reading. */
+body{font-size:17px;line-height:1.65}
+.stat span,.section p,.sub,.details,.riskrow,.scoreline{font-size:15px;line-height:1.6}
+.metric span{font-size:13px;line-height:1.5}
+.metric b{font-size:17px}
+.tag{font-size:14px;padding:7px 12px}
+.signal{font-size:clamp(28px,4vw,36px)}
+.details{color:#d5e1f2}
+.chartstatus{font-size:14px}
+.chartsignal{font-size:16px;line-height:1.5}
+@media(max-width:700px){body{font-size:17px}.details,.sub,.section p{font-size:15px}.metric span{font-size:13px}.metric b{font-size:17px}}
 </style></head><body><main class="wrap">
 <header class="top"><div class="brand"><div class="logo">↗</div><div><h1>SIGNALFORGE</h1><p>PAPER MARKET INTELLIGENCE</p></div></div><div class="live">● PAPER MODE</div></header>
 <section class="hero"><small>YOUR MARKET CO-PILOT</small><h2>Signals you can actually<br>understand.</h2><p>Simple market direction, risk meters, and position guidance—organized into cards instead of a wall of logs. No real orders are placed.</p></section>
