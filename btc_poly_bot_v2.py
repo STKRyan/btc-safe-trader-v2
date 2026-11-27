@@ -311,25 +311,12 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Send a signal alert once per market/side; the live dashboard handles frequent updates."""
-    # Keep the channel clean: the persistent dashboard is edited in place every
-    # few seconds. Alerts are only posted once for each unique market/timeframe/
-    # side (or WAIT/order-book state), rather than repeating on a timer.
-    if not (key.startswith("signal_v4:") or
-            (key.startswith("signal_v3:") and key.endswith(":WAIT")) or
-            ":NO_BOOK:" in key):
-        return
-    row = conn.execute("SELECT sent_at FROM alerts WHERE alert_key=?", (key,)).fetchone()
-    if row:
-        return
-    if discord_send(message):
-        conn.execute(
-            "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
-            "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
-            (key, time.time()),
-        )
-        conn.commit()
-        print(f"Discord BTC paper signal sent once: {key}")
+    """Suppress per-signal Discord posts; the live dashboard is the only call feed."""
+    # Do not create a new Discord notification for each market, side, WAIT, or
+    # order-book event. update_dashboard() and the live dashboard edit their
+    # saved message IDs in place, so the channel stays quiet while the call
+    # itself continues to refresh.
+    return
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
     now_epoch = int(now_epoch or time.time())
@@ -1611,7 +1598,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             ),
             "inline":False
         },
-        {"name":"⚡ SCALP","value":scalp_text,"inline":True},
+        {"name":"🎯 LIVE SNIPE","value":snipe_text[:900],"inline":False},
+        {"name":"⚡ SCALP SETUP","value":scalp_text,"inline":True},
         {"name":"📂 POSITION","value":position_text[:900],"inline":True},
         {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False},
         {"name":"🔥 BTC WIN/LOSS + SNIPE TRACKER","value":btc_tracker_text(conn)[:900],"inline":False},
