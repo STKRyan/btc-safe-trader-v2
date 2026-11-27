@@ -12,7 +12,7 @@ UPDATE_SECONDS = max(15, int(os.getenv("BTC_CHART_UPDATE_SECONDS", "15")))
 SAMPLE_SECONDS = max(5, int(os.getenv("BTC_CHART_SAMPLE_SECONDS", "5")))
 CANDLE_SECONDS = 15
 MAX_SAMPLES = 720  # approximately one hour at 5-second sampling
-MAX_CANDLES = 240  # approximately one hour of 15-second candles
+MAX_CANDLES = 60  # keep Discord embed image URL compact; 15 minutes of 15-second candles
 STATE_PATH = Path(os.getenv("BTC_CHART_STATE_PATH", "data/btc_chart_state.json"))
 WEBHOOK_ENV = "DISCORD_BTC_CHART_WEBHOOK_URL"
 SESSION = requests.Session()
@@ -142,13 +142,15 @@ def update_discord(webhook, state, embed):
         response = SESSION.patch(webhook.rstrip("/") + "/messages/" + message_id,
                                 json=payload, timeout=HTTP_TIMEOUT)
         if response.status_code != 404:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(f"Discord edit HTTP {response.status_code}: {response.text[:600]}")
             print("BTC 15-second candlestick chart message updated.", flush=True)
             return
         print("Saved chart message was missing; recreating one.", flush=True)
     response = SESSION.post(webhook.rstrip("/") + "?wait=true",
                             json=payload, timeout=HTTP_TIMEOUT)
-    response.raise_for_status()
+    if response.status_code >= 400:
+        raise RuntimeError(f"Discord post HTTP {response.status_code}: {response.text[:600]}")
     new_id = str(response.json().get("id", ""))
     if not new_id:
         raise RuntimeError("Discord accepted chart request but returned no message ID")
