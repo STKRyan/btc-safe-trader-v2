@@ -70,8 +70,12 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
     """Send a compact, color-accented BTC signal card to Discord."""
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
-        print("DISCORD_WEBHOOK_URL is missing; Discord alert was not sent.")
-        return False
+        webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
+        if webhook:
+            print("Discord alert using configured BTC live webhook fallback.")
+        else:
+            print("DISCORD_WEBHOOK_URL and DISCORD_BTC_LIVE_WEBHOOK_URL are missing; Discord alert was not sent.")
+            return False
     if not (webhook.startswith("https://discord.com/api/webhooks/") or
             webhook.startswith("https://discordapp.com/api/webhooks/")):
         print("DISCORD_WEBHOOK_URL does not look like a Discord webhook URL.")
@@ -1448,7 +1452,7 @@ def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
 
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
-    """Build a compact, phone-readable BTC paper dashboard."""
+    """Build Crypto Radar's bright, simple, phone-first live paper card."""
     minutes = 15 if int(minutes) == 15 else 5
     timeframe = minutes
     open_rows = conn.execute(
@@ -1465,99 +1469,145 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     confirmed = bool(opinions.get("agrees")) and side in ("UP", "DOWN")
     safe_call = side if confirmed else "WAIT"
     score = int(tech.get("score", 0))
-    up_bias, down_bias = direction_split(score)
     move1 = float(tech.get("move1", 0.0))
     move3 = float(tech.get("move3", 0.0))
     move10 = float(tech.get("move10", 0.0))
     rsi_now = float(tech.get("rsi", 50.0))
     price = float(tech.get("last_price", 0.0))
-    hold = max(5, min(95, 50 + abs(score) * 8 + (6 if move1 * score > 0 else -8)))
-    flip = max(5, min(95, 100 - hold + (12 if rsi_now >= 72 or rsi_now <= 28 else 0)
-                       + (10 if move1 * score < 0 else 0)))
-    flip = max(flip, int(opinions.get("flip_risk", flip)))
-    flip = min(95, flip)
+
+    flip = max(5, min(95, int(opinions.get("flip_risk", 50))))
+    hold = max(5, min(95, 100 - flip))
     live_odds = _live_market_odds(minutes)
     up_odds, down_odds = live_odds.get("up"), live_odds.get("down")
     snipe = btc_snipe_meter(conn, minutes, side, live_odds, confirmed, flip)
     snipe_move = "—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
-    # Visible indicator-alignment score; deliberately not a calibrated win probability.
-    signal_strength = max(0, min(100, abs(score) * 18 + (10 if confirmed else -10)))
-    strength_bar = color_meter(signal_strength, "🟩" if safe_call == "UP" else "🟥" if safe_call == "DOWN" else "🟧", 16)
+
+    momentum_aligned = move1 * move3 > 0
+    signal_strength = max(0, min(100,
+        8 + abs(score) * 14 + (14 if confirmed else 0)
+        + (8 if momentum_aligned else 0)
+        + min(10, int(abs(move1) * 500))
+    ))
+    # Every meter uses orange so the card has one bold, consistent visual language.
+    strength_bar = color_meter(signal_strength, "🟧", 18)
+    hold_bar = color_meter(hold, "🟧", 12)
+    flip_bar = color_meter(flip, "🟧", 12)
+    snipe_bar = color_meter(snipe["strength"], "🟧", 12)
 
     period = minutes * 60
     elapsed = int(time.time() % period)
     progress = int(elapsed * 100 / period)
     left = period - elapsed
     countdown = f"{left//60:02d}:{left%60:02d}"
-    progress_bar = color_meter(progress, "🟦", 12)
+    progress_bar = color_meter(progress, "🟧", 14)
 
-    if not confirmed:
-        action = "⚪ WAIT · checks disagree"
-        color = 0x8794A8
-    elif open_rows:
-        action = str(open_rows[0]["last_action"] or "HOLD / MONITOR")
-        color = 0x14B8A6 if "HOLD" in action.upper() else (0xEF4444 if any(x in action.upper() for x in ("EXIT","SELL","STOP")) else 0x19C37D)
+    if safe_call == "UP":
+        call_icon, call_color = "🟢", 0xFF7A00
+        call_words = "UP · PRICE MAY GO UP"
+        plain_reason = "The checks lean UP and agree."
+    elif safe_call == "DOWN":
+        call_icon, call_color = "🔴", 0xFF7A00
+        call_words = "DOWN · PRICE MAY GO DOWN"
+        plain_reason = "The checks lean DOWN and agree."
     else:
-        action = f"🟢 {safe_call} BIAS · entry filters still required" if safe_call == "UP" else f"🔴 {safe_call} BIAS · entry filters still required"
-        color = 0x19C37D if safe_call == "UP" else 0xEF4444
-    if flip >= 70:
-        action = "🟠 FLIP RISK HIGH · " + action
-        color = 0xF59E0B
+        call_icon, call_color = "⚪", 0xFF7A00
+        call_words = "WAIT · NO CLEAR CALL"
+        plain_reason = "The checks do not agree. Wait for a clearer setup."
 
-    odds = (f"UP **{up_odds}%**  {color_meter(up_odds,'🟩',8)}\n"
-            f"DOWN **{down_odds}%**  {color_meter(down_odds,'🟥',8)}"
-            if up_odds is not None and down_odds is not None else
-            "Live contract prices unavailable")
-    description = (
-        f"## {'🟢' if safe_call=='UP' else '🔴' if safe_call=='DOWN' else '⚪'} **{safe_call}**\n"
-        f"**{action}**\n"
-        f"**SIGNAL STRENGTH · {signal_strength}/100**\n{strength_bar}\n"
-        f"*Indicator alignment · not win probability*\n\n"
-        f"**BTC/USD**  ${price:,.2f}\n"
-        f"**{minutes} MIN** · closes in **{countdown}**\n"
-        f"{progress_bar}  {progress}% elapsed\n\n"
-        f"**CONTRACT PRICE**\n{odds}\n"
-        f"*Refreshes automatically · paper signals only*"
+    if open_rows:
+        open_action = str(open_rows[0]["last_action"] or "HOLD / WATCH").replace("<", "").replace(">", "")[:120]
+        position_line = f"📂 OPEN PAPER: **{open_rows[0]['side']}** · {open_action}"
+    else:
+        position_line = "📂 OPEN PAPER: **No open position**"
+
+    odds = (
+        f"UP **{up_odds}%**  {color_meter(up_odds, '🟧', 8)}\n"
+        f"DOWN **{down_odds}%**  {color_meter(down_odds, '🟧', 8)}"
+        if up_odds is not None and down_odds is not None
+        else "Waiting for live contract prices."
     )
-    why = (f"{abs(score)}/5 checks lean {side if side in ('UP','DOWN') else 'NEUTRAL'}; "
-           f"RSI {rsi_now:.0f}; 1m {move1:+.2f}%; 3m {move3:+.2f}%; "
-           f"10m {move10:+.2f}%. "
-           f"Second brain {'agrees' if confirmed else 'does not agree'}."
-           )
-    if float(tech.get("range_position", 50.0)) >= 85:
-        why += " Near recent high—late-entry caution."
-    elif float(tech.get("range_position", 50.0)) <= 15:
-        why += " Near recent low—late-entry caution."
 
-    perf_line = (f"**{perf['wins']}W · {perf['losses']}L** / last {perf['count']} "
-                 f"· {perf['win_rate']:.0f}% wins" if perf["count"] else "Waiting for closed paper trades")
-    perf_line += f"\nToday: **${pnl:+.2f}**"
-    streak_line = (f"**{minutes}M:** {stats['current_win_streak']}W streak · best {stats['best_win_streak']}\n"
-                   f"**5M SNIPE:** {scalp_stats['wins']}W/{scalp_stats['losses']}L · "
-                   f"streak {scalp_stats['current_win_streak']} · best {scalp_stats['best_win_streak']}")
-    snipe_text = (f"**{snipe['status']}**\n"
-                   f"Strength **{snipe['strength']}%** {color_meter(snipe['strength'],'🎯',10)}\n"
-                   f"Contract move **{snipe_move}**")
-    risk_text = (f"**HOLD** {max(0,100-flip)}% {color_meter(max(0,100-flip),'🩵',8)}\n"
-                 f"**FLIP RISK** {flip}% {color_meter(flip,'🟠',8)}\n"
-                 f"**Scalp:** {'SETUP' if confirmed and abs(score)>=3 else 'STANDBY'}")
+    why = (
+        f"**{abs(score)}/5 checks** lean {side if side in ('UP','DOWN') else 'neither'}.\n"
+        f"RSI {rsi_now:.0f} · 1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}%.\n"
+        f"Second check: **{'AGREES' if confirmed else 'DOES NOT AGREE'}**."
+    )
+    if float(tech.get("range_position", 50.0)) >= 85:
+        why += "\n⚠️ Price is near its recent high."
+    elif float(tech.get("range_position", 50.0)) <= 15:
+        why += "\n⚠️ Price is near its recent low."
+
+    perf_line = (
+        f"**{perf['wins']} W · {perf['losses']} L** / last {perf['count']} paper trades\n"
+        f"Win {perf['win_rate']:.0f}% · Loss {perf['loss_rate']:.0f}%"
+        if perf["count"] else "Paper wins/losses are building."
+    )
+    perf_line += f"\nToday: **$${pnl:+.2f}**".replace("$\\$", "$")
+    streak_line = (
+        f"🔥 Now: **{stats['current_win_streak']} wins**\n"
+        f"🏆 Best: **{stats['best_win_streak']} wins**\n"
+        f"⚡ Snipe: **{scalp_stats['wins']}W / {scalp_stats['losses']}L** · "
+        f"streak {scalp_stats['current_win_streak']} · best {scalp_stats['best_win_streak']}"
+    )
+
+    # Preserve explicit all-time W/F/L records and add timeframe flip history.
+    forecast_rows = conn.execute(
+        "SELECT outcome,flip_count FROM btc_forecasts WHERE timeframe=? AND status='RESOLVED' "
+        "AND outcome IN ('WIN','FLIP','LOSS') ORDER BY resolved_at ASC,market_id ASC",
+        (timeframe,),
+    ).fetchall()
+    fw = sum(row["outcome"] == "WIN" for row in forecast_rows)
+    ff = sum(row["outcome"] == "FLIP" for row in forecast_rows)
+    fl = sum(row["outcome"] == "LOSS" for row in forecast_rows)
+    ftotal = len(forecast_rows)
+    flip_windows = sum(int(row["flip_count"] or 0) > 0 for row in forecast_rows)
+    flip_rate = 100.0 * flip_windows / ftotal if ftotal else 0.0
+    forecast_record = (
+        f"**{fw} W · {ff} F · {fl} L** ({timeframe}m)\n"
+        f"Correct: {100.0*(fw+ff)/ftotal:.0f}% · Windows flipped: **{flip_rate:.0f}%** · n={ftotal}"
+        if ftotal else f"**0 W · 0 F · 0 L** ({timeframe}m) · building history"
+    )
+    all_time_forecast = btc_forecast_score_text(conn)
+    all_time_snipe = btc_snipe_score_text(conn)
+    snipe_text = (
+        f"**{snipe['status']}**\n"
+        f"**{snipe['strength']} / 100**  {snipe_bar}\n"
+        f"Contract move: **{snipe_move}**"
+    )
+    risk_text = (
+        f"🩵 HOLD **{hold}%**  {hold_bar}\n"
+        f"🟧 FLIP RISK **{flip}%**  {flip_bar}\n"
+        f"Scalp: **{'READY TO CHECK' if confirmed and abs(score)>=3 else 'WAITING'}**"
+    )
+
     fields = [
-        {"name":"📶 LIVE SIGNAL STRENGTH","value":f"**{signal_strength}/100**\n{strength_bar}\nIndicator alignment · not win probability","inline":False},
+        {"name":"🟠 LIVE STRENGTH","value":f"**{signal_strength} / 100**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
+        {"name":"🧒 WHAT DOES IT MEAN?","value":f"**{call_words}**\n{plain_reason}\n{position_line}","inline":False},
+        {"name":"🎯 LIVE SNIPE METER","value":snipe_text[:900],"inline":False},
+        {"name":"📊 WINS · FLIPS · LOSSES","value":forecast_record[:900],"inline":False},
+        {"name":"🔥 WINS & STREAK","value":(perf_line+"\n"+streak_line)[:900],"inline":True},
+        {"name":"🛡️ HOLD / FLIP","value":risk_text[:900],"inline":True},
+        {"name":"📚 ALL-TIME RECORDS","value":(all_time_forecast+"\n"+all_time_snipe)[:1000],"inline":False},
         {"name":"🧠 WHY THIS CALL?","value":why[:900],"inline":False},
-        {"name":"🎯 LIVE SNIPE","value":snipe_text[:900],"inline":False},
-        {"name":"📊 PAPER RECORD","value":perf_line[:900],"inline":True},
-        {"name":"🔥 STREAKS","value":streak_line[:900],"inline":True},
-        {"name":"🛡️ RISK CHECK","value":risk_text[:900],"inline":False},
-        {"name":"📚 LOSS LESSONS","value":btc_loss_report_text(conn)[:700],"inline":False},
+        {"name":"📉 LIVE UP / DOWN PRICE","value":odds[:900],"inline":False},
+        {"name":"📖 LOSS LESSONS","value":btc_loss_report_text(conn)[:700],"inline":False},
     ]
+    description = (
+        f"## {call_icon} **{call_words}**\n"
+        f"### ₿ BTC **$PRICE_PLACEHOLDER**\n"
+        f"**{minutes} MIN** · closes in **{countdown}**\n"
+        f"{progress_bar} **{progress}%**\n\n"
+        f"**{call_words}**\n"
+        f"*Updates live · paper signals only*"
+    ).replace("$PRICE_PLACEHOLDER", f"{price:,.2f}")
     return {
-        "author":{"name":f"BTC BOT · {minutes}M LIVE PAPER DESK","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
-        "title":f"₿ BTC SIGNAL · {minutes} MIN",
+        "author":{"name":f"🟠 CRYPTO RADAR · {minutes}M LIVE","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "title":f"🟠 CRYPTO RADAR · BTC {minutes} MIN",
         "description":description,
-        "color":color,
+        "color":call_color,
         "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "fields":fields,
-        "footer":{"text":"BOT STATUS · PAPER ONLY · NO LIVE ORDERS"},
+        "footer":{"text":"LIVE PAPER SIGNALS · NO LIVE ORDERS · ORANGE BARS = LIVE INDICATOR METERS"},
         "timestamp":utc_now().isoformat(),
     }
 
