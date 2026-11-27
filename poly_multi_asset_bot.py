@@ -92,6 +92,9 @@ def db():
     CREATE TABLE IF NOT EXISTS bot_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS signal_alerts(
       alert_key TEXT PRIMARY KEY, sent_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS snipe_ticks(
+      market_id TEXT NOT NULL, side TEXT NOT NULL, ask REAL NOT NULL, ts REAL NOT NULL,
+      PRIMARY KEY(market_id,side));
     CREATE TABLE IF NOT EXISTS forecast_journal(
       market_id TEXT NOT NULL, timeframe INTEGER NOT NULL, slug TEXT NOT NULL,
       asset TEXT NOT NULL, initial_side TEXT NOT NULL, current_side TEXT NOT NULL,
@@ -395,6 +398,32 @@ def scalp_call(c, asset, tf, market, tech):
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
     return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree"
 
+def snipe_update(c, market_id, side, stats, tech, brain):
+    """Track real Polymarket contract ask movement; meter is strength, not win odds."""
+    ask=float(stats["ask"]); stamp=time.time()
+    row=c.execute("SELECT ask,ts FROM snipe_ticks WHERE market_id=? AND side=?",
+                  (str(market_id),side)).fetchone()
+    move=None
+    if row and 2<=stamp-float(row["ts"])<=90 and float(row["ask"])>0:
+        move=(ask/float(row["ask"])-1)*100
+    c.execute("INSERT INTO snipe_ticks(market_id,side,ask,ts) VALUES(?,?,?,?) "
+              "ON CONFLICT(market_id,side) DO UPDATE SET ask=excluded.ask,ts=excluded.ts",
+              (str(market_id),side,ask,stamp)); c.commit()
+    abs_move=abs(move or 0)
+    band="NO RECENT BASELINE" if move is None else "MICRO 1–9%" if 1<=abs_move<10 else "FAST 10–30%" if abs_move<30 else "EXTREME 30%+" if abs_move>=30 else "QUIET <1%"
+    sign=1 if side=="UP" else -1
+    book_ok=float(stats.get("imbalance",0))*sign>=0.05 and float(stats.get("spread",1))<=MAX_SPREAD and float(stats.get("depth",0))>=MIN_DEPTH
+    confirmed=move is not None and abs_move>=1 and (move*sign)>0 and book_ok and brain.get("agrees") and int(brain.get("flip_risk",95))<70
+    strength=max(0,min(100,round(abs_move*3 + (20 if book_ok else 0) + (20 if brain.get("agrees") else 0)))) if move is not None else 0
+    if move is None: status="SNIPE WATCH · building price baseline"
+    elif abs_move<1: status="SNIPE WAIT · move under 1%"
+    elif int(brain.get("flip_risk",95))>=70: status="SNIPE FLIP RISK · entry blocked"
+    elif confirmed: status="SNIPE CONFIRMED · evidence aligned"
+    else: status="SNIPE WATCH · not confirmed"
+    move_text="—" if move is None else f"{move:+.2f}%"
+    return f"🎯 {status} · contract move {move_text} · {band} · strength {strength}/100 (not win probability)"
+
+
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
@@ -407,11 +436,14 @@ def maybe_enter(c, asset, tf, m, tech):
     signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
+    snipe=snipe_update(c,m.get("id"),side,stats,tech,brain)
+    current_risk=int(brain.get("flip_risk",95))
     pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% {pct_bar(round(stats['ask']*100))} (contract price, not bot win probability)")
     reasons=[]
     if abs(tech["score"])<required:reasons.append(f"signal votes {abs(tech['score'])}/5; need {required}")
     if not confirm:reasons.append("short momentum not aligned")
     if not brain["agrees"]:reasons.append("SECOND BRAIN: "+brain["label"])
+    if current_risk>=70:reasons.append(f"FLIP RISK {current_risk}/100 · no new entry")
     if signed_imb< -0.10:reasons.append("order book opposes signal")
     if stats["spread"]>MAX_SPREAD:reasons.append("spread too wide")
     if stats["depth"]<MIN_DEPTH:reasons.append("book too thin")
@@ -421,14 +453,14 @@ def maybe_enter(c, asset, tf, m, tech):
     if pnl<=-DAILY_LOSS_LIMIT:reasons.append("daily paper loss limit reached")
     open_n=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
-    if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · COURT: "+brain["debate"]
+    if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
     qty=STAKE/stats["ask"]
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · COURT: {brain['debate']}"
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 
 
 def resolve_calls(c):
@@ -616,6 +648,7 @@ def market_embeds(lines):
                 pm_value=f'{pm_value} {color_pct_bar(odds,'🟩')} **{odds}%**'
         else:
             pm_value='Live Polymarket bid/ask unavailable this scan'
+        snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
@@ -628,7 +661,7 @@ def market_embeds(lines):
         elif side=='DOWN': color=0xEF4444
         else: color=0x8794A8
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE · LIVE CONTRACT MOVE','value':snipe_line[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
