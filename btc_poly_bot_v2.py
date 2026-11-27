@@ -1956,21 +1956,23 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     live_snipe = btc_snipe_meter(conn, minutes, side, _live_market_odds(minutes), bool(opinions["agrees"]), signal_flip)
     live_strength = max(0, min(100, 8 + abs(int(tech["score"])) * 14 + (14 if opinions["agrees"] else 0) + (8 if float(tech.get("move1",0))*float(tech.get("move3",0))>0 else 0)))
     message = (
-        f"<b>₿ BTC {minutes}m  |  {action}</b>\n"
+        f"<b>🟠 CRYPTO RADAR · BTC {minutes}m  |  {action}</b>\n"
         f"<b>{'🟢 UP' if side == 'UP' else '🔴 DOWN'} BIAS</b>  {up_bias}% / {down_bias}%\n"
         f"UP {up_bias}% {color_meter(up_bias, '🟧', 10)}\nDOWN {down_bias}% {color_meter(down_bias, '🟧', 10)}\n\n"
         f"🟠 CALL STRENGTH: <b>{live_strength}/100</b>  <code>{color_meter(live_strength, '🟧', 12)}</code>\n"
         f"{gauge_line('HOLD', signal_hold, '🟧')}\n"
         f"{gauge_line('FLIP RISK', signal_flip, '🟧')}\n"
         f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{color_meter(scalp_fit, '🟧', 10)}</code>\n"
-        f"🎯 SNIPE METER: <b>{live_snipe['strength']}/100</b>  <code>{color_meter(live_snipe['strength'], '🟧', 10)}</code>\n"        f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
+        f"🎯 SNIPE METER: <b>{live_snipe['strength']}/100</b>  <code>{color_meter(live_snipe['strength'], '🟧', 10)}</code>\n"
+        f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
         f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
         f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}% · 20-candle range {float(tech.get('range_position',50)):.0f}% from low\n"
         f"ASK ${ask:.3f} · BID ${stats['bid']:.3f} · DEPTH ${stats['depth']:.0f}\n"
         f"EDGE {edge*100:+.1f}pp\n"
         f"SECOND BRAIN: {opinions['side']} · {opinions['label']} · {opinions.get('debate','')}\n"
         f"LAST {memory['sample']}: {memory['wins']}W/{memory['correct_flips']}F/{memory['losses']}L · "
-        f"{memory['flip_rate']*100:.0f}% windows changed direction\n"        f"{entry_line}\n"
+        f"{memory['flip_rate']*100:.0f}% windows changed direction\n"
+        f"{entry_line}\n"
         f"{performance_line}\n"
         "<i>Paper only · bars are indicator scores, not win probabilities. Hold window is a review suggestion.</i>"
     )
