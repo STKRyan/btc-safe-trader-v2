@@ -544,6 +544,89 @@ def update_shared_learning(conn: sqlite3.Connection, bot: str = "btc") -> None:
     with open("data/shared_learning.json","w",encoding="utf-8") as handle:
         json.dump(data,handle,indent=2)
 
+def btc_trade_tracker(conn: sqlite3.Connection, timeframe: Optional[int] = None,
+                       trade_type: Optional[str] = None, limit: int = 100) -> dict:
+    """Realized paper-trade W/L and streak stats; no forecast-only outcomes."""
+    query = "SELECT realized_pnl FROM paper_trades WHERE status='CLOSED'"
+    params: list[Any] = []
+    if timeframe is not None:
+        query += " AND timeframe=?"
+        params.append(int(timeframe))
+    if trade_type is not None:
+        query += " AND UPPER(trade_type)=?"
+        params.append(str(trade_type).upper())
+    query += " ORDER BY COALESCE(closed_at,opened_at) DESC,id DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    rows = conn.execute(query, params).fetchall()
+    pnls = [float(row["realized_pnl"] or 0.0) for row in rows]
+    wins = sum(p > 0 for p in pnls)
+    losses = sum(p < 0 for p in pnls)
+    flats = len(pnls) - wins - losses
+    decisive = wins + losses
+    current_wins = current_losses = 0
+    for pnl in pnls:
+        if pnl > 0 and current_losses == 0:
+            current_wins += 1
+        elif pnl < 0 and current_wins == 0:
+            current_losses += 1
+        else:
+            break
+    best_wins = run = 0
+    # Compute the best streak across all closed trades in chronological order.
+    all_query = "SELECT realized_pnl FROM paper_trades WHERE status='CLOSED'"
+    all_params: list[Any] = []
+    if timeframe is not None:
+        all_query += " AND timeframe=?"
+        all_params.append(int(timeframe))
+    if trade_type is not None:
+        all_query += " AND UPPER(trade_type)=?"
+        all_params.append(str(trade_type).upper())
+    all_query += " ORDER BY COALESCE(closed_at,opened_at),id"
+    for row in conn.execute(all_query, all_params).fetchall():
+        if float(row["realized_pnl"] or 0.0) > 0:
+            run += 1
+            best_wins = max(best_wins, run)
+        else:
+            run = 0
+    return {"sample":len(pnls),"wins":wins,"losses":losses,"flats":flats,
+            "win_rate":100.0*wins/decisive if decisive else None,
+            "loss_rate":100.0*losses/decisive if decisive else None,
+            "current_win_streak":current_wins,"current_loss_streak":current_losses,
+            "best_win_streak":best_wins,"net_pnl":sum(pnls)}
+
+
+def btc_streak_guard(conn: sqlite3.Connection, timeframe: int) -> dict:
+    """Protect paper entry streaks; forecast recovery is independent of trade entry."""
+    trades = btc_trade_tracker(conn, timeframe=timeframe, limit=100)
+    forecasts = conn.execute(
+        "SELECT outcome FROM btc_forecasts WHERE timeframe=? AND status='RESOLVED' "
+        "ORDER BY resolved_at DESC LIMIT 12", (int(timeframe),)
+    ).fetchall()
+    forecast_wins = 0
+    for row in forecasts:
+        if row["outcome"] in ("WIN", "FLIP"):
+            forecast_wins += 1
+        else:
+            break
+    return {"trades":trades,"forecast_recovery_wins":forecast_wins}
+
+
+def btc_tracker_text(conn: sqlite3.Connection) -> str:
+    five = btc_trade_tracker(conn, timeframe=5, limit=100)
+    fifteen = btc_trade_tracker(conn, timeframe=15, limit=100)
+    snipes = btc_trade_tracker(conn, timeframe=5, trade_type="SCALP", limit=100)
+    def rate(stats: dict) -> str:
+        return f"{stats['win_rate']:.0f}%W/{stats['loss_rate']:.0f}%L" if stats["win_rate"] is not None else "building sample"
+    def record(stats: dict) -> str:
+        return f"{stats['wins']}W/{stats['losses']}L · {rate(stats)} · n={stats['sample']}"
+    return (
+        f"BTC 5M: {record(five)}\nBTC 15M: {record(fifteen)}\n"
+        f"⚡ SNIPE/SCALP 5M: {record(snipes)}\n"
+        f"🔥 PAPER STREAK: {five['current_win_streak']} wins / "
+        f"{five['current_loss_streak']} losses · best {five['best_win_streak']}"
+    )
+
+
 def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20,
                              timeframe: Optional[int] = None) -> dict:
     """Summarize recent closed paper trades, optionally for one timeframe."""
@@ -1235,7 +1318,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         },
         {"name":"⚡ SCALP","value":scalp_text,"inline":True},
         {"name":"📂 POSITION","value":position_text[:900],"inline":True},
-        {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False}
+        {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False},
+        {"name":"🔥 BTC WIN/LOSS + SNIPE TRACKER","value":btc_tracker_text(conn)[:1000],"inline":False}
     ]
 
     return {
@@ -1549,6 +1633,19 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     performance = recent_paper_performance(conn, 20, minutes)
     if performance["count"] >= 10 and performance["win_rate"] < 60.0:
         reasons.append(f"recent {minutes}m paper results below 60%; adaptive safety pause")
+    streak = btc_streak_guard(conn, minutes)
+    trade_streak = streak["trades"]
+    # After two paper losses, wait for two independently resolved forecast wins
+    # before re-entering. A single loss tightens selection; it never loosens caps.
+    if trade_streak["current_loss_streak"] >= 2 and streak["forecast_recovery_wins"] < 2:
+        reasons.append(
+            f"STREAK PROTECTION: {trade_streak['current_loss_streak']} paper losses; "
+            f"need 2 resolved forecast wins before new entry "
+            f"({streak['forecast_recovery_wins']}/2 so far)"
+        )
+    elif trade_streak["current_loss_streak"] == 1:
+        if abs(int(tech["score"])) < 4 or not opinions["agrees"] or int(opinions.get("flip_risk", 100)) > 50:
+            reasons.append("STREAK PROTECTION after 1 loss: require 4/5 votes, second-brain agreement, and flip risk ≤50")
     memory = opinions["memory"]
     if memory["caution"]:
         reasons.append(f"second-brain memory caution: {memory['flip_rate']*100:.0f}% of resolved {minutes}m windows flipped")
