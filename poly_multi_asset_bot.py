@@ -125,7 +125,7 @@ def discover(asset, tf):
         cached=_DISCOVERY_CACHE.get(cache_key)
         if cached and time.time()-cached[0]<12: return cached[1]
         found=[]
-        for stamp in (slot,slot+seconds):
+        for stamp in (slot,slot+seconds,slot-seconds):
             slug=f"{prefix}-updown-{tf}m-{stamp}"
             try:
                 ev=get(f"{GAMMA}/events/slug/{slug}")
@@ -133,7 +133,14 @@ def discover(asset, tf):
                 elif isinstance(ev,list):
                     for e in ev: found.extend(e.get("markets",[]) or [])
             except Exception as e:
-                print(f"Exact slug {slug}: {type(e).__name__}: {str(e)[:100]}",flush=True)
+                print(f"Exact event slug {slug}: {type(e).__name__}: {str(e)[:90]}",flush=True)
+            if not any(str(x.get("slug","")).lower()==slug for x in found):
+                # Gamma may expose the market record even when the event-slug route is empty.
+                try:
+                    direct=get(f"{GAMMA}/markets",{"slug":slug})
+                    if isinstance(direct,list): found.extend(direct)
+                except Exception as e:
+                    print(f"Direct market lookup {slug}: {type(e).__name__}: {str(e)[:90]}",flush=True)
         candidates=[]
         for m in found:
             active=m.get("active",True) not in (False,"false",0) and m.get("closed",False) not in (True,"true",1)
@@ -203,7 +210,9 @@ def indicators(candles):
            1 if macd>prev else -1 if macd<prev else 0,
            1 if move3>=0.035 and move10>0 else -1 if move3<=-0.035 and move10<0 else 0,
            1 if vr>=1.1 and move3>0 else -1 if vr>=1.1 and move3<0 else 0]
-    return {"score":sum(votes),"side":"UP" if sum(votes)>0 else "DOWN" if sum(votes)<0 else "WAIT",
+    up_votes=votes.count(1); down_votes=votes.count(-1)
+    majority_side="UP" if up_votes>=3 else "DOWN" if down_votes>=3 else "WAIT"
+    return {"score":sum(votes),"side":majority_side,"up_votes":up_votes,"down_votes":down_votes,
             "rsi":rsi,"move1":move1,"move3":move3,"move10":move10,"volume_ratio":vr,"price":closes[-1],"range_high":recent_high,"range_low":recent_low,"range_position":range_position,"range_pct":range_pct,"votes":votes}
 
 
@@ -649,7 +658,18 @@ def market_embeds(lines):
         else:
             pm_value='Live Polymarket bid/ask unavailable this scan'
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
+        snipe_strength_match=re.search(r'strength (\d+)/100',snipe_line)
+        snipe_strength=int(snipe_strength_match.group(1)) if snipe_strength_match else 0
+        snipe_move_match=re.search(r'contract move ([+-]?\d+\.\d+)%',snipe_line)
+        snipe_move=float(snipe_move_match.group(1)) if snipe_move_match else None
+        snipe_bar=color_pct_bar(snipe_strength,'🎯')
+        snipe_display=(f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
+                       f'**CONTRACT MOVE {snipe_move:+.2f}%**' if snipe_move is not None else
+                       f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\nBuilding live price baseline')
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
+        up_count=int(re.search(r'MAJORITY VOTE: UP (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: UP (\d)/5',raw) else 0
+        down_count=int(re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw) else 0
+        majority_line=f'**MAJORITY CALL: UP · {up_count}/5 indicators**' if up_count>=3 else f'**MAJORITY CALL: DOWN · {down_count}/5 indicators**' if down_count>=3 else '**NO MAJORITY · WAIT**'
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
         scalp_score=max(5,min(95,50+abs(int(score))*8-risk//4)) if scalp_active else 0
@@ -661,7 +681,7 @@ def market_embeds(lines):
         elif side=='DOWN': color=0xEF4444
         else: color=0x8794A8
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE · LIVE CONTRACT MOVE','value':snipe_line[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
@@ -860,7 +880,8 @@ def cycle(c):
                 side=tech["side"]
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
-                lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5) · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
+                vote_line=(f"MAJORITY VOTE: UP {tech['up_votes']}/5" if tech['up_votes']>=3 else f"MAJORITY VOTE: DOWN {tech['down_votes']}/5" if tech['down_votes']>=3 else f"NO MAJORITY: UP {tech['up_votes']}/5 · DOWN {tech['down_votes']}/5")
+                lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5 net) · {vote_line} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
     # Keep the most recent scan for every supported coin so the site shows the full radar.
