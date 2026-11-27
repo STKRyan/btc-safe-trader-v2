@@ -121,12 +121,14 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
                 if len(found)>=limit: break
         return found
     bias=pick(["BIAS"])
-    meters=pick(["HOLD ","FLIP RISK","SCALP FIT"],3)
+    meters=pick(["HOLD ","FLIP RISK","SCALP FIT","SNIPE METER","CALL STRENGTH"],5)
     market=pick(["ASK $","EDGE "],2)
+    records=pick(["LAST ","FORECAST W/F/L","SNIPE W/F/L"],2)
     confirm=pick(["SECOND BRAIN:","ENTRY FILTERS","NO ENTRY"],2)
     fields=[]
     if bias: fields.append({"name":"DIRECTION","value":bias[0][:250],"inline":False})
-    if meters: fields.append({"name":"LIVE METERS","value":"\n".join(meters)[:700],"inline":False})
+    if meters: fields.append({"name":"🟠 LIVE METERS","value":"\n".join(meters)[:900],"inline":False})
+    if records: fields.append({"name":"📊 RESULTS","value":"\n".join(records)[:900],"inline":False})
     if market: fields.append({"name":"MARKET","value":"\n".join(market)[:500],"inline":True})
     if confirm: fields.append({"name":"CHECK","value":"\n".join(confirm)[:500],"inline":True})
     payload={
@@ -544,7 +546,7 @@ def gauge_bar(value: int | float, width: int = 10) -> str:
 
 def gauge_line(label: str, value: int | float, icon: str = "") -> str:
     pct = max(0, min(100, int(round(float(value)))))
-    return f"{icon} <b>{label} {pct}%</b>  <code>{gauge_bar(pct)}</code>"
+    return f"{icon} <b>{label} {pct}%</b>  <code>{color_meter(pct, '🟧', 10)}</code>"
 
 
 def direction_split(score: int) -> tuple[int, int]:
@@ -1241,7 +1243,7 @@ def resolve_btc_forecasts(conn: sqlite3.Connection) -> None:
 def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> dict:
     """Summarize resolved forecast accuracy and market-window churn."""
     if conn is None:
-        return {"sample": 0, "wins": 0, "losses": 0, "flips": 0,
+        return {"sample": 0, "wins": 0, "losses": 0, "flips": 0, "correct_flips": 0,
                 "win_rate": None, "flip_rate": 0.0, "caution": False, "pause": False}
     rows = conn.execute(
         "SELECT outcome,flip_count FROM btc_forecasts WHERE timeframe=? AND status='RESOLVED' "
@@ -1258,7 +1260,7 @@ def btc_forecast_learning(conn: Optional[sqlite3.Connection], minutes: int) -> d
     caution = sample >= 8 and ((win_rate is not None and win_rate < 50.0) or flip_rate >= 0.35)
     pause = sample >= 12 and ((win_rate is not None and win_rate < 40.0) or flip_rate >= 0.50)
     return {"sample": sample, "wins": wins, "losses": losses, "flips": flips,
-            "win_rate": win_rate, "flip_rate": flip_rate,
+            "correct_flips": correct_flips, "win_rate": win_rate, "flip_rate": flip_rate,
             "caution": caution, "pause": pause}
 
 
@@ -1542,7 +1544,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"Win {perf['win_rate']:.0f}% · Loss {perf['loss_rate']:.0f}%"
         if perf["count"] else "Paper wins/losses are building."
     )
-    perf_line += f"\nToday: **$${pnl:+.2f}**".replace("$\\$", "$")
+    perf_line += f"\nToday: **${pnl:+.2f}**"
     streak_line = (
         f"🔥 Now: **{stats['current_win_streak']} wins**\n"
         f"🏆 Best: **{stats['best_win_streak']} wins**\n"
@@ -1951,22 +1953,24 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
         action = "🟢 BUY PAPER" if side == "UP" else "🔴 BUY PAPER"
         entry_line = "✅ <b>ENTRY FILTERS PASS</b> · paper entry eligible"
     signal_key = f"signal_v4:{slug}:{minutes}:{side}"
+    live_snipe = btc_snipe_meter(conn, minutes, side, _live_market_odds(minutes), bool(opinions["agrees"]), signal_flip)
+    live_strength = max(0, min(100, 8 + abs(int(tech["score"])) * 14 + (14 if opinions["agrees"] else 0) + (8 if float(tech.get("move1",0))*float(tech.get("move3",0))>0 else 0)))
     message = (
         f"<b>₿ BTC {minutes}m  |  {action}</b>\n"
         f"<b>{'🟢 UP' if side == 'UP' else '🔴 DOWN'} BIAS</b>  {up_bias}% / {down_bias}%\n"
-        f"<code>UP   {gauge_bar(up_bias, 10)}\nDOWN {gauge_bar(down_bias, 10)}</code>\n\n"
-        f"{gauge_line('HOLD', signal_hold, '🩵')}\n"
-        f"{gauge_line('FLIP RISK', signal_flip, '🟠')}\n"
-        f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{gauge_bar(scalp_fit)}</code>\n"
-        f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
+        f"UP {up_bias}% {color_meter(up_bias, '🟧', 10)}\nDOWN {down_bias}% {color_meter(down_bias, '🟧', 10)}\n\n"
+        f"🟠 CALL STRENGTH: <b>{live_strength}/100</b>  <code>{color_meter(live_strength, '🟧', 12)}</code>\n"
+        f"{gauge_line('HOLD', signal_hold, '🟧')}\n"
+        f"{gauge_line('FLIP RISK', signal_flip, '🟧')}\n"
+        f"⚡ SCALP FIT: <b>{scalp_fit}/100</b>  <code>{color_meter(scalp_fit, '🟧', 10)}</code>\n"
+        f"🎯 SNIPE METER: <b>{live_snipe['strength']}/100</b>  <code>{color_meter(live_snipe['strength'], '🟧', 10)}</code>\n"        f"⏱ HOLD WINDOW: <b>{hold_window}</b>\n\n"
         f"VOTES {abs(int(tech['score']))}/5 · RSI {tech['rsi']:.0f}\n"
         f"3m {tech['move3']:+.2f}% · 10m {tech['move10']:+.2f}% · 20-candle range {float(tech.get('range_position',50)):.0f}% from low\n"
         f"ASK ${ask:.3f} · BID ${stats['bid']:.3f} · DEPTH ${stats['depth']:.0f}\n"
         f"EDGE {edge*100:+.1f}pp\n"
         f"SECOND BRAIN: {opinions['side']} · {opinions['label']} · {opinions.get('debate','')}\n"
-        f"MEMORY: {memory['sample']} resolved · {memory['wins']}W/{memory['losses']}L · "
-        f"{memory['flip_rate']*100:.0f}% windows flipped\n"
-        f"{entry_line}\n"
+        f"LAST {memory['sample']}: {memory['wins']}W/{memory['correct_flips']}F/{memory['losses']}L · "
+        f"{memory['flip_rate']*100:.0f}% windows changed direction\n"        f"{entry_line}\n"
         f"{performance_line}\n"
         "<i>Paper only · bars are indicator scores, not win probabilities. Hold window is a review suggestion.</i>"
     )
