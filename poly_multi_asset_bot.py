@@ -400,7 +400,8 @@ def maybe_enter(c, asset, tf, m, tech):
     required=learn["threshold"]
     signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
-    brain=second_brain(tech,stats,side)
+    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
+    pm_quote=(f"POLYMARKET {side} · bid {stats['bid']:.3f} / ask {stats['ask']:.3f} · buy-side implied {stats['ask']*100:.1f}% (contract price, not bot win probability)")
     reasons=[]
     if abs(tech["score"])<required:reasons.append(f"signal votes {abs(tech['score'])}/5; need {required}")
     if not confirm:reasons.append("short momentum not aligned")
@@ -414,14 +415,14 @@ def maybe_enter(c, asset, tf, m, tech):
     if pnl<=-DAILY_LOSS_LIMIT:reasons.append("daily paper loss limit reached")
     open_n=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
-    if reasons:return "WAIT · "+"; ".join(reasons)+" · COURT: "+brain["debate"]
+    if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · COURT: "+brain["debate"]
     qty=STAKE/stats["ask"]
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · COURT: {brain['debate']}"
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · COURT: {brain['debate']}"
 
 
 def resolve_calls(c):
@@ -596,7 +597,7 @@ def market_embeds(lines):
         else: level='LOWER · signal currently aligned'
         color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · scalp/hold/flip scores are heuristic indicators, not probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{pct_bar(hold)} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**\n{level}','inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
