@@ -1139,7 +1139,33 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         )
     position_text="\n".join(position_lines) if position_lines else "👀 No open paper position"
     scalp_text=f"**{scalp_call}** · **{scalp_live}%**\n{color_meter(scalp_live,'🟦')}"
+    # Plain-language explanation: show the evidence behind the call, including nearby range edges.
+    range_pos = float(tech.get("range_position", 50.0))
+    move1_pct = float(tech.get("move1", 0.0))
+    move3_pct = float(tech.get("move3", 0.0))
+    move10_pct = float(tech.get("move10", 0.0))
+    if side == "UP":
+        trend_words = "price is moving up"
+    elif side == "DOWN":
+        trend_words = "price is moving down"
+    else:
+        trend_words = "price has no clear direction"
+    evidence = f"{abs(score)} of 5 checks point {side.lower() if side in ('UP','DOWN') else 'either way'}; {trend_words}."
+    evidence += f" Recent moves: 1 candle {move1_pct:+.2f}%, 3 candles {move3_pct:+.2f}%, 10 candles {move10_pct:+.2f}%."
+    evidence += f" Price is {range_pos:.0f}% of the way from the recent low (${float(tech.get('range_low',0)):,.0f}) to high (${float(tech.get('range_high',0)):,.0f})."
+    if range_pos >= 85:
+        evidence += " Price is close to the recent high, so an UP call may be late."
+    elif range_pos <= 15:
+        evidence += " Price is close to the recent low, so a DOWN call may be late."
+    evidence += " The second brain " + ("agrees." if confirmed else "does not agree, so the safe call is WAIT.")
+    if flip >= 65:
+        evidence += f" Flip warning: risk meter is {flip}%; reconsider if price turns against the call."
     fields=[
+        {
+            "name":"🧠 WHY THIS CALL? · SIMPLE EXPLANATION",
+            "value":evidence[:1024],
+            "inline":False
+        },
         {
             "name":"📊 SIGNAL",
             "value":(
