@@ -1233,7 +1233,6 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             ),
             "inline":False
         },
-        {"name":"🎯 SNIPE · LIVE CONTRACT MOVE","value":snipe_text[:900],"inline":False},
         {"name":"⚡ SCALP","value":scalp_text,"inline":True},
         {"name":"📂 POSITION","value":position_text[:900],"inline":True},
         {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False}
