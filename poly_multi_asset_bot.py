@@ -601,22 +601,39 @@ def market_embeds(lines):
     return result
 
 def position_embeds(c):
+    """Return concise position cards with live return, hold and exit meters."""
     result=[]
     rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC").fetchall()
     for r in rows:
         try:
             b=book_stats(r['token_id']); bid=float(b['bid']) if b else None; entry=float(r['entry'])
             roi=(bid/entry-1)*100 if bid is not None and entry>0 else None
-            feat=json.loads(r['features'] or '{}'); aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
+            feat=json.loads(r['features'] or '{}')
+            aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
             risk=flip_risk(feat,r['side'],float(b.get('imbalance',0)) if b else 0)
-            if roi is not None and roi<=-8: action='PROTECT / EXIT'; reason='Paper position reached the -8% protection level.'
-            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Paper position reached the +10% target.'
-            elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; reason='Paper position reached the +5% partial-profit level.'
-            elif risk>=70 or aligned<=-3: action='EXIT RISK'; reason='Signal is turning against the open paper position.'
-            else: action='HOLD'; reason='No exit threshold currently triggered. Re-check next scan.'
-            color=0x42dba8 if action=='HOLD' else (0xffc45c if 'SELL' in action or 'PROFIT' in action else 0xff657d)
+            hold=max(0,min(100,100-risk))
+            if roi is not None and roi<=-8: action='EXIT / PROTECT'; reason='Protection threshold reached'
+            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Profit target reached'
+            elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; reason='Partial profit level reached'
+            elif risk>=70 or aligned<=-3: action='EXIT RISK'; reason='Signal turning against position'
+            else: action='HOLD'; reason='No exit trigger detected'
+            if 'EXIT' in action: color,emoji=0xEF4444,'🔴'
+            elif 'SELL' in action or 'PROFIT' in action: color,emoji=0xF59E0B,'🟠'
+            else: color,emoji=0x19C37D,'🟢'
             roi_text='—' if roi is None else f'{roi:+.2f}%'
-            result.append({'title':f'OPEN PAPER · {r["asset"]} {r["timeframe"]}m · {r["side"]}','description':f'**{action}**\n{reason}','color':color,'fields':[{'name':'PAPER RETURN','value':roi_text,'inline':True},{'name':'ENTRY / BID','value':f'{entry:.3f} / {bid:.3f}' if bid is not None else f'{entry:.3f} / unavailable','inline':True},{'name':'FLIP RISK','value':f'{pct_bar(risk)} **{risk}%**','inline':False}],'footer':{'text':'Simulated position · no real order'}})
+            roi_meter=max(0,min(100,50+(roi or 0)*5))
+            result.append({
+                'title':f'{emoji} {action} · {r["asset"]} {r["timeframe"]}M {r["side"]}',
+                'description':f'**{reason}** · PAPER',
+                'color':color,
+                'fields':[
+                    {'name':'RETURN','value':f'**{roi_text}**\n{pct_bar(roi_meter)}','inline':True},
+                    {'name':'HOLD','value':f'**{hold}%**\n{pct_bar(hold)}','inline':True},
+                    {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
+                    {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True}
+                ],
+                'footer':{'text':'Paper position · meters are live indicators, not guarantees'}
+            })
         except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
     return result
 
@@ -668,7 +685,7 @@ def dashboard(c, lines):
     summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'FORECAST SCORE · W / F / L','value':f'**{fw} / {ff} / {fl}**\nFLIP is neutral · {len(frows)} resolved','inline':True},{'name':'RESOLVED CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'PAPER ONLY · Scores are heuristic, not guarantees'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
-    # Build a compact, color-accented card for each coin instead of one crowded text wall.
+    # Five concise coin cards, refreshed with the latest scan values.
     import re
     by_asset={}
     for card in cards:
@@ -677,99 +694,58 @@ def dashboard(c, lines):
         if not mt: continue
         asset,tf,side_text=mt.groups()
         side=side_text if side_text in ('UP','DOWN','WAIT') else 'WAIT'
-        no_market='NO VERIFIED MARKET' in side_text
-        cf=card.get('fields',[])
-        get_field=lambda label: next((x.get('value','') for x in cf if x.get('name')==label),'')
-        pm=get_field('POLYMARKET LIVE ODDS')
-        hold=get_field('HOLD STRENGTH')
-        flip=get_field('FLIP RISK')
-        scalp=get_field('SCALP SETUP · ENTRY / TARGET / STOP')
-        detail=card.get('description','').replace('**BOT CALL**','').strip()
-        action_line=next((line.strip().replace('**','') for line in detail.splitlines() if line.strip()),'WAIT')
+        missing='NO VERIFIED MARKET' in side_text
+        fields=card.get('fields',[])
+        get_field=lambda label: next((x.get('value','') for x in fields if x.get('name')==label),'')
+        odds_match=re.search(r'buy-side implied ([0-9.]+)%',get_field('POLYMARKET LIVE ODDS'))
+        odds=int(round(float(odds_match.group(1)))) if odds_match else None
+        hm=re.search(r'\*\*(\d+)%\*\*',get_field('HOLD STRENGTH'))
+        fm=re.search(r'\*\*(\d+)%\*\*',get_field('FLIP RISK'))
+        sm=re.search(r'([+-]?\d+)/5',get_field('SIGNAL STRENGTH'))
         by_asset.setdefault(asset,{})[tf]={
-            'side':side,'no_market':no_market,'pm':pm,'hold':hold,'flip':flip,
-            'scalp':scalp,'action':action_line
+            'side':side,'missing':missing,'odds':odds,
+            'hold':int(hm.group(1)) if hm else None,
+            'flip':int(fm.group(1)) if fm else None,
+            'score':int(sm.group(1)) if sm else 0
         }
-
     asset_embeds=[]
     for asset in TOP_ASSETS:
         windows=by_asset.get(asset,{})
         if not windows: continue
         primary=windows.get('5',windows.get('15',{}))
-        side=primary.get('side','WAIT')
-        flip_text=primary.get('flip','')
-        risk_match=re.search(r'\*\*(\d+)%\*\*',flip_text)
-        risk=int(risk_match.group(1)) if risk_match else 0
-        if primary.get('no_market'):
-            color,emoji=0x8794a8,'⚪'
-        elif risk>=70:
-            color,emoji=0xF59E0B,'🟠'
-        elif side=='UP':
-            color,emoji=0x19C37D,'🟢'
-        elif side=='DOWN':
-            color,emoji=0xEF4444,'🔴'
-        else:
-            color,emoji=0xF59E0B,'🟡'
-        desc=[]
-        fields=[]
+        side=primary.get('side','WAIT'); risk=primary.get('flip') or 0
+        if primary.get('missing'): color,emoji=0x8794a8,'⚪'
+        elif risk>=70: color,emoji=0xF59E0B,'🟠'
+        elif side=='UP': color,emoji=0x19C37D,'🟢'
+        elif side=='DOWN': color,emoji=0xEF4444,'🔴'
+        else: color,emoji=0xF59E0B,'🟡'
+        desc=[]; card_fields=[]
         for tf in ('5','15'):
             item=windows.get(tf)
             if not item:
-                desc.append(f'**{tf}M**  ·  waiting for scan')
-                continue
-            signal_emoji='🟢' if item['side']=='UP' else '🔴' if item['side']=='DOWN' else '🟡'
-            if item['no_market']:
-                value='⚪ **NO VERIFIED MARKET**\nNo call until market data is confirmed.'
+                desc.append(f'{tf}M ⏳'); continue
+            sig='🟢' if item['side']=='UP' else '🔴' if item['side']=='DOWN' else '🟡'
+            desc.append(f'{tf}M {sig} **{item["side"]}**')
+            if item['missing']:
+                value='⚪ NO VERIFIED MARKET'
             else:
-                odds=item['pm'] or 'Market odds unavailable this scan'
-                value=(f'{signal_emoji} **{item["side"]}**  ·  {item["action"][:90]}\n'
-                       f'🎯 **MARKET PRICE**  {odds[:180]}\n'
-                       f'{item["hold"][:90]}  ·  {item["flip"][:90]}')
-            fields.append({'name':f'⏱ {tf} MIN · LIVE CALL','value':value[:1024],'inline':False})
-            desc.append(f'**{tf}M** {signal_emoji} **{item["side"]}**')
+                odds=item['odds']; h=item['hold']; f=item['flip']
+                oddsline=f'**{odds}%** {pct_bar(odds)}' if odds is not None else '—'
+                holdline=f'🟢 HOLD **{h}%** {pct_bar(h)}' if h is not None else 'HOLD —'
+                flipline=f'🟠 FLIP **{f}%** {pct_bar(f)}' if f is not None else 'FLIP —'
+                sigp=max(0,min(100,50+item['score']*10))
+                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\nSIGNAL **{sigp}%** {pct_bar(sigp)}'
+            card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
         asset_embeds.append({
-            'title':f'{emoji}  {asset}  ·  LIVE SIGNAL CARD',
-            'description':'  |  '.join(desc)+'\n📡 Updating live · paper signals only',
-            'color':color,
-            'fields':fields,
-            'footer':{'text':'Market price is contract pricing · signal/hold/flip meters are heuristic'},
+            'title':f'{emoji} {asset} · LIVE RADAR',
+            'description':'  |  '.join(desc)+'\n🔄 Refreshing from latest scan',
+            'color':color,'fields':card_fields,
+            'footer':{'text':'Market % = contract price · hold/flip/signal = indicator meters'},
             'timestamp':iso()
         })
-
-    position_embeds=[]
-    for p in positions[:4]:
-        action=str(p.get('action','CHECK'))
-        upper=action.upper()
-        if any(word in upper for word in ('EXIT','PROTECT','STOP')):
-            color,emoji=0xEF4444,'🔴'
-        elif any(word in upper for word in ('SELL','PROFIT','REDUCE')):
-            color,emoji=0xF59E0B,'🟠'
-        elif 'HOLD' in upper:
-            color,emoji=0x19C37D,'🟢'
-        else:
-            color,emoji=0x8794a8,'⚪'
-        roi='—' if p.get('roi_pct') is None else f'{float(p["roi_pct"]):+.2f}%'
-        entry=float(p.get('entry',0) or 0)
-        bid=p.get('bid')
-        entry_bid=f'{entry:.3f} / {float(bid):.3f}' if bid is not None else f'{entry:.3f} / —'
-        risk=p.get('risk')
-        risk_text=f'{pct_bar(int(risk))} **{int(risk)}%**' if risk is not None else '—'
-        position_embeds.append({
-            'title':f'{emoji}  {action}  ·  {p.get("asset","CRYPTO")} {p.get("timeframe","")}M',
-            'description':p.get('explanation','Paper position status')[:250],
-            'color':color,
-            'fields':[
-                {'name':'PAPER RETURN','value':f'**{roi}**','inline':True},
-                {'name':'ENTRY / BID','value':entry_bid,'inline':True},
-                {'name':'FLIP RISK','value':risk_text,'inline':False}
-            ],
-            'footer':{'text':'SIMULATED POSITION · no real order'}
-        })
-
     if not asset_embeds:
-        asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No active verified windows in this scan.','color':0x8794a8}]
-    # Discord permits 10 embeds: summary + five coin cards + up to four position cards.
-    publish_board(c,[summary]+asset_embeds[:5]+position_embeds[:4])
+        asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
+    publish_board(c,[summary]+asset_embeds[:5]+position_embeds(c)[:4])
 def cycle(c):
     global _ASSET_CYCLE
     resolve_calls(c); lines=[]
