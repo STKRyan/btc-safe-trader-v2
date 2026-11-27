@@ -128,7 +128,7 @@ def make_embed(samples):
         "image": {"url": "attachment://btc_15s_chart.png"},
         "footer": {"text": "Coinbase BTC-USD · read-only chart · paper trading only"},
         "timestamp": utc_now().isoformat()
-    }
+    }, config
 
 def update_discord(webhook, state, embed, chart_config):
     chart_response = SESSION.post(
