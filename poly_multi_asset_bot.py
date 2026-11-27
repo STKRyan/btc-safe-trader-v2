@@ -99,7 +99,7 @@ def db():
       id INTEGER PRIMARY KEY, market_id TEXT NOT NULL, asset TEXT NOT NULL,
       timeframe INTEGER NOT NULL, side TEXT NOT NULL, entry REAL NOT NULL,
       created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
-      result TEXT, resolved_at TEXT, UNIQUE(market_id,asset,timeframe,side));
+      result TEXT, resolved_at TEXT, last_check REAL NOT NULL DEFAULT 0, UNIQUE(market_id,asset,timeframe,side));
     CREATE TABLE IF NOT EXISTS forecast_journal(
       market_id TEXT NOT NULL, timeframe INTEGER NOT NULL, slug TEXT NOT NULL,
       asset TEXT NOT NULL, initial_side TEXT NOT NULL, current_side TEXT NOT NULL,
@@ -110,6 +110,9 @@ def db():
       PRIMARY KEY(market_id,timeframe));
     """)
     # Safe additive migrations for databases created by an earlier draft.
+    snipe_cols={r[1] for r in c.execute("PRAGMA table_info(snipe_journal)")}
+    if "last_check" not in snipe_cols:
+        c.execute("ALTER TABLE snipe_journal ADD COLUMN last_check REAL NOT NULL DEFAULT 0")
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
     for name,decl in {
         "remaining_qty":"REAL NOT NULL DEFAULT 0", "realized_pnl":"REAL NOT NULL DEFAULT 0",
@@ -552,6 +555,10 @@ def resolve_calls(c):
     snipe_rows=c.execute("SELECT * FROM snipe_journal WHERE status='OPEN' ORDER BY id").fetchall()
     for sr in snipe_rows:
         try:
+            stamp=time.time()
+            if stamp-float(sr["last_check"] or 0)<180: continue
+            c.execute("UPDATE snipe_journal SET last_check=? WHERE id=?",(stamp,sr["id"]))
+            c.commit()
             data=get(f"{GAMMA}/markets/{sr['market_id']}")
             if not data.get("closed"): continue
             outcomes=jlist(data.get("outcomes")); prices=jlist(data.get("outcomePrices"))
