@@ -1433,216 +1433,113 @@ def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
 
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
-    """Build the branded BTC SIGNAL TERMINAL dashboard for one market window."""
+    """Build a compact, phone-readable BTC paper dashboard."""
     minutes = 15 if int(minutes) == 15 else 5
-    if minutes == 15:
-        open_rows = conn.execute(
-            "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
-            "FROM paper_trades WHERE status='OPEN' AND timeframe=15 "
-            "ORDER BY id DESC LIMIT 5"
-        ).fetchall()
-        pnl = daily_closed_pnl(conn, 15)
-        perf = recent_paper_performance(conn, 20, 15)
-    else:
-        # Preserve the existing 5-minute terminal's original combined display.
-        open_rows = conn.execute(
-            "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
-            "FROM paper_trades WHERE status='OPEN' ORDER BY id DESC LIMIT 5"
-        ).fetchall()
-        pnl = daily_closed_pnl(conn)
-        perf = recent_paper_performance(conn, 20)
-    side = str(tech.get("side", "NEUTRAL"))
-    second = str(opinions.get("side", "WAIT"))
-    confirmed = bool(opinions.get("agrees"))
+    timeframe = minutes
+    open_rows = conn.execute(
+        "SELECT timeframe,side,entry_price,remaining_quantity,trade_type,last_action "
+        "FROM paper_trades WHERE status='OPEN' AND timeframe=? ORDER BY id DESC LIMIT 3",
+        (timeframe,),
+    ).fetchall()
+    pnl = daily_closed_pnl(conn, timeframe)
+    perf = recent_paper_performance(conn, 20, timeframe)
+    stats = btc_trade_tracker(conn, timeframe=timeframe, limit=1000000)
+    scalp_stats = btc_trade_tracker(conn, timeframe=5, trade_type="SCALP", limit=1000000)
+
+    side = str(tech.get("side", "NEUTRAL")).upper()
+    confirmed = bool(opinions.get("agrees")) and side in ("UP", "DOWN")
     safe_call = side if confirmed else "WAIT"
     score = int(tech.get("score", 0))
     up_bias, down_bias = direction_split(score)
-    # Live, rule-based gauges respond to the current indicator score and momentum.
-    # These are signal-strength/risk scores, never calibrated win probabilities.
     move1 = float(tech.get("move1", 0.0))
     move3 = float(tech.get("move3", 0.0))
+    move10 = float(tech.get("move10", 0.0))
     rsi_now = float(tech.get("rsi", 50.0))
+    price = float(tech.get("last_price", 0.0))
     hold = max(5, min(95, 50 + abs(score) * 8 + (6 if move1 * score > 0 else -8)))
     flip = max(5, min(95, 100 - hold + (12 if rsi_now >= 72 or rsi_now <= 28 else 0)
                        + (10 if move1 * score < 0 else 0)))
-    flip = min(95, flip)
     flip = max(flip, int(opinions.get("flip_risk", flip)))
-    if minutes == 15:
-        scalp_live = max(0, min(95, 50 + abs(score) * 8 + (8 if confirmed else -12)))
-        scalp_call = f"15M {safe_call} LEAN" if confirmed else "15M WAIT"
-    else:
-        scalp_live = max(0, min(95, 35 + abs(score) * 8
-                                + (12 if move1 * move3 > 0 and abs(move3) >= 0.035 else -5)
-                                + (8 if abs(move1) >= 0.025 else 0)))
-        scalp_call = ("SCALP CALL " + side) if side in ("UP", "DOWN") and scalp_live >= 65 and confirmed else "SCALP STANDBY"
-    price = float(tech.get("last_price", 0.0))
-    rsi_value = float(tech.get("rsi", 50.0))
-    color = 0x19C37D if safe_call == "UP" else 0xEF4444 if safe_call == "DOWN" else 0xF59E0B
-    call_icon = "🟢" if safe_call == "UP" else "🔴" if safe_call == "DOWN" else "🟡"
-    action_label = (("UP CALL" if safe_call == "UP" else "DOWN CALL") + f" · {abs(score)*9+50}% strength") if confirmed else "WAIT · SIGNALS NOT ALIGNED"
+    flip = min(95, flip)
+    live_odds = _live_market_odds(minutes)
+    up_odds, down_odds = live_odds.get("up"), live_odds.get("down")
+    snipe = btc_snipe_meter(conn, minutes, side, live_odds, confirmed, flip)
+    snipe_move = "—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
 
-    # Live market-price meters (ask price = buy-side contract pricing).
-    live_odds=_live_market_odds(minutes)
-    up_odds=live_odds.get("up"); down_odds=live_odds.get("down")
-    snipe=btc_snipe_meter(conn,minutes,side,live_odds,confirmed,flip)
-    snipe_move="—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
-    snipe_text=(f"**{snipe['status']}**\n**SNIPE STRENGTH {snipe['strength']}%** "
-                f"{color_meter(snipe['strength'],'🎯')}\nContract move **{snipe_move}** "
-                "· Strength meter, not win odds")
-    market_period_seconds=minutes*60
-    elapsed_seconds=int(time.time()%market_period_seconds)
-    market_progress=int(elapsed_seconds*100/market_period_seconds)
-    seconds_to_close=market_period_seconds-elapsed_seconds
-    progress_bar=color_meter(market_progress,"🟦",16)
-    countdown=f"{seconds_to_close//60:02d}:{seconds_to_close%60:02d}"
+    period = minutes * 60
+    elapsed = int(time.time() % period)
+    progress = int(elapsed * 100 / period)
+    left = period - elapsed
+    countdown = f"{left//60:02d}:{left%60:02d}"
+    progress_bar = color_meter(progress, "🟦", 12)
+
     if not confirmed:
-        action_now="🟡 WAIT · checks disagree"
+        action = "⚪ WAIT · checks disagree"
+        color = 0x8794A8
     elif open_rows:
-        action_now=str(open_rows[0]["last_action"] or "HOLD / MONITOR")
+        action = str(open_rows[0]["last_action"] or "HOLD / MONITOR")
+        color = 0x14B8A6 if "HOLD" in action.upper() else (0xEF4444 if any(x in action.upper() for x in ("EXIT","SELL","STOP")) else 0x19C37D)
     else:
-        action_now=f"🟡 {safe_call} BIAS · wait for entry filters"
-    action_upper=action_now.upper()
-    if any(word in action_upper for word in ("SELL","EXIT","STOP","PROTECT")):
-        color=0xEF4444; action_now="🔴 "+action_now
-    elif any(word in action_upper for word in ("TAKE PROFIT","REDUCE")):
-        color=0xF59E0B; action_now="🟠 "+action_now
-    elif "FLIP" in action_upper or flip>=70:
-        color=0xF59E0B; action_now="🟠 FLIP · "+action_now
-    elif "HOLD" in action_upper or "MONITOR" in action_upper:
-        color=0x14B8A6; action_now="🩵 "+action_now
-    elif "WAIT" in action_upper:
-        color=0x8794A8; action_now="⚪ "+action_now
-    elif safe_call=="UP":
-        color=0x19C37D; action_now="🟢 "+action_now
-    elif safe_call=="DOWN":
-        color=0xEF4444; action_now="🔴 "+action_now
-    sell_meter=max(flip,75 if any(word in action_upper for word in ("SELL","EXIT","STOP","PROTECT")) else 0)
-    hold_meter=max(0,min(100,100-sell_meter))
-    odds_text=(f"UP **{up_odds}%** {color_meter(up_odds,'🟩')}  ·  DOWN **{down_odds}%** {color_meter(down_odds,'🟥')}"
-               if up_odds is not None and down_odds is not None else
-               "Live contract prices temporarily unavailable")
-    description=(
-        f"### {call_icon} **{safe_call}** · {action_label}\n"
-        f"**{action_now}**\n"
-        f"**LIVE ODDS** {odds_text}\n"
-        f"**BTC** USD {price:,.2f}  ·  **{minutes}M** closes **{countdown}**\n"
-        f"{progress_bar} **{market_progress}%** elapsed\n"
-        f"**🩵 HOLD** {hold_meter}% {color_meter(hold_meter,'🩵')}  ·  **🟥 EXIT RISK** {sell_meter}% {color_meter(sell_meter,'🟥')}\n"
-        f"*Updated <t:{int(time.time())}:R>*"
-    )
+        action = f"🟢 {safe_call} BIAS · entry filters still required" if safe_call == "UP" else f"🔴 {safe_call} BIAS · entry filters still required"
+        color = 0x19C37D if safe_call == "UP" else 0xEF4444
+    if flip >= 70:
+        action = "🟠 FLIP RISK HIGH · " + action
+        color = 0xF59E0B
 
-    # Discord embeds support real color accents, an author line, thumbnail,
-    # field columns, and a footer. Keep gauges as indicator scores, not odds.
+    odds = (f"UP **{up_odds}%**  {color_meter(up_odds,'🟩',8)}\n"
+            f"DOWN **{down_odds}%**  {color_meter(down_odds,'🟥',8)}"
+            if up_odds is not None and down_odds is not None else
+            "Live contract prices unavailable")
     description = (
-        f"### {call_icon}  {safe_call}  ·  {action_label}\n"
-        f"**ACTION NOW:** {action_now}\n"
-        f"**POLYMARKET BTC {minutes}M UP/DOWN**  {market_progress}%  `{progress_bar}`  ·  closes in **{countdown}**\n"
-        f"**BTC / USD**  `${price:,.2f}`\n"
-        f"`PRIMARY  {side}`  ·  `CHECK  {second}`  ·  "
-        f"{'🟢 MATCH' if confirmed else '🟠 MISMATCH'}\n"
-        f"**SECOND BRAIN:** {opinions.get('label','WAIT')} · FLIP {opinions.get('flip_risk',flip)}% · "
-        f"window flips {opinions.get('market_flips',0)} · memory {opinions.get('memory',{}).get('sample',0)} resolved\n"
-        f"*Last refresh <t:{int(time.time())}:R>*"
+        f"## {'🟢' if safe_call=='UP' else '🔴' if safe_call=='DOWN' else '⚪'} **{safe_call}**\n"
+        f"**{action}**\n\n"
+        f"**BTC/USD**  ${price:,.2f}\n"
+        f"**{minutes} MIN** · closes in **{countdown}**\n"
+        f"{progress_bar}  {progress}% elapsed\n\n"
+        f"**CONTRACT PRICE**\n{odds}\n"
+        f"*Refreshes automatically · paper signals only*"
     )
-    perf_text=(f"**{perf['wins']}W · {perf['losses']}L**  ·  "
-                f"Win {perf['win_rate']:.0f}%" if perf['count'] else "Collecting paper results")
-    perf_text+=f"\nP/L **USD {pnl:+.2f}** · Open **{len(open_rows)}**"
-    position_lines=[]
-    for row in open_rows[:2]:
-        position_lines.append(
-            f"**{row['timeframe']}M {row['side']}** · {row['last_action'] or 'HOLD / MONITOR'}"
-        )
-    position_text="\n".join(position_lines) if position_lines else "👀 No open paper position"
-    scalp_text=f"**{scalp_call}** · **{scalp_live}%**\n{color_meter(scalp_live,'🟦')}"
-    # Plain-language explanation: show the evidence behind the call, including nearby range edges.
-    range_pos = float(tech.get("range_position", 50.0))
-    move1_pct = float(tech.get("move1", 0.0))
-    move3_pct = float(tech.get("move3", 0.0))
-    move10_pct = float(tech.get("move10", 0.0))
-    if side == "UP":
-        trend_words = "price is moving up"
-    elif side == "DOWN":
-        trend_words = "price is moving down"
-    else:
-        trend_words = "price has no clear direction"
-    evidence = f"{abs(score)} of 5 checks point {side.lower() if side in ('UP','DOWN') else 'either way'}; {trend_words}."
-    evidence += f" Recent moves: 1 candle {move1_pct:+.2f}%, 3 candles {move3_pct:+.2f}%, 10 candles {move10_pct:+.2f}%."
-    evidence += f" Price is {range_pos:.0f}% of the way from the recent low (${float(tech.get('range_low',0)):,.0f}) to high (${float(tech.get('range_high',0)):,.0f})."
-    if range_pos >= 85:
-        evidence += " Price is close to the recent high, so an UP call may be late."
-    elif range_pos <= 15:
-        evidence += " Price is close to the recent low, so a DOWN call may be late."
-    evidence += " The second brain " + ("agrees." if confirmed else "does not agree, so the safe call is WAIT.")
-    if flip >= 65:
-        evidence += f" Flip warning: risk meter is {flip}%; reconsider if price turns against the call."
-    fields=[
-        {
-            "name":"🧠 WHY THIS CALL? · SIMPLE EXPLANATION",
-            "value":evidence[:1024],
-            "inline":False
-        },
-        {
-            "name":"📊 SIGNAL",
-            "value":(
-                f"**{safe_call}** · votes **{score:+d}/5**\n"
-                f"UP **{up_bias}%** {color_meter(up_bias,'🟩')}  ·  "
-                f"DOWN **{down_bias}%** {color_meter(down_bias,'🟥')}"
-            ),
-            "inline":False
-        },
-        {
-            "name":"🟢 HOLD  /  🔴 EXIT RISK",
-            "value":(
-                f"HOLD **{hold_meter}%** {color_meter(hold_meter,'🟩')}\n"
-                f"FLIP / EXIT **{sell_meter}%** {color_meter(sell_meter,'🟥')}"
-            ),
-            "inline":False
-        },
-        {"name":"🎯 LIVE SNIPE","value":snipe_text[:900],"inline":False},
-        {"name":"⚡ SCALP SETUP","value":scalp_text,"inline":True},
-        {"name":"📂 POSITION","value":position_text[:900],"inline":True},
-        {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False},
-        {"name":"🔥 BTC WIN/LOSS + SNIPE TRACKER","value":btc_tracker_text(conn)[:900],"inline":False},
-        {"name":"🔎 LOSS DIAGNOSIS · ENTRY PATTERNS / EXIT CAUSES","value":btc_loss_report_text(conn)[:1000],"inline":False}
-    ]
+    why = (f"{abs(score)}/5 checks lean {side if side in ('UP','DOWN') else 'NEUTRAL'}; "
+           f"RSI {rsi_now:.0f}; 1m {move1:+.2f}%; 3m {move3:+.2f}%; "
+           f"10m {move10:+.2f}%. "
+           f"Second brain {'agrees' if confirmed else 'does not agree'}."
+           )
+    if float(tech.get("range_position", 50.0)) >= 85:
+        why += " Near recent high—late-entry caution."
+    elif float(tech.get("range_position", 50.0)) <= 15:
+        why += " Near recent low—late-entry caution."
 
+    perf_line = (f"**{perf['wins']}W · {perf['losses']}L** / last {perf['count']} "
+                 f"· {perf['win_rate']:.0f}% wins" if perf["count"] else "Waiting for closed paper trades")
+    perf_line += f"\nToday: **${pnl:+.2f}**"
+    streak_line = (f"**{minutes}M:** {stats['current_win_streak']}W streak · best {stats['best_win_streak']}\n"
+                   f"**5M SNIPE:** {scalp_stats['wins']}W/{scalp_stats['losses']}L · "
+                   f"streak {scalp_stats['current_win_streak']} · best {scalp_stats['best_win_streak']}")
+    snipe_text = (f"**{snipe['status']}**\n"
+                   f"Strength **{snipe['strength']}%** {color_meter(snipe['strength'],'🎯',10)}\n"
+                   f"Contract move **{snipe_move}**")
+    risk_text = (f"**HOLD** {max(0,100-flip)}% {color_meter(max(0,100-flip),'🩵',8)}\n"
+                 f"**FLIP RISK** {flip}% {color_meter(flip,'🟠',8)}\n"
+                 f"**Scalp:** {'SETUP' if confirmed and abs(score)>=3 else 'STANDBY'}")
+    fields = [
+        {"name":"🧠 WHY THIS CALL?","value":why[:900],"inline":False},
+        {"name":"🎯 LIVE SNIPE","value":snipe_text[:900],"inline":False},
+        {"name":"📊 PAPER RECORD","value":perf_line[:900],"inline":True},
+        {"name":"🔥 STREAKS","value":streak_line[:900],"inline":True},
+        {"name":"🛡️ RISK CHECK","value":risk_text[:900],"inline":False},
+        {"name":"📚 LOSS LESSONS","value":btc_loss_report_text(conn)[:700],"inline":False},
+    ]
     return {
-        "author": {
-            "name": f"BTC SIGNAL TERMINAL  /  {minutes}M MARKET INTELLIGENCE",
-            "icon_url": "https://assets.coingecko.com/coins/images/1/large/bitcoin.png",
-        },
-        "title": f"━━━━━━━━  BTC / USD · {minutes}M  ━━━━━━━━",
-        "description": description,
-        "color": color,
-        "thumbnail": {"url": "https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
-        "fields": fields,
-        "footer": {"text": f"BTC {minutes}M SIGNAL TERMINAL  •  PAPER MODE  •  NO LIVE ORDERS"},
-        "timestamp": utc_now().isoformat(),
+        "author":{"name":f"BTC BOT · {minutes}M LIVE PAPER DESK","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "title":f"₿ BTC SIGNAL · {minutes} MIN",
+        "description":description,
+        "color":color,
+        "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "fields":fields,
+        "footer":{"text":"BOT STATUS · PAPER ONLY · NO LIVE ORDERS"},
+        "timestamp":utc_now().isoformat(),
     }
 
-def write_btc_site_data(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
-    """Publish BTC bot snapshot separately from the multi-crypto scanner data."""
-    perf=recent_paper_performance(conn,50)
-    scalp=conn.execute("SELECT side,setup_score,entry_price,target_price,stop_price FROM scalp_signals ORDER BY id DESC LIMIT 1").fetchone()
-    side=str(tech.get("side","WAIT")); second=str(opinions.get("side","WAIT"))
-    safe_side=side if opinions.get("agrees") and side in ("UP","DOWN") else "WAIT"
-    score=int(tech.get("score",0)); hold=max(0,min(100,50+abs(score)*8)); flip=100-hold
-    markets=[]
-    for tf in TIMEFRAMES:
-        markets.append({"asset":"BTC","timeframe":tf,"side":safe_side,"primary_side":side,"second_brain":second,
-            "action":"CALL "+safe_side if safe_side in ("UP","DOWN") else "SIT OUT / WAIT",
-            "score":score,"risk":flip,"risk_label":"HIGH" if flip>=70 else "MODERATE" if flip>=45 else "LOW",
-            "rsi":float(tech.get("rsi",50)),"move1_pct":float(tech.get("move1",0)),
-            "move3_pct":float(tech.get("move3",0)),"move10_pct":float(tech.get("move10",0)),
-            "range_position":float(tech.get("range_position",50)),"scalp":"See BTC bot Discord dashboard for active scalp details."})
-    data={"updated_at":utc_now().isoformat(),"paper_only":True,
-          "summary":{"resolved_sample":perf["count"],"wins":perf["wins"],"losses":perf["losses"],
-          "win_rate":perf["win_rate"],"loss_rate":perf["loss_rate"],
-          "realized_pnl":daily_closed_pnl(conn),"open_positions":conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status='OPEN'").fetchone()[0]},
-          "markets":markets,"scalp":dict(scalp) if scalp else None,
-          "disclaimer":"BTC bot signal is rule-based paper guidance, not guaranteed prediction."}
-    os.makedirs("docs",exist_ok=True)
-    with open("docs/data_btc.json","w",encoding="utf-8") as handle: json.dump(data,handle,indent=2)
 
 def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Create once, then edit the same Discord webhook message on a safe cadence."""
@@ -1658,8 +1555,14 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
         return
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
-        print("Discord dashboard skipped: DISCORD_WEBHOOK_URL secret is missing.")
-        return
+        # Use the configured live-dashboard destination as a safe fallback so
+        # the main dashboard still appears when only the live webhook is set.
+        webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
+        if webhook:
+            print("Discord main dashboard using DISCORD_BTC_LIVE_WEBHOOK_URL fallback.")
+        else:
+            print("Discord dashboard skipped: DISCORD_WEBHOOK_URL and live webhook are missing.")
+            return
     if not (webhook.startswith("https://discord.com/api/webhooks/") or
             webhook.startswith("https://discordapp.com/api/webhooks/")):
         print("Discord dashboard skipped: webhook secret is not a valid Discord webhook URL.")
