@@ -188,7 +188,8 @@ def db_connect() -> sqlite3.Connection:
             partial_taken INTEGER NOT NULL DEFAULT 0,
             last_action TEXT NOT NULL DEFAULT '',
             opened_at TEXT NOT NULL,
-            closed_at TEXT
+            closed_at TEXT,
+            entry_features TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS alerts (
             alert_key TEXT PRIMARY KEY,
@@ -264,6 +265,7 @@ def db_connect() -> sqlite3.Connection:
         "opened_at": "TEXT NOT NULL DEFAULT ''",
         "closed_at": "TEXT",
         "trade_type": "TEXT NOT NULL DEFAULT 'STANDARD'",
+        "entry_features": "TEXT NOT NULL DEFAULT '{}'",
     }
     for column, declaration in migrations.items():
         if column not in trade_columns:
@@ -670,15 +672,17 @@ def scalp_fit_score(score: int, tech: dict, stats: dict) -> int:
 
 
 def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, side: str,
-                       token_id: str, ask: float, trade_type: str = "STANDARD") -> bool:
+                       token_id: str, ask: float, trade_type: str = "STANDARD",
+                       entry_features: Optional[dict] = None) -> bool:
     if ask <= 0 or ask >= 1:
         return False
     quantity = PAPER_STAKE_USD / ask
     conn.execute(
-        "INSERT INTO paper_trades(market_slug,timeframe,side,token_id,entry_price,quantity,remaining_quantity,opened_at,trade_type) "
-        "VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO paper_trades(market_slug,timeframe,side,token_id,entry_price,quantity,remaining_quantity,opened_at,trade_type,entry_features) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
         (market.get("slug", ""), minutes, side, token_id, ask, quantity, quantity,
-         utc_now().isoformat(), trade_type),
+         utc_now().isoformat(), trade_type,
+         json.dumps(entry_features or {}, separators=(",",":"), default=str)),
     )
     conn.commit()
     # No separate Discord entry post. The persistent dashboard displays the position.
@@ -852,7 +856,14 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
         return
     if open_trade_count(conn) >= MAX_OPEN_PAPER_TRADES:
         return
-    create_paper_trade(conn, market, 5, side, token_id, ask, "SCALP")
+    scalp_features = {
+        "score":score,"rsi":rsi_value,"move1":move1,"move3":move3,
+        "range_position":tech.get("range_position"),"ask":ask,"bid":bid,
+        "spread":stats["spread"],"depth":stats["depth"],
+        "imbalance":stats["imbalance"],"second_brain_agrees":True,
+        "setup_score":setup_score,"remaining_seconds":remaining
+    }
+    create_paper_trade(conn, market, 5, side, token_id, ask, "SCALP", scalp_features)
 
 
 def dashboard_text(conn: sqlite3.Connection) -> str:
@@ -1720,7 +1731,17 @@ def scan_one(conn: sqlite3.Connection, minutes: int, tech: dict) -> None:
     if open_trade_count(conn) >= MAX_OPEN_PAPER_TRADES:
         print("Maximum open paper trades reached")
         return
-    create_paper_trade(conn, market, minutes, side, token_id, ask)
+    entry_features = {
+        "score":int(tech["score"]),"rsi":float(tech["rsi"]),
+        "move1":float(tech.get("move1",0)),"move3":float(tech.get("move3",0)),
+        "move10":float(tech.get("move10",0)),"range_position":tech.get("range_position"),
+        "ask":ask,"bid":stats["bid"],"spread":stats["spread"],
+        "depth":stats["depth"],"imbalance":stats["imbalance"],
+        "edge_proxy":edge,"second_brain_agrees":bool(opinions["agrees"]),
+        "second_brain_side":opinions["side"],"flip_risk":int(opinions.get("flip_risk",0)),
+        "remaining_seconds":remaining
+    }
+    create_paper_trade(conn, market, minutes, side, token_id, ask, "STANDARD", entry_features)
 
 
 def print_summary(conn: sqlite3.Connection) -> None:
