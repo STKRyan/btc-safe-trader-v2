@@ -1596,6 +1596,23 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     latest_call_note = str(note_row["state_value"])[:900] if note_row else (
         f"**{call_words}**\n{plain_reason}"
     )
+    note_head = latest_call_note.splitlines()[0].upper() if latest_call_note else ""
+    if re.search(r"\b(SELL|TAKE PROFIT|PROTECT|STOP LOSS)\b", note_head):
+        call_icon, call_color = "🟧", 0xF97316
+        call_words = "SELL / PROTECT · ORANGE"
+        plain_reason = "Paper position management says reduce or protect."
+        direction_fill = "🟧"
+    elif "FLIP" in note_head:
+        call_icon, call_color = "🟧", 0xF97316
+        call_words = "FLIP · RECHECK DIRECTION"
+        plain_reason = "The direction changed. Recheck before acting."
+        direction_fill = "🟧"
+    elif "HOLD" in note_head:
+        call_icon, call_color = "⬜", 0x8B949E
+        call_words = "HOLD · WATCH THE MARKET"
+        plain_reason = "Hold the paper position and watch for a clear change."
+        direction_fill = "⬜"
+    strength_bar = color_meter(signal_strength, direction_fill, 18)
 
     fields = [
         {"name":f"{call_icon} LIVE STRENGTH","value":f"**{signal_strength}%**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
