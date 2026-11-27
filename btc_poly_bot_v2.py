@@ -2076,7 +2076,8 @@ def main() -> int:
                 update_dashboard(conn, tech, dashboard_opinion)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
                 update_btc_15m_live_channel(conn, tech, dashboard_opinion_15)
-                # Chart delivery is paused for now. Keep BTC live and signal scanning active.
+                # Restore the rolling BTC chart alongside the live dashboard.
+                update_btc_chart_channel(conn, candles, tech)
                 update_shared_learning(conn)
                 print_summary(conn)
             except Exception as exc:
