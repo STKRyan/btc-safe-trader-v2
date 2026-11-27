@@ -28,7 +28,7 @@ CLOB = "https://clob.polymarket.com"
 COINBASE = "https://api.exchange.coinbase.com/products/BTC-USD/candles"
 TIMEFRAMES = (5, 15)
 # RISK-FIRST MODE: fewer, stricter paper calls; protection beats activity.
-MIN_VOTES = {5: 4, 15: 4}
+MIN_VOTES = {5: 3, 15: 3}  # majority of five directional checks; second brain/risk gates still apply
 SCAN_INTERVAL_SECONDS = 1
 DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # keep Discord message edits within rate limits
 SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
