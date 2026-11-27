@@ -1066,16 +1066,22 @@ def scan_scalp(conn: sqlite3.Connection, tech: dict) -> None:
     if not filters_ok:
         return
     snipe_guard=btc_snipe_streak_guard(conn,tech,scalp_opinion,ask)
-    if snipe_guard["blocked"]:
-        print("BTC snipe streak protection: "+"; ".join(snipe_guard["reasons"]),flush=True)
-        return
+    # Journal every qualified snipe setup before the streak guard. Blocked setups
+    # become shadow outcomes, so the BTC brain can measure whether its protection
+    # correctly avoided a loss or skipped a winner instead of learning only from
+    # entries it already allowed.
     record_btc_snipe(conn,market,5,side,ask,{
         "score":score,"rsi":rsi_value,"move1":move1,"move3":move3,
         "range_position":tech.get("range_position"),"ask":ask,"bid":bid,
         "spread":stats["spread"],"depth":stats["depth"],"imbalance":stats["imbalance"],
         "second_brain_agrees":bool(scalp_opinion["agrees"]),"second_brain_side":scalp_opinion["side"],
-        "flip_risk":scalp_flip,"remaining_seconds":remaining
+        "flip_risk":scalp_flip,"remaining_seconds":remaining,
+        "streak_guard_blocked":bool(snipe_guard["blocked"]),
+        "streak_guard_reasons":snipe_guard.get("reasons",[])
     })
+    if snipe_guard["blocked"]:
+        print("BTC snipe streak protection: "+"; ".join(snipe_guard["reasons"]),flush=True)
+        return
     # A setup score ranks agreement of independent filters; it is not a win probability.
     setup_score = min(95, 45 + abs(score)*7 + min(12, abs(move3)*100) + (8 if stats["imbalance"] * (1 if side == "UP" else -1) > 0 else 0))
     target = ask * (1.0 + SCALP_TAKE_PROFIT)
@@ -1306,8 +1312,15 @@ def btc_loss_pattern_guard(conn: Optional[sqlite3.Connection], minutes: int,
                            trade_type: str = "STANDARD") -> dict:
     """Block a repeated condition only after it appears in multiple saved losing reviews."""
     if conn is None: return {"sample":0,"active":[],"block":False}
-    rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? AND UPPER(trade_type)=? ORDER BY reviewed_at DESC LIMIT 20",
-        (int(minutes), str(trade_type).upper())).fetchall()
+    review_type=str(trade_type).upper()
+    # Snipe journal losses are labeled SNIPE; include them in SCALP learning
+    # so the short-horizon guard actually learns from resolved snipe outcomes.
+    if review_type=="SCALP":
+        rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? AND UPPER(trade_type) IN ('SCALP','SNIPE') ORDER BY reviewed_at DESC LIMIT 20",
+            (int(minutes),)).fetchall()
+    else:
+        rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? AND UPPER(trade_type)=? ORDER BY reviewed_at DESC LIMIT 20",
+            (int(minutes), review_type)).fetchall()
     tally={}
     for row in rows:
         try: tags=json.loads(row["tags"] or "[]")
