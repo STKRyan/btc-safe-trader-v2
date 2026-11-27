@@ -613,6 +613,64 @@ def btc_streak_guard(conn: sqlite3.Connection, timeframe: int) -> dict:
     return {"trades":trades,"forecast_recovery_wins":forecast_wins}
 
 
+def btc_loss_diagnosis(conn: sqlite3.Connection, timeframe: Optional[int] = None,
+                         trade_type: Optional[str] = None, limit: int = 100) -> str:
+    """Explain recent realized paper losses using entry snapshots and exit labels."""
+    query = "SELECT realized_pnl,last_action,entry_features FROM paper_trades WHERE status='CLOSED' AND realized_pnl<0"
+    params: list[Any] = []
+    if timeframe is not None:
+        query += " AND timeframe=?"
+        params.append(int(timeframe))
+    if trade_type is not None:
+        query += " AND UPPER(trade_type)=?"
+        params.append(str(trade_type).upper())
+    query += " ORDER BY COALESCE(closed_at,opened_at) DESC,id DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    rows = conn.execute(query, params).fetchall()
+    if not rows:
+        return "Loss diagnosis: no closed losing paper trades yet"
+    exits: dict[str,int] = {}
+    tags: dict[str,int] = {}
+    recorded = 0
+    for row in rows:
+        action = str(row["last_action"] or "").upper()
+        exit_tag = "STOP" if "STOP" in action else "FLIP" if "FLIP" in action else "TIME" if "TIME" in action else "OTHER"
+        exits[exit_tag] = exits.get(exit_tag,0)+1
+        try:
+            features = json.loads(row["entry_features"] or "{}")
+            if not isinstance(features,dict) or not features:
+                continue
+            recorded += 1
+        except Exception:
+            continue
+        score = abs(int(features.get("score",0) or 0))
+        flip = int(features.get("flip_risk",0) or 0)
+        spread = float(features.get("spread",0) or 0)
+        depth = float(features.get("depth",0) or 0)
+        ask = float(features.get("ask",0) or 0)
+        move1 = float(features.get("move1",0) or 0)
+        move3 = float(features.get("move3",0) or 0)
+        range_pos = float(features.get("range_position",50) or 50)
+        checks = [
+            ("weak votes <4",score<4),
+            ("high flip risk ≥65",flip>=65),
+            ("wide spread >1.5¢",spread>0.015),
+            ("thin depth <$2k",depth<2000),
+            ("expensive entry >$0.65",ask>0.65),
+            ("1m/3m momentum conflict",move1*move3<=0),
+            ("near range extreme",range_pos>=85 or range_pos<=15),
+            ("second brain disagreed",features.get("second_brain_agrees") is False),
+        ]
+        for label,matched in checks:
+            if matched:
+                tags[label]=tags.get(label,0)+1
+    exit_text=" · ".join(f"{key} {value}" for key,value in sorted(exits.items(),key=lambda kv:-kv[1])[:3])
+    if recorded:
+        tag_text=" · ".join(f"{key} {value}/{recorded}" for key,value in sorted(tags.items(),key=lambda kv:-kv[1])[:3])
+        return f"Losses n={len(rows)} · exits: {exit_text}\nEntry patterns (may overlap, n={recorded}): {tag_text or 'no repeated filter pattern'}"
+    return f"Losses n={len(rows)} · exits: {exit_text}\nEntry details: older trades have no saved feature snapshot; new trades will be analyzed."
+
+
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
     five = btc_trade_tracker(conn, timeframe=5, limit=100)
     fifteen = btc_trade_tracker(conn, timeframe=15, limit=100)
@@ -625,7 +683,10 @@ def btc_tracker_text(conn: sqlite3.Connection) -> str:
         f"BTC 5M: {record(five)}\nBTC 15M: {record(fifteen)}\n"
         f"⚡ SNIPE/SCALP 5M: {record(snipes)}\n"
         f"🔥 PAPER STREAK: {five['current_win_streak']} wins / "
-        f"{five['current_loss_streak']} losses · best {five['best_win_streak']}"
+        f"{five['current_loss_streak']} losses · best {five['best_win_streak']}\n"
+        f"5M LOSS REVIEW: {btc_loss_diagnosis(conn,5)[:450]}\n"
+        f"15M LOSS REVIEW: {btc_loss_diagnosis(conn,15)[:300]}\n"
+        f"SNIPE LOSS REVIEW: {btc_loss_diagnosis(conn,5,'SCALP')[:300]}"
     )
 
 
