@@ -19,7 +19,7 @@ YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 DB_PATH = os.getenv("POLY_BOT_DB", "poly_multi_asset.sqlite3")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 # Faster risk-aware refresh: full radar cycle targets 5 seconds; API/network delays can extend it.
-SCAN_SECONDS = 5
+SCAN_SECONDS = 3
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 # RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
 STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
