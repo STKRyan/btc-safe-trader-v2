@@ -724,9 +724,9 @@ def btc_snipe_score_text(conn: sqlite3.Connection) -> str:
 
 
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
-    five = btc_trade_tracker(conn, timeframe=5, limit=100)
-    fifteen = btc_trade_tracker(conn, timeframe=15, limit=100)
-    snipes = btc_trade_tracker(conn, timeframe=5, trade_type="SCALP", limit=100)
+    five = btc_trade_tracker(conn, timeframe=5, limit=1000000)
+    fifteen = btc_trade_tracker(conn, timeframe=15, limit=1000000)
+    snipes = btc_trade_tracker(conn, timeframe=5, trade_type="SCALP", limit=1000000)
     def rate(stats: dict) -> str:
         return f"{stats['win_rate']:.0f}%W/{stats['loss_rate']:.0f}%L" if stats["win_rate"] is not None else "building sample"
     def record(stats: dict) -> str:
@@ -741,11 +741,23 @@ def btc_tracker_text(conn: sqlite3.Connection) -> str:
     )
 
 
+def btc_saved_loss_review_text(conn: sqlite3.Connection, minutes: int) -> str:
+    rows=conn.execute("SELECT tags FROM btc_loss_reviews WHERE timeframe=? ORDER BY reviewed_at DESC LIMIT 20",(int(minutes),)).fetchall()
+    tally={}
+    for row in rows:
+        try: tags=json.loads(row["tags"] or "[]")
+        except Exception: tags=[]
+        for tag in set(tags): tally[tag]=tally.get(tag,0)+1
+    top=sorted(tally.items(),key=lambda kv:-kv[1])[:3]
+    return f"n={len(rows)} · "+" · ".join(f"{tag} {count}/20" for tag,count in top) if rows else "building sample"
+
+
 def btc_loss_report_text(conn: sqlite3.Connection) -> str:
     return (
         f"BTC 5M · {btc_loss_diagnosis(conn,5)[:280]}\n"
         f"BTC 15M · {btc_loss_diagnosis(conn,15)[:220]}\n"
-        f"⚡ SNIPE 5M · {btc_loss_diagnosis(conn,5,'SCALP')[:280]}"
+        f"⚡ SNIPE 5M · {btc_loss_diagnosis(conn,5,'SCALP')[:280]}\n"
+        f"🧠 SAVED LOSS PATTERNS · 5M {btc_saved_loss_review_text(conn,5)}"
     )
 
 
@@ -948,6 +960,20 @@ def resolve_btc_snipes(conn: sqlite3.Connection) -> None:
             final_side=str(forecast["current_side"]) if forecast else str(row["side"])
             flips=int(forecast["flip_count"] or 0) if forecast else 0
             outcome="WIN" if str(row["side"])==winning else ("FLIP" if final_side==winning and flips>0 else "LOSS")
+            if outcome=="LOSS":
+                try: sf=json.loads(row["features"] or "{}")
+                except Exception: sf={}
+                tags=[]
+                if abs(int(sf.get("score",0) or 0))<4: tags.append("weak votes <4")
+                if int(sf.get("flip_risk",0) or 0)>=65: tags.append("high flip risk >=65")
+                if float(sf.get("spread",0) or 0)>0.015: tags.append("wide spread >1.5c")
+                if float(sf.get("depth",0) or 0)<2000: tags.append("thin depth <$2k")
+                if float(sf.get("ask",0) or 0)>0.65: tags.append("expensive entry >$0.65")
+                if float(sf.get("move1",0) or 0)*float(sf.get("move3",0) or 0)<=0: tags.append("momentum conflict")
+                rp=float(sf.get("range_position",50) or 50)
+                if rp>=85 or rp<=15: tags.append("near range extreme")
+                conn.execute("INSERT OR IGNORE INTO btc_loss_reviews(trade_id,timeframe,trade_type,tags,reviewed_at) VALUES(?,?,?,?,?)",
+                    (-int(row["id"]),int(row["timeframe"]),"SNIPE",json.dumps(tags),utc_now().isoformat()))
             conn.execute("UPDATE btc_snipe_journal SET status='RESOLVED',outcome=?,winning_side=?,resolved_at=? WHERE id=?",
                 (outcome,winning,utc_now().isoformat(),row["id"])); conn.commit()
             print(f"BTC snipe settled: {row['timeframe']}m {outcome} · {row['side']} -> {winning}",flush=True)
