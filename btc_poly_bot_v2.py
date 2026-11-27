@@ -86,34 +86,51 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text).strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    headline = re.sub(r"\*\*", "", lines[0] if lines else "BTC SIGNAL UPDATE").strip()[:240]
-    body = "\n".join(lines[1:]) if len(lines) > 1 else "Signal details are refreshing."
+    headline = re.sub(r"\*\*", "", lines[0] if lines else "BTC SIGNAL UPDATE").strip()[:220]
     upper = text.upper()
-    if any(word in upper for word in ("SELL / REDUCE", "PROTECT / EXIT", "EXIT RISK", "STOP LOSS")):
-        color, badge = 0xEF4444, "🔴 REVIEW / EXIT"
-    elif any(word in upper for word in ("SELL 50%", "TAKE PROFIT", "TAKE-PROFIT")):
-        color, badge = 0xF59E0B, "🟠 TAKE PROFIT"
+    if any(word in upper for word in ("SELL / REDUCE","PROTECT / EXIT","EXIT RISK","STOP LOSS")):
+        color,badge=0xEF4444,"🔴 EXIT / PROTECT"
+    elif any(word in upper for word in ("SELL 50%","TAKE PROFIT","TAKE-PROFIT")):
+        color,badge=0xF59E0B,"🟠 TAKE PROFIT"
     elif "WAIT" in upper or "NO ENTRY" in upper or "NO MARKET" in upper:
-        color, badge = 0xF59E0B, "🟡 WAIT"
-    elif re.search(r"\bDOWN\b", upper):
-        color, badge = 0xEF4444, "🔴 DOWN"
-    elif re.search(r"\bUP\b", upper):
-        color, badge = 0x19C37D, "🟢 UP"
+        color,badge=0xF59E0B,"🟡 WAIT"
+    elif re.search(r"\bDOWN\b",upper):
+        color,badge=0xEF4444,"🔴 DOWN"
+    elif re.search(r"\bUP\b",upper):
+        color,badge=0x19C37D,"🟢 UP"
     elif "HOLD" in upper:
-        color, badge = 0x19C37D, "🟢 HOLD"
+        color,badge=0x19C37D,"🟢 HOLD"
     else:
-        color, badge = 0x4BD9FF, "📡 UPDATE"
-    if len(body) > 2800:
-        body = body[:2750] + "\n… see the live dashboard for details."
-    payload = {
-        "embeds": [{
-            "title": f"{badge} · {headline or 'BTC SIGNAL UPDATE'}",
-            "description": body or "No additional details this scan.",
-            "color": color,
-            "footer": {"text": "BTC signal desk · PAPER ONLY · no live orders"},
-            "timestamp": utc_now().isoformat(),
+        color,badge=0x4BD9FF,"📡 UPDATE"
+
+    def pick(terms, limit=1):
+        found=[]
+        for line in lines[1:]:
+            clean=line.replace("**","").strip()
+            if any(term in clean.upper() for term in terms):
+                if clean not in found:
+                    found.append(clean)
+                if len(found)>=limit: break
+        return found
+    bias=pick(["BIAS"])
+    meters=pick(["HOLD ","FLIP RISK","SCALP FIT"],3)
+    market=pick(["ASK $","EDGE "],2)
+    confirm=pick(["SECOND BRAIN:","ENTRY FILTERS","NO ENTRY"],2)
+    fields=[]
+    if bias: fields.append({"name":"DIRECTION","value":bias[0][:250],"inline":False})
+    if meters: fields.append({"name":"LIVE METERS","value":"\n".join(meters)[:700],"inline":False})
+    if market: fields.append({"name":"MARKET","value":"\n".join(market)[:500],"inline":True})
+    if confirm: fields.append({"name":"CHECK","value":"\n".join(confirm)[:500],"inline":True})
+    payload={
+        "embeds":[{
+            "title":f"{badge} · {headline or 'BTC SIGNAL'}",
+            "description":"**LIVE PAPER SIGNAL**\nUpdated with the latest scan. See the persistent dashboard for the full meters.",
+            "color":color,
+            "fields":fields[:4],
+            "footer":{"text":"BTC signal desk · paper only · no live orders"},
+            "timestamp":utc_now().isoformat()
         }],
-        "allowed_mentions": {"parse": []},
+        "allowed_mentions":{"parse":[]}
     }
     try:
         response = SESSION.post(webhook, json=payload, timeout=HTTP_TIMEOUT)
