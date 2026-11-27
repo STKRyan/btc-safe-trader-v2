@@ -786,6 +786,7 @@ def dashboard(c, lines):
             'hold':int(hm.group(1)) if hm else None,
             'flip':int(fm.group(1)) if fm else None,
             'flip_rate':int(frm.group(1)) if frm else None,
+            'snipe':get_field('SNIPE · LIVE CONTRACT MOVE') or 'SNIPE WATCH · no confirmed contract move yet',
             'score':int(sm.group(1)) if sm else 0
         }
     asset_embeds=[]
@@ -817,6 +818,8 @@ def dashboard(c, lines):
                 rateline=f'↩️ FLIP RATE **{fr}%** · historical' if fr is not None else '↩️ FLIP RATE —'
                 sigp=max(0,min(100,50+item['score']*10))
                 value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
+            snipe_text=str(item.get('snipe') or 'SNIPE WATCH · no confirmed contract move yet')
+            value=f'{value}\n🎯 SNIPE: {snipe_text}'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
