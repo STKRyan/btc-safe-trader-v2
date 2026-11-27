@@ -410,7 +410,7 @@ def snipe_update(c, market_id, side, stats, tech, brain):
               "ON CONFLICT(market_id,side) DO UPDATE SET ask=excluded.ask,ts=excluded.ts",
               (str(market_id),side,ask,stamp)); c.commit()
     abs_move=abs(move or 0)
-    band="NO RECENT BASELINE" if move is None else "MICRO 1–9%" if 1<=abs_move<10 else "FAST 10–30%" if abs_move<30 else "EXTREME 30%+" if abs_move>=30 else "QUIET <1%"
+    band="NO RECENT BASELINE" if move is None else "MICRO 1–9%" if 1<=abs_move<10 else "FAST 10–30%" if 10<=abs_move<30 else "EXTREME 30%+" if abs_move>=30 else "QUIET <1%"
     sign=1 if side=="UP" else -1
     book_ok=float(stats.get("imbalance",0))*sign>=0.05 and float(stats.get("spread",1))<=MAX_SPREAD and float(stats.get("depth",0))>=MIN_DEPTH
     confirmed=move is not None and abs_move>=1 and (move*sign)>0 and book_ok and brain.get("agrees") and int(brain.get("flip_risk",95))<70
