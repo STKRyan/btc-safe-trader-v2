@@ -66,7 +66,7 @@ def utc_now() -> datetime:
 
 
 def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
-    """Send an alert to the configured Discord channel using a private webhook."""
+    """Send a compact, color-accented BTC signal card to Discord."""
     webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook:
         print("DISCORD_WEBHOOK_URL is missing; Discord alert was not sent.")
@@ -75,35 +75,53 @@ def discord_send(message: str, reply_markup: Optional[dict] = None) -> bool:
             webhook.startswith("https://discordapp.com/api/webhooks/")):
         print("DISCORD_WEBHOOK_URL does not look like a Discord webhook URL.")
         return False
-
-    # Convert the scanner's existing HTML-style into readable Discord Markdown.
     text = message
     text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*b\s*>", "**", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*/\s*b\s*>", "**", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*i\s*>", "*", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*/\s*i\s*>", "*", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*code\s*>", "`", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*/\s*code\s*>", "`", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*code\s*>", chr(96), text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*/\s*code\s*>", chr(96), text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text).strip()
-    if len(text) > 1990:
-        text = text[:1980] + "\n… (message shortened)"
-
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    headline = re.sub(r"\*\*", "", lines[0] if lines else "BTC SIGNAL UPDATE").strip()[:240]
+    body = "\n".join(lines[1:]) if len(lines) > 1 else "Signal details are refreshing."
+    upper = text.upper()
+    if any(word in upper for word in ("SELL / REDUCE", "PROTECT / EXIT", "EXIT RISK", "STOP LOSS")):
+        color, badge = 0xEF4444, "🔴 REVIEW / EXIT"
+    elif any(word in upper for word in ("SELL 50%", "TAKE PROFIT", "TAKE-PROFIT")):
+        color, badge = 0xF59E0B, "🟠 TAKE PROFIT"
+    elif "WAIT" in upper or "NO ENTRY" in upper or "NO MARKET" in upper:
+        color, badge = 0xF59E0B, "🟡 WAIT"
+    elif "UP" in upper:
+        color, badge = 0x19C37D, "🟢 UP"
+    elif "DOWN" in upper:
+        color, badge = 0xEF4444, "🔴 DOWN"
+    elif "HOLD" in upper:
+        color, badge = 0x19C37D, "🟢 HOLD"
+    else:
+        color, badge = 0x4BD9FF, "📡 UPDATE"
+    if len(body) > 2800:
+        body = body[:2750] + "\n… see the live dashboard for details."
+    payload = {
+        "embeds": [{
+            "title": f"{badge} · {headline or 'BTC SIGNAL UPDATE'}",
+            "description": body or "No additional details this scan.",
+            "color": color,
+            "footer": {"text": "BTC signal desk · PAPER ONLY · no live orders"},
+            "timestamp": utc_now().isoformat(),
+        }],
+        "allowed_mentions": {"parse": []},
+    }
     try:
-        response = SESSION.post(
-            webhook,
-            json={"content": text, "allowed_mentions": {"parse": []}},
-            timeout=HTTP_TIMEOUT,
-        )
+        response = SESSION.post(webhook, json=payload, timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         return True
     except Exception as exc:
-        # Never print the webhook URL; it is a credential.
         print(f"Discord send failed: {type(exc).__name__}: {exc}")
         return False
-
-
 def menu_markup() -> dict:
     return {"inline_keyboard": [
         [{"text": "📊 Dashboard", "callback_data": "dashboard"},
@@ -1013,11 +1031,24 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     progress_bar = gauge_bar(market_progress, 20)
     countdown = f"{seconds_to_close // 60:02d}:{seconds_to_close % 60:02d}"
     if not confirmed:
-        action_now = "WAIT — confirmation disagrees; no new paper entry"
+        action_now = "🟡 WAIT — confirmation disagrees; no new paper entry"
     elif open_rows:
         action_now = str(open_rows[0]["last_action"] or "HOLD / MONITOR")
     else:
-        action_now = f"{safe_call} BIAS — WAIT for entry filters; no forced entry"
+        action_now = f"🟡 {safe_call} BIAS — wait for entry filters"
+    action_upper = action_now.upper()
+    if any(word in action_upper for word in ("SELL", "EXIT", "STOP", "PROTECT")):
+        color = 0xEF4444
+        action_now = "🔴 " + action_now
+    elif any(word in action_upper for word in ("TAKE PROFIT", "REDUCE")):
+        color = 0xF59E0B
+        action_now = "🟠 " + action_now
+    elif "HOLD" in action_upper or "MONITOR" in action_upper:
+        color = 0x19C37D
+        action_now = "🟢 " + action_now
+    elif "WAIT" in action_upper:
+        color = 0xF59E0B
+
     # Discord embeds support real color accents, an author line, thumbnail,
     # field columns, and a footer. Keep gauges as indicator scores, not odds.
     description = (
