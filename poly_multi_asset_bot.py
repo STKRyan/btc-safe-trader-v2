@@ -600,9 +600,12 @@ def market_embeds(lines):
         if risk>=70: level='HIGH · reversal warning'
         elif risk>=45: level='MODERATE · stay alert'
         else: level='LOWER · signal currently aligned'
-        color=0x42dba8 if risk<45 else (0xffc45c if risk<70 else 0xff657d)
+        if risk>=70: color=0xF59E0B
+        elif side=='UP': color=0x19C37D
+        elif side=='DOWN': color=0xEF4444
+        else: color=0x8794A8
         scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'HOLD STRENGTH','value':f'{color_pct_bar(hold,'🟩')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'FLIP RISK','value':f'{color_pct_bar(risk,'🟥')} **{risk}%**\n{level}','inline':False},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT CALL**\n{body[:850]}','color':color,'fields':[{'name':'SCALP SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{score_bar(int(score))}\n**{int(score):+d}/5 votes**','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🟦')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'Paper only · Polymarket bid/ask is live contract pricing; hold/flip scores are heuristics, not win probabilities'}})
     return result
 
 def position_embeds(c):
@@ -624,7 +627,8 @@ def position_embeds(c):
             else: action='HOLD'; reason='No exit trigger detected'
             if 'EXIT' in action: color,emoji=0xEF4444,'🔴'
             elif 'SELL' in action or 'PROFIT' in action: color,emoji=0xF59E0B,'🟠'
-            else: color,emoji=0x19C37D,'🟢'
+            elif action=='HOLD': color,emoji=0x14B8A6,'🩵'
+            else: color,emoji=0x8794A8,'⚪'
             roi_text='—' if roi is None else f'{roi:+.2f}%'
             roi_meter=max(0,min(100,50+(roi or 0)*5))
             result.append({
@@ -633,7 +637,7 @@ def position_embeds(c):
                 'color':color,
                 'fields':[
                     {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,'🟦')}','inline':True},
-                    {'name':'HOLD','value':f'**{hold}%**\n{pct_bar(hold)}','inline':True},
+                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,'🟦')}','inline':True},
                     {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
                     {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True}
                 ],
@@ -736,21 +740,21 @@ def dashboard(c, lines):
         elif risk>=70: color,emoji=0xF59E0B,'🟠'
         elif side=='UP': color,emoji=0x19C37D,'🟢'
         elif side=='DOWN': color,emoji=0xEF4444,'🔴'
-        else: color,emoji=0xF59E0B,'🟡'
+        else: color,emoji=0x8794A8,'⚪'
         desc=[]; card_fields=[]
         for tf in ('5','15'):
             item=windows.get(tf)
             if not item:
                 desc.append(f'{tf}M ⏳'); continue
-            sig='🟢' if item['side']=='UP' else '🔴' if item['side']=='DOWN' else '🟡'
+            sig='🟠' if (item.get('flip') or 0)>=70 else '🟢' if item['side']=='UP' else '🔴' if item['side']=='DOWN' else '⚪'
             desc.append(f'{tf}M {sig} **{item["side"]}**')
             if item['missing']:
                 value='⚪ NO VERIFIED MARKET'
             else:
                 odds=item['odds']; h=item['hold']; f=item['flip']
                 oddsline=f'**{odds}%** {pct_bar(odds)}' if odds is not None else '—'
-                holdline=f'🟢 HOLD **{h}%** {color_pct_bar(h,'🟩')}' if h is not None else 'HOLD —'
-                flipline=f'🟠 FLIP **{f}%** {color_pct_bar(f,'🟥')}' if f is not None else 'FLIP —'
+                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,'🟦')}' if h is not None else '🩵 HOLD —'
+                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,'🟧')}' if f is not None else '🟠 FLIP —'
                 sigp=max(0,min(100,50+item['score']*10))
                 value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
