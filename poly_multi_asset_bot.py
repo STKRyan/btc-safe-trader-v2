@@ -116,51 +116,118 @@ def db():
 
 
 def discover(asset, tf):
-    """Find current crypto Up/Down markets using their timestamped event slugs."""
-    if asset in TIMEFRAMES and tf in (5,15):
-        prefix=asset.lower()
-        seconds=tf*60
-        slot=int(time.time())//seconds*seconds
-        cache_key=(asset,tf,slot)
-        cached=_DISCOVERY_CACHE.get(cache_key)
-        if cached and time.time()-cached[0]<12: return cached[1]
-        found=[]
-        for stamp in (slot,slot+seconds,slot-seconds):
-            slug=f"{prefix}-updown-{tf}m-{stamp}"
-            try:
-                ev=get(f"{GAMMA}/events/slug/{slug}")
-                if isinstance(ev,dict): found.extend(ev.get("markets",[]) or [])
-                elif isinstance(ev,list):
-                    for e in ev: found.extend(e.get("markets",[]) or [])
-            except Exception as e:
-                print(f"Exact event slug {slug}: {type(e).__name__}: {str(e)[:90]}",flush=True)
-            if not any(str(x.get("slug","")).lower()==slug for x in found):
-                # Gamma may expose the market record even when the event-slug route is empty.
-                try:
-                    direct=get(f"{GAMMA}/markets",{"slug":slug})
-                    if isinstance(direct,list): found.extend(direct)
-                except Exception as e:
-                    print(f"Direct market lookup {slug}: {type(e).__name__}: {str(e)[:90]}",flush=True)
-        candidates=[]
-        for m in found:
-            active=m.get("active",True) not in (False,"false",0) and m.get("closed",False) not in (True,"true",1)
-            ts=jlist(m.get("clobTokenIds")); outs=jlist(m.get("outcomes"))
-            if active and len(ts)>=2 and len(outs)>=2 and f"{prefix}-updown-{tf}m-" in str(m.get("slug","")).lower():
-                m["_tokens"]=ts; m["_outcomes"]=outs; candidates.append(m)
-        if candidates:
-            def start(m):
-                try:return int(str(m.get("slug","")).rsplit("-",1)[1])
-                except Exception:return 10**18
-            now_ts=time.time()
-            live=[m for m in candidates if start(m)<=now_ts<start(m)+seconds]
-            upcoming=[m for m in candidates if start(m)>now_ts]
-            chosen=live[0] if live else min(upcoming,key=start) if upcoming else None
-            if chosen is not None:
-                _DISCOVERY_CACHE[cache_key]=(time.time(),chosen)
-                return chosen
-        print(f"Market discovery: exact {asset} {tf}m event slugs not returned.",flush=True)
-        _DISCOVERY_CACHE[cache_key]=(time.time(),None)
+    """Find and verify the current (or nearest upcoming) crypto Up/Down market."""
+    if asset not in TIMEFRAMES or tf not in (5, 15):
         return None
+
+    prefix = asset.lower()
+    seconds = tf * 60
+    slot = int(time.time()) // seconds * seconds
+    cache_key = (asset, tf, slot)
+    cached = _DISCOVERY_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < 12:
+        return cached[1]
+
+    now_ts = time.time()
+    # Current round first, then the next round. The previous round is already
+    # expired by construction and was wasting API calls on every discovery.
+    for stamp in (slot, slot + seconds):
+        slug = f"{prefix}-updown-{tf}m-{stamp}"
+        records = []
+        event_slug_verified = False
+
+        def collect(payload, exact_event=False):
+            nonlocal event_slug_verified
+            if isinstance(payload, list):
+                for item in payload:
+                    collect(item, exact_event=exact_event)
+            elif isinstance(payload, dict):
+                if str(payload.get("slug", "")).lower() == slug:
+                    event_slug_verified = True
+                markets = payload.get("markets")
+                if isinstance(markets, list):
+                    for market in markets:
+                        if isinstance(market, dict):
+                            item = dict(market)
+                            if not item.get("slug") and exact_event:
+                                item["_verified_event_slug"] = slug
+                            records.append(item)
+                # A market endpoint may return a market directly.
+                if payload.get("clobTokenIds") or payload.get("tokenIds"):
+                    item = dict(payload)
+                    if exact_event and not item.get("slug"):
+                        item["_verified_event_slug"] = slug
+                    records.append(item)
+
+        # Try the exact event route first; use alternate Gamma routes only
+        # when it didn't return a verifiable market.
+        try:
+            collect(get(f"{GAMMA}/events/slug/{slug}"), exact_event=True)
+        except Exception as e:
+            print(f"Gamma event-slug lookup {slug}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+
+        def verified_market():
+            for market in records:
+                market_slug = str(market.get("slug") or market.get("_verified_event_slug") or "").lower()
+                if market_slug != slug:
+                    continue
+                active_value = market.get("active", True)
+                closed_value = market.get("closed", False)
+                active = str(active_value).strip().lower() not in ("false", "0", "no")
+                closed = str(closed_value).strip().lower() in ("true", "1", "yes")
+                token_ids = jlist(market.get("clobTokenIds") or market.get("tokenIds"))
+                outcomes = jlist(market.get("outcomes"))
+                normalized = [str(x).strip().lower() for x in outcomes]
+                if not active or closed or len(token_ids) < 2 or len(outcomes) < 2:
+                    continue
+                if not (("up" in normalized or "yes" in normalized) and
+                        ("down" in normalized or "no" in normalized)):
+                    continue
+                market["_tokens"] = token_ids
+                market["_outcomes"] = outcomes
+                market["_verified_slug"] = slug
+                return market
+            return None
+
+        chosen = verified_market()
+        if chosen is None:
+            # Gamma sometimes returns an empty event-by-slug response while
+            # the same event is available through its filtered collection.
+            try:
+                collect(get(f"{GAMMA}/events", {"slug": slug, "limit": 5}), exact_event=True)
+            except Exception as e:
+                print(f"Gamma events query {slug}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+            chosen = verified_market()
+
+        if chosen is None:
+            try:
+                collect(get(f"{GAMMA}/markets/slug/{slug}"))
+            except Exception as e:
+                print(f"Gamma market-slug lookup {slug}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+            chosen = verified_market()
+
+        if chosen is None:
+            try:
+                collect(get(f"{GAMMA}/markets", {"slug": slug, "limit": 5}))
+            except Exception as e:
+                print(f"Gamma markets query {slug}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+            chosen = verified_market()
+
+        if chosen is not None:
+            # The current round is preferred; the next round is only a safe
+            # fallback if current metadata has not appeared yet.
+            market_start = stamp
+            if market_start <= now_ts < market_start + seconds:
+                _DISCOVERY_CACHE[cache_key] = (time.time(), chosen)
+                print(f"Market verified: {asset} {tf}m {slug}", flush=True)
+                return chosen
+            if market_start > now_ts:
+                _DISCOVERY_CACHE[cache_key] = (time.time(), chosen)
+                print(f"Upcoming market verified: {asset} {tf}m {slug}", flush=True)
+                return chosen
+
+    print(f"Market discovery failed verification: {asset} {tf}m current and next slug.", flush=True)
+    _DISCOVERY_CACHE[cache_key] = (time.time(), None)
     return None
 
 def tokens(m):
