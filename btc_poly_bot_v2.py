@@ -316,121 +316,32 @@ def db_connect() -> sqlite3.Connection:
     return conn
 
 
-def update_live_call_message(conn: sqlite3.Connection, message: str) -> bool:
-    """Create one call card, then edit it in place every 15 seconds."""
-    now = time.time()
-    row = conn.execute(
-        "SELECT state_value FROM bot_state WHERE state_key='live_call_last_update'"
-    ).fetchone()
-    try:
-        last_update = float(row["state_value"]) if row else 0.0
-    except (TypeError, ValueError):
-        last_update = 0.0
-    if now - last_update < 15:
-        return False
-
-    webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-    if not webhook:
-        webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
-    if not (webhook.startswith("https://discord.com/api/webhooks/") or
-            webhook.startswith("https://discordapp.com/api/webhooks/")):
-        print("Crypto Radar live call skipped: no valid Discord webhook configured.")
-        return False
-
-    text = message
-    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*b\s*>", "**", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*/\s*b\s*>", "**", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*i\s*>", "*", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*/\s*i\s*>", "*", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*code\s*>", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*/\s*code\s*>", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html.unescape(text).strip()
-
-    upper = text.upper()
-    head = " ".join(text.splitlines()[:3]).upper()
-    if any(term in head for term in ("SELL / REDUCE", "PROTECT / EXIT", "TAKE PROFIT", "STOP LOSS")):
-        color, badge, fill = 0xF97316, "🟧 SELL / PROTECT", "🟧"
-    elif "FLIP" in head:
-        color, badge, fill = 0xF97316, "🟧 FLIP", "🟧"
-    elif "WAIT" in head or "NO ENTRY" in head:
-        color, badge, fill = 0x8B949E, "⬜ WAIT / HOLD", "⬜"
-    elif "HOLD" in head:
-        color, badge, fill = 0x8B949E, "⬜ HOLD", "⬜"
-    elif "DOWN" in head:
-        color, badge, fill = 0xEF4444, "🔴 DOWN", "🟥"
-    elif "UP" in head:
-        color, badge, fill = 0x22C55E, "🟢 UP", "🟩"
-    else:
-        color, badge, fill = 0x8B949E, "📡 LIVE SIGNAL", "⬜"
-
-    strength_match = re.search(r"CALL STRENGTH:\s*\**\s*(\d{1,3})\s*/\s*100", upper)
-    strength = max(0, min(100, int(strength_match.group(1)))) if strength_match else 0
-    bar = color_meter(strength, fill, 20)
-    # The embed has a fixed, saved message ID; the visible progress meter changes
-    # with the market's indicator score on each 15-second edit.
-    description = f"## {badge}\n**LIVE CALL STRENGTH · {strength}%**\n{bar}\n\n{text}"
-    if len(description) > 4000:
-        description = description[:3990] + "\n…"
-    payload = {
-        "embeds": [{
-            "title": "🟠 CRYPTO RADAR · LIVE CALL",
-            "description": description,
-            "color": color,
-            "footer": {"text": "AUTO-UPDATED EVERY 15 SECONDS · PAPER SIGNALS ONLY"},
-            "timestamp": utc_now().isoformat()
-        }],
-        "allowed_mentions": {"parse": []}
-    }
-    id_row = conn.execute(
-        "SELECT state_value FROM bot_state WHERE state_key='live_call_message_id'"
-    ).fetchone()
-    message_id = str(id_row["state_value"]) if id_row else ""
-    try:
-        if message_id:
-            response = SESSION.patch(
-                webhook.rstrip("/") + "/messages/" + message_id,
-                json=payload, timeout=HTTP_TIMEOUT
-            )
-            if response.status_code == 404:
-                message_id = ""
-            else:
-                response.raise_for_status()
-        if not message_id:
-            response = SESSION.post(
-                webhook.rstrip("/") + "?wait=true",
-                json=payload, timeout=HTTP_TIMEOUT
-            )
-            response.raise_for_status()
-            new_id = str(response.json().get("id", ""))
-            if new_id:
-                conn.execute(
-                    "INSERT INTO bot_state(state_key,state_value) VALUES('live_call_message_id',?) "
-                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
-                    (new_id,)
-                )
-        conn.execute(
-            "INSERT INTO bot_state(state_key,state_value) VALUES('live_call_last_update',?) "
-            "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
-            (str(now),)
-        )
-        conn.commit()
-        print("Crypto Radar live call message edited.")
-        return True
-    except Exception as exc:
-        print(f"Crypto Radar live call edit failed: {type(exc).__name__}: {exc}")
-        return False
-
-
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Refresh the single persistent Crypto Radar call card instead of posting alerts."""
-    now = time.time()
-    update_live_call_message(conn, message)
+    """Save the newest call for the dashboard; never post a separate alert."""
+    clean = message
+    clean = re.sub(r"<\s*br\s*/?\s*>", "\n", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*b\s*>", "**", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*/\s*b\s*>", "**", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*i\s*>", "*", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*/\s*i\s*>", "*", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*code\s*>", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<\s*/\s*code\s*>", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"<[^>]+>", "", clean)
+    clean = html.unescape(clean).strip()
+    match = re.search(r"BTC\s+(\d+)m", clean, flags=re.IGNORECASE)
+    timeframe = int(match.group(1)) if match else 5
+    if timeframe not in (5, 15):
+        timeframe = 5
+    state_key = f"live_call_note_{timeframe}m"
+    conn.execute(
+        "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
+        "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+        (state_key, clean[:1800])
+    )
     conn.execute(
         "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
         "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
-        (key, now),
+        (key, time.time())
     )
     conn.commit()
 
@@ -1679,9 +1590,17 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"Scalp: **{'READY TO CHECK' if confirmed and abs(score)>=3 else 'WAITING'}**"
     )
 
+    note_row = conn.execute(
+        "SELECT state_value FROM bot_state WHERE state_key='live_call_note_5m'"
+    ).fetchone()
+    latest_call_note = str(note_row["state_value"])[:900] if note_row else (
+        f"**{call_words}**\n{plain_reason}"
+    )
+
     fields = [
         {"name":f"{call_icon} LIVE STRENGTH","value":f"**{signal_strength}%**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
         {"name":"🧒 WHAT DOES IT MEAN?","value":f"**{call_words}**\n{plain_reason}\n{position_line}","inline":False},
+        {"name":"📡 LATEST CALL NOTE","value":latest_call_note[:900],"inline":False},
         {"name":"🩵 LIVE SNIPE METER","value":snipe_text[:900],"inline":False},
         {"name":"📊 WINS · FLIPS · LOSSES","value":forecast_record[:900],"inline":False},
         {"name":"🔥 WINS & STREAK","value":(perf_line+"\n"+streak_line)[:900],"inline":True},
