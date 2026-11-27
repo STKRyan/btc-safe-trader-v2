@@ -194,6 +194,14 @@ def db_connect() -> sqlite3.Connection:
             alert_key TEXT PRIMARY KEY,
             sent_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS btc_snipe_ticks (
+            market_slug TEXT NOT NULL,
+            timeframe INTEGER NOT NULL,
+            side TEXT NOT NULL,
+            ask REAL NOT NULL,
+            ts REAL NOT NULL,
+            PRIMARY KEY(market_slug,timeframe,side)
+        );
         CREATE TABLE IF NOT EXISTS bot_state (
             state_key TEXT PRIMARY KEY,
             state_value TEXT NOT NULL
@@ -1000,7 +1008,7 @@ def _live_market_odds(minutes: int) -> dict:
     cached=cache.get(int(minutes))
     if cached and now-cached[0]<10:
         return cached[1]
-    result={"up":None,"down":None}
+    result={"up":None,"down":None,"raw":{}}
     try:
         market=get_market(minutes)
         if market:
@@ -1010,7 +1018,9 @@ def _live_market_odds(minutes: int) -> dict:
                 book=get_book(token) if token else None
                 stats=book_stats(book) if book else None
                 if stats and 0<float(stats["ask"])<1:
-                    result[side.lower()]=int(round(float(stats["ask"])*100))
+                    ask=float(stats["ask"])
+                    result[side.lower()]=int(round(ask*100))
+                    result["raw"][side.lower()]=ask
     except Exception as exc:
         print(f"BTC {minutes}m live odds refresh failed: {type(exc).__name__}: {exc}")
     cache[int(minutes)]=(now,result)
@@ -1021,6 +1031,40 @@ def color_meter(value: int, fill: str="🟩", width: int=10) -> str:
     value=max(0,min(100,int(value)))
     filled=round(value*width/100)
     return fill*filled+"⬜"*(width-filled)
+
+def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
+                      live_odds: dict, confirmed: bool, flip_risk: int) -> dict:
+    """Track selected Polymarket contract movement for a readable SNIPE meter."""
+    ask=live_odds.get("raw",{}).get(str(side).lower())
+    if side not in ("UP","DOWN") or ask is None:
+        return {"strength":0,"move":None,"status":"SNIPE WATCH · contract quote unavailable"}
+    slug=market_slug(minutes); stamp=time.time()
+    row=conn.execute(
+        "SELECT ask,ts FROM btc_snipe_ticks WHERE market_slug=? AND timeframe=? AND side=?",
+        (slug,minutes,side)
+    ).fetchone()
+    move=None
+    if row and 2<=stamp-float(row["ts"])<=90 and float(row["ask"])>0:
+        move=(float(ask)/float(row["ask"])-1)*100
+    conn.execute(
+        "INSERT INTO btc_snipe_ticks(market_slug,timeframe,side,ask,ts) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(market_slug,timeframe,side) DO UPDATE SET ask=excluded.ask,ts=excluded.ts",
+        (slug,minutes,side,float(ask),stamp)
+    )
+    conn.commit()
+    if move is None:
+        status="SNIPE WATCH · building contract baseline"
+    elif flip_risk>=70:
+        status="SNIPE BLOCKED · flip risk high"
+    elif move>=1 and confirmed:
+        status="SNIPE CONFIRMED · contract rising with signal"
+    elif move<=-1:
+        status="SNIPE WAIT · selected contract weakening"
+    else:
+        status="SNIPE WATCH · move not strong enough"
+    strength=0 if move is None else max(0,min(100,round(abs(move)*3+(20 if move>0 else 0)+(20 if confirmed else 0))))
+    return {"strength":strength,"move":move,"status":status}
+
 
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
                      minutes: int = 5) -> dict:
@@ -1075,6 +1119,11 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     # Live market-price meters (ask price = buy-side contract pricing).
     live_odds=_live_market_odds(minutes)
     up_odds=live_odds.get("up"); down_odds=live_odds.get("down")
+    snipe=btc_snipe_meter(conn,minutes,side,live_odds,confirmed,flip)
+    snipe_move="—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
+    snipe_text=(f"**{snipe['status']}**\n**SNIPE STRENGTH {snipe['strength']}%** "
+                f"{color_meter(snipe['strength'],'🎯')}\nContract move **{snipe_move}** "
+                "· Strength meter, not win odds")
     market_period_seconds=minutes*60
     elapsed_seconds=int(time.time()%market_period_seconds)
     market_progress=int(elapsed_seconds*100/market_period_seconds)
@@ -1184,6 +1233,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             ),
             "inline":False
         },
+        {"name":"🎯 SNIPE · LIVE CONTRACT MOVE","value":snipe_text[:900],"inline":False},
         {"name":"⚡ SCALP","value":scalp_text,"inline":True},
         {"name":"📂 POSITION","value":position_text[:900],"inline":True},
         {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False}
