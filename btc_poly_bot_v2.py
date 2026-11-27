@@ -1103,123 +1103,39 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         f"window flips {opinions.get('market_flips',0)} · memory {opinions.get('memory',{}).get('sample',0)} resolved\n"
         f"*Last refresh <t:{int(time.time())}:R>*"
     )
-    fields = [        {
-            "name": "〢 MARKET BIAS",
-            "value": (
-                f"🟩 **UP  {up_bias:>2}%**  `{gauge_bar(up_bias, 18)}`\n"
-                f"🟥 **DOWN {down_bias:>2}%**  `{gauge_bar(down_bias, 18)}`\n"
-                "`Relative indicator vote · not win probability`"
+    perf_text=(f"**{perf['wins']}W · {perf['losses']}L**  ·  "
+                f"Win {perf['win_rate']:.0f}%" if perf['count'] else "Collecting paper results")
+    perf_text+=f"\nP/L **USD {pnl:+.2f}** · Open **{len(open_rows)}**"
+    position_lines=[]
+    for row in open_rows[:2]:
+        position_lines.append(
+            f"**{row['timeframe']}M {row['side']}** · {row['last_action'] or 'HOLD / MONITOR'}"
+        )
+    position_text="\n".join(position_lines) if position_lines else "👀 No open paper position"
+    scalp_text=f"**{scalp_call}** · **{scalp_live}%**\n{color_meter(scalp_live,'🟦')}"
+    fields=[
+        {
+            "name":"📊 SIGNAL",
+            "value":(
+                f"**{safe_call}** · votes **{score:+d}/5**\n"
+                f"UP **{up_bias}%** {color_meter(up_bias,'🟩')}  ·  "
+                f"DOWN **{down_bias}%** {color_meter(down_bias,'🟥')}"
             ),
-            "inline": False,
+            "inline":False
         },
         {
-            "name": "〢 MOMENTUM",
-            "value": (
-                f"**RSI** `{rsi_value:.1f}`\n"
-                f"**1m** `{float(tech.get('move1',0)):+.3f}%`  "
-                f"**3m** `{float(tech.get('move3',0)):+.3f}%`\n"
-                f"**10m** `{float(tech.get('move10',0)):+.3f}%`  "
-                f"**20-candle range** `{float(tech.get('range_position',50)):.0f}% from low`\n"
-                f"**Votes** `{score:+d}/5`"
+            "name":"🟢 HOLD  /  🔴 EXIT RISK",
+            "value":(
+                f"HOLD **{hold_meter}%** {color_meter(hold_meter,'🟩')}\n"
+                f"FLIP / EXIT **{sell_meter}%** {color_meter(sell_meter,'🟥')}"
             ),
-            "inline": True,
+            "inline":False
         },
-        {
-            "name": "〢 HOLD STRENGTH",
-            "value": f"**{hold}%**\n`{gauge_bar(hold, 13)}`",
-            "inline": True,
-        },
-        {
-            "name": "〢 REVERSAL / FLIP RISK",
-            "value": f"**{flip}%**\n`{gauge_bar(flip, 13)}`",
-            "inline": True,
-        },
+        {"name":"⚡ SCALP","value":scalp_text,"inline":True},
+        {"name":"📂 POSITION","value":position_text[:900],"inline":True},
+        {"name":"📈 PAPER STATS","value":perf_text[:900],"inline":False}
     ]
 
-    perf_text = (
-        f"**{perf['wins']}W · {perf['losses']}L** 　`Win {perf['win_rate']:.0f}% · Loss {perf['loss_rate']:.0f}%`\n"
-        if perf['count'] else "`Collecting completed paper trades`\n"
-    )
-    perf_text += f"Today P/L  **${pnl:+.2f}**\nOpen positions  **{len(open_rows)}**"
-    fields.append({"name": "〢 PAPER PERFORMANCE", "value": perf_text, "inline": True})
-    fields.append({
-        "name": "〢 SCALP CALL" if minutes == 5 else "〢 15M SIGNAL STRENGTH",
-        "value": f"**{scalp_call}** · **{scalp_live}%**\n`{gauge_bar(scalp_live, 13)}`\n"
-                 + ("`Live setup-strength score · not win odds`" if minutes == 5
-                    else "`Directional indicator score · not win odds`"),
-        "inline": True,
-    })
-
-    if open_rows:
-        lines = []
-        for row in open_rows:
-            kind = "⚡ SCALP" if str(row["trade_type"]).upper() == "SCALP" else "📈 HOLD"
-            lines.append(
-                f"`{kind}` **{row['timeframe']}m {row['side']}**  ·  "
-                f"Entry `${float(row['entry_price']):.3f}`  ·  "
-                f"Qty `{float(row['remaining_quantity']):.3f}`\n"
-                f"↳ {row['last_action'] or 'Monitoring position'}"
-            )
-        positions = "\n".join(lines)
-    else:
-        positions = "`NO OPEN POSITIONS`\nWatching for the next qualified setup."
-    sell_call = "NO OPEN POSITION"
-    if open_rows:
-        latest_action = str(open_rows[0]["last_action"] or "").upper()
-        if any(word in latest_action for word in ("SELL", "EXIT", "STOP", "FLIP")) or flip >= 75:
-            sell_call = f"SELL / REDUCE · {max(flip, 75)}% sell-risk score"
-        else:
-            sell_call = f"HOLD / WATCH · {flip}% flip risk"
-        positions = f"**SELL CALL: {sell_call}**\n" + positions
-    if open_rows:
-        entry_exit_text = (
-            f"**POSITION:** {open_rows[0]['timeframe']}m {open_rows[0]['side']} · "
-            f"paper entry ${float(open_rows[0]['entry_price']):.3f}\n"
-            f"**NOW:** {open_rows[0]['last_action'] or 'HOLD / MONITOR'}\n"
-            "**SELL / HOLD:** follow the live target, stop, and flip-risk action shown above."
-        )
-    else:
-        entry_exit_text = (
-            f"**ENTRY:** WAIT · current {safe_call} bias is not an entry by itself.\n"
-            "**BUY-IN:** paper entry only when market, timing, edge, spread, depth, and confirmation filters pass.\n"
-            "**SELL / HOLD:** no open paper position; wait for a qualified setup."
-        )
-    fields.append({"name": "〢 ENTRY / SELL / HOLD NOW", "value": entry_exit_text[:1024], "inline": False})
-    fields.append({"name": "〢 ACTIVE PAPER POSITIONS", "value": positions[:1024], "inline": False})
-
-    latest_scalp = conn.execute(
-        "SELECT side,setup_score,entry_price,target_price,stop_price "
-        "FROM scalp_signals ORDER BY id DESC LIMIT 1"
-    ).fetchone() if minutes == 5 else None
-    if minutes == 15:
-        scalp_text = (
-            f"**15M MARKET:** {safe_call if confirmed else 'WAIT'}\n"
-            f"**Votes:** {score:+d}/5 · **RSI:** {rsi_value:.1f}\n"
-            f"**Check:** {second} · {'MATCH' if confirmed else 'NOT CONFIRMED'}\n"
-            "`No forced entry · paper signal only`"
-        )
-    elif latest_scalp:
-        scalp_score = max(0, min(100, int(latest_scalp["setup_score"] or 0)))
-        scalp_text = (
-            f"**{latest_scalp['side']}**  ·  Setup score **{scalp_score}/100**\n"
-            f"`{gauge_bar(scalp_score, 18)}`\n"
-            f"Entry `${float(latest_scalp['entry_price']):.3f}`  ·  "
-            f"Target `${float(latest_scalp['target_price']):.3f}`  ·  "
-            f"Stop `${float(latest_scalp['stop_price']):.3f}`"
-        )
-    else:
-        scalp_text = "`SCALP RADAR: STANDBY`\nNo setup currently meets the momentum and liquidity filters."
-    fields.append({"name": "〢 SCALP RADAR" if minutes == 5 else "〢 15M MARKET CHECK",
-                   "value": scalp_text, "inline": False})
-    fields.append({
-        "name": "〢 EXECUTION GUARDRAILS",
-        "value": (
-            "🛡️ Two-check disagreement = **WAIT**  ·  Simulated positions only\n"
-            "📡 Coinbase 1-minute candles · 1-second pause between scan cycles; API time adds to cycle\n"
-            "*Bars show rule-based indicator scores, not guaranteed outcomes.*"
-        ),
-        "inline": False,
-    })
     return {
         "author": {
             "name": f"BTC SIGNAL TERMINAL  /  {minutes}M MARKET INTELLIGENCE",
