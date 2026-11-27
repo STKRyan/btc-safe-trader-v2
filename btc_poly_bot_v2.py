@@ -1770,10 +1770,14 @@ def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state
             response = SESSION.patch(webhook.rstrip("/") + "/messages/" + message_id,
                                     json=payload, timeout=HTTP_TIMEOUT)
             if response.status_code != 404:
+                if not response.ok:
+                    print(f"{state_prefix} Discord rejected update: HTTP {response.status_code} · {response.text[:800]}")
                 response.raise_for_status()
                 print(f"{state_prefix} Discord message updated.")
                 return
         response = SESSION.post(webhook.rstrip("/") + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
+        if not response.ok:
+            print(f"{state_prefix} Discord rejected post: HTTP {response.status_code} · {response.text[:800]}")
         response.raise_for_status()
         new_id = str(response.json().get("id", ""))
         if new_id:
@@ -1806,7 +1810,8 @@ def update_btc_chart_channel(conn: sqlite3.Connection, candles: list[list[float]
     """Update one Discord message with a rolling 60-minute chart image."""
     if not candles:
         return
-    recent = candles[-60:]
+    # Keep the chart URL comfortably below Discord's embed URL limit.
+    recent = candles[-24:]
     closes = [round(float(c[4]), 2) for c in recent]
     times = [datetime.fromtimestamp(float(c[0]), timezone.utc).strftime("%H:%M") for c in recent]
     latest = closes[-1]
@@ -1824,7 +1829,12 @@ def update_btc_chart_channel(conn: sqlite3.Connection, candles: list[list[float]
                        "y": {"title": {"display": True, "text": "BTC price (USD)"}}}
         }
     }
-    chart_url = "https://quickchart.io/chart?width=900&height=420&format=png&backgroundColor=white&c=" + urllib.parse.quote(json.dumps(config), safe="")
+    chart_params = {
+        "width": 700, "height": 350, "format": "png",
+        "backgroundColor": "white",
+        "c": json.dumps(config, separators=(",", ":"))
+    }
+    chart_url = "https://quickchart.io/chart?" + urllib.parse.urlencode(chart_params)
     embed = {
         "title": "BTC LIVE PRICE GRAPH",
         "description": (
