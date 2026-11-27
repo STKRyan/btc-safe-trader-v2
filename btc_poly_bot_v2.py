@@ -311,12 +311,27 @@ def db_connect() -> sqlite3.Connection:
 
 
 def alert_once(conn: sqlite3.Connection, key: str, message: str) -> None:
-    """Suppress per-signal Discord posts; the live dashboard is the only call feed."""
-    # Do not create a new Discord notification for each market, side, WAIT, or
-    # order-book event. update_dashboard() and the live dashboard edit their
-    # saved message IDs in place, so the channel stays quiet while the call
-    # itself continues to refresh.
-    return
+    """Send real Discord call/status messages with a per-alert cooldown."""
+    now = time.time()
+    row = conn.execute(
+        "SELECT sent_at FROM alerts WHERE alert_key=?", (key,)
+    ).fetchone()
+    if row:
+        try:
+            if now - float(row["sent_at"]) < SIGNAL_REPEAT_SECONDS:
+                return
+        except (TypeError, ValueError):
+            pass
+
+    # Reserve this alert before sending so a webhook failure cannot cause
+    # a one-second retry loop and flood Render logs or Discord.
+    conn.execute(
+        "INSERT INTO alerts(alert_key,sent_at) VALUES(?,?) "
+        "ON CONFLICT(alert_key) DO UPDATE SET sent_at=excluded.sent_at",
+        (key, now),
+    )
+    conn.commit()
+    discord_send(message)
 
 def market_slug(minutes: int, now_epoch: Optional[int] = None) -> str:
     now_epoch = int(now_epoch or time.time())
