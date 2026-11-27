@@ -673,8 +673,9 @@ def btc_loss_diagnosis(conn: sqlite3.Connection, timeframe: Optional[int] = None
 
 
 def btc_tracker_text(conn: sqlite3.Connection) -> str:
-    five = btc_trade_tracker(conn, timeframe=5, limit=100)
-    fifteen = btc_trade_tracker(conn, timeframe=15, limit=100)
+    # Keep regular 5m/15m entries separate from dedicated snipe records.
+    five = btc_trade_tracker(conn, timeframe=5, trade_type="STANDARD", limit=100)
+    fifteen = btc_trade_tracker(conn, timeframe=15, trade_type="STANDARD", limit=100)
     snipes = btc_trade_tracker(conn, timeframe=5, trade_type="SCALP", limit=100)
     def rate(stats: dict) -> str:
         return f"{stats['win_rate']:.0f}%W/{stats['loss_rate']:.0f}%L" if stats["win_rate"] is not None else "building sample"
@@ -695,6 +696,45 @@ def btc_loss_report_text(conn: sqlite3.Connection) -> str:
         f"BTC 15M · {btc_loss_diagnosis(conn,15)[:220]}\n"
         f"⚡ SNIPE 5M · {btc_loss_diagnosis(conn,5,'SCALP')[:280]}"
     )
+
+
+def btc_performance_tracker_embed(conn: sqlite3.Connection) -> dict:
+    """Dedicated Discord message so BTC trade records are visible, not buried."""
+    groups = [
+        ("BTC 5M STANDARD", btc_trade_tracker(conn, 5, "STANDARD", 100)),
+        ("BTC 15M STANDARD", btc_trade_tracker(conn, 15, "STANDARD", 100)),
+        ("BTC 5M SNIPE", btc_trade_tracker(conn, 5, "SCALP", 100)),
+    ]
+    fields = []
+    for label, stats in groups:
+        win_rate = f"{stats['win_rate']:.1f}%" if stats["win_rate"] is not None else "—"
+        loss_rate = f"{stats['loss_rate']:.1f}%" if stats["loss_rate"] is not None else "—"
+        sample_label = "LOW SAMPLE" if stats["sample"] < 20 else "TRACKING"
+        fields.append({
+            "name": f"{label} · {sample_label}",
+            "value": (
+                f"**W/L:** {stats['wins']} / {stats['losses']} · n={stats['sample']}\n"
+                f"**Win rate:** {win_rate} · **Loss rate:** {loss_rate}\n"
+                f"**Current streak:** 🔥 {stats['current_win_streak']} wins / "
+                f"🟥 {stats['current_loss_streak']} losses\n"
+                f"**Best win streak:** 🏆 {stats['best_win_streak']} · "
+                f"**Net paper P/L:** ${stats['net_pnl']:+.2f}"
+            ),
+            "inline": False,
+        })
+    return {
+        "title": "📊 BTC PAPER PERFORMANCE · SEPARATE TRACKERS",
+        "description": (
+            "Each category has its own W/L, current streak, and best streak. "
+            "A loss resets only that category's current win streak; other categories "
+            "and best records stay intact. Snipe loss rate is historical paper risk, "
+            "not a guarantee or calibrated probability."
+        ),
+        "color": 0x2ECC71,
+        "fields": fields,
+        "footer": {"text": "BTC ONLY · PAPER RESULTS · Not live-money performance"},
+        "timestamp": utc_now().isoformat(),
+    }
 
 
 def recent_paper_performance(conn: sqlite3.Connection, limit: int = 20,
@@ -1871,6 +1911,10 @@ def main() -> int:
                 update_dashboard(conn, tech, dashboard_opinion)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
                 update_btc_15m_live_channel(conn, tech, dashboard_opinion_15)
+                update_btc_channel_message(
+                    conn, "DISCORD_BTC_LIVE_WEBHOOK_URL", "btc_performance_tracker",
+                    btc_performance_tracker_embed(conn), 30
+                )
                 # Chart delivery is paused for now. Keep BTC live and signal scanning active.
                 update_shared_learning(conn)
                 print_summary(conn)
