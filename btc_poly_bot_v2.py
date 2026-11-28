@@ -1419,7 +1419,7 @@ def _live_market_odds(minutes: int) -> dict:
     now=time.time()
     cache=getattr(_live_market_odds,"_cache",{})
     cached=cache.get(int(minutes))
-    if cached and now-cached[0]<5:
+    if cached and now-cached[0]<2:
         return cached[1]
     result={"up":None,"down":None,"raw":{}}
     try:
