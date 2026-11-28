@@ -1800,8 +1800,7 @@ def dashboard(c, lines):
                 plan_text=(
                     f"{amount_line}\n"
                     f"🧠 BOT TRUST / EVIDENCE: {evidence}/100 · signal evidence, NOT profit odds\n"
-                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · 
-                    f"+10% target ≈ +${target_usd:,.2f} · -5% stop ≈ -${risk_usd:,.2f}\n"
+                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · +10% target ≈ +${target_usd:,.2f} · -5% stop ≈ -${risk_usd:,.2f}\\n"
                     f"⏳ HOLD GUIDE: {tf}m market window · recheck each scan; exit sooner on stop, "
                     f"profit target, or reversal. No fixed hold guarantee."
                 )
