@@ -1497,7 +1497,9 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
 
     side = str(tech.get("side", "NEUTRAL")).upper()
     confirmed = bool(opinions.get("agrees")) and side in ("UP", "DOWN")
-    safe_call = side if confirmed else "WAIT"
+    # Show the primary directional call independently from the paper-entry gate.
+    # A second-brain disagreement blocks entry, but should not hide an UP/DOWN call.
+    safe_call = side if side in ("UP", "DOWN") else "WAIT"
     score = int(tech.get("score", 0))
     move1 = float(tech.get("move1", 0.0))
     move3 = float(tech.get("move3", 0.0))
@@ -1724,7 +1726,7 @@ def fit_discord_embed(embed: dict, max_total: int = 5700) -> dict:
     return result
 
 
-def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
+def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict, opinions_15: Optional[dict] = None) -> None:
     """Create once, then edit the same Discord webhook message on a safe cadence."""
     # Optional site-data writer was removed; keep Discord dashboard independent.
     last_update_row = conn.execute(
@@ -1752,7 +1754,11 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict) -> No
         return
     row = conn.execute("SELECT state_value FROM bot_state WHERE state_key='dashboard_message_id'").fetchone()
     message_id = row["state_value"] if row else ""
-    payload = {"embeds":[fit_discord_embed(_dashboard_embed(conn, tech, opinions))],"allowed_mentions":{"parse":[]}}
+    # Crypto Radar displays matching 5m and 15m cards side by side in one message.
+    # Each card reads its own timeframe-specific saved call note and paper record.
+    radar_5m = fit_discord_embed(_dashboard_embed(conn, tech, opinions, minutes=5, dashboard_name="CRYPTO RADAR"))
+    radar_15m = fit_discord_embed(_dashboard_embed(conn, tech, opinions_15 or opinions, minutes=15, dashboard_name="CRYPTO RADAR"))
+    payload = {"embeds":[radar_5m, radar_15m],"allowed_mentions":{"parse":[]}}
     # Record the attempt time too, so a Discord rate-limit/error cannot cause
     # repeated requests on every 1-second scanner cycle.
     conn.execute(
@@ -2160,7 +2166,7 @@ def main() -> int:
                         scan_one(conn, minutes, tech)
                     except Exception as exc:
                         print(f"BTC {minutes}m scan error: {type(exc).__name__}: {exc}")
-                update_dashboard(conn, tech, dashboard_opinion)
+                update_dashboard(conn, tech, dashboard_opinion, dashboard_opinion_15)
                 update_btc_live_channel(conn, tech, dashboard_opinion)
                 update_btc_15m_live_channel(conn, tech, dashboard_opinion_15)
                 # Restore the rolling BTC chart alongside the live dashboard.
