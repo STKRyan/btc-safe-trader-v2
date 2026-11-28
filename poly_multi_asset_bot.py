@@ -1298,6 +1298,10 @@ def per_asset_tracker_field(c, asset):
     worst=market_rollup[-1] if market_rollup else None
     best_label=(best["slug"] or best["market_id"])[:35] if best else "—"
     worst_label=(worst["slug"] or worst["market_id"])[:35] if worst else "—"
+    market_summary=(
+        f"🏆 Best market: {best_label} · {float(best['net']):+,.2f} USD\n"
+        f"⚠️ Weakest market: {worst_label} · {float(worst['net']):+,.2f} USD"
+    ) if best and worst else "No resolved paper markets yet."
     return (
         f"📊 **{asset} FORECAST RECORD (5m + 15m)**\n"
         f"WIN **{stats['wins']}** · FLIP **{stats['flips']}** · LOSS **{stats['losses']}** · Resolved **{stats['sample']}**\n"
@@ -1306,9 +1310,7 @@ def per_asset_tracker_field(c, asset):
         f"🎯 **SNIPE** W/L **{sn['wins']}/{sn['losses']}** · Win {srate} / Loss {sloss} "
         f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}\n"
         f"💵 **PAPER W/L:** {int(paper['wins'])}/{int(paper['losses'])} · {int(paper['n'])} settled · NET **{float(paper['net']):+,.2f} USD**\n"
-        f"🏆 Best market: {best_label} · {float(best['net']):+,.2f} USD\n" if best else
-        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}\n"
-        f"💵 **PAPER W/L:** {int(paper['wins'])}/{int(paper['losses'])} · {int(paper['n'])} settled · NET **{float(paper['net']):+,.2f} USD**"
+        f"{market_summary}"
     )
 
 
