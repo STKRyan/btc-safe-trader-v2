@@ -1301,21 +1301,31 @@ def market_embeds(lines):
             pm_value='Live Polymarket bid/ask unavailable this scan'
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
         snipe_strength_match=re.search(r'strength (\d+)/100',snipe_line)
-        snipe_hold_match=re.search(r'SNIPE HOLD METER (\d+)/100',snipe_line)
+        # Parse the snipe meters robustly from the full diagnostic.
+        snipe_hold_match=re.search(r'SNIPE HOLD METER (\d+)/100',body,re.I)
         snipe_hold=int(snipe_hold_match.group(1)) if snipe_hold_match else None
+        snipe_flip_match=re.search(r'flip risk (\d+)/100',snipe_line,re.I)
+        snipe_flip_risk=int(snipe_flip_match.group(1)) if snipe_flip_match else None
         snipe_status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)',snipe_line)
         snipe_status=snipe_status_match.group(0) if snipe_status_match else 'SNIPE WATCH'
         snipe_strength=int(snipe_strength_match.group(1)) if snipe_strength_match else 0
         snipe_move_match=re.search(r'contract (?:move|trade) ([+-]?\d+\.\d+)%',snipe_line)
         snipe_move=float(snipe_move_match.group(1)) if snipe_move_match else None
         snipe_bar=color_pct_bar(snipe_strength,'🎯')
+        snipe_hold_bar=color_pct_bar(snipe_hold,'🟪') if snipe_hold is not None else '—'
+        snipe_flip_bar=color_pct_bar(snipe_flip_risk,'🟥') if snipe_flip_risk is not None else '—'
+        snipe_meter_lines=(f'**SNIPE HOLD METER: {snipe_hold}%** {snipe_hold_bar}\\n'
+                           f'**SNIPE FLIP-RISK METER: {snipe_flip_risk}%** {snipe_flip_bar}'
+                           if snipe_hold is not None and snipe_flip_risk is not None else
+                           f'**SNIPE HOLD METER:** {snipe_hold if snipe_hold is not None else "warming up"} · '
+                           f'**SNIPE FLIP-RISK METER:** {snipe_flip_risk if snipe_flip_risk is not None else "warming up"}')
         exchange_match=re.search(r'EXCHANGE: (.*?)(?: · CHART | · strength )',snipe_line)
         exchange_display=exchange_match.group(1)[:850] if exchange_match else 'Binance spot trades/order book/candles warming up'
         chart_url=snipe_line.split('CHART ',1)[1].split(' ',1)[0] if 'CHART ' in snipe_line else ''
         chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_url})' if chart_url.startswith('https://') else ''
-        snipe_display=(f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
-                       f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
-                       f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\nBuilding live price baseline')
+        snipe_display=(f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\\n'
+                       f'**CONTRACT MOVE {snipe_move:+.2f}%**\\n{snipe_meter_lines}\\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
+                       f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\\n{snipe_meter_lines}\\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\\nBuilding live price baseline')
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
         up_count=int(re.search(r'MAJORITY VOTE: UP (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: UP (\d)/5',raw) else 0
         down_count=int(re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw) else 0
@@ -1345,7 +1355,7 @@ def market_embeds(lines):
             scalp_value=(f'🎯 **SNIPE SIDE: {scalp_direction}**\n**STATUS: WATCH**\n{scalp_line[:700]}\nWait for a verified side and confirmed setup.')
         if scalp_active:
             scalp_value += f'\nSCALP INDICATOR STRENGTH: {pct_bar(scalp_score)} **{scalp_score}/100** · not win odds'
-        result.append({'title':f'{"🟢" if side=="UP" else "🔴" if side=="DOWN" else "⚪"}  ✦  {asset}  /  {tf}M  /  {side}','description':f'╭━━━━━━━━━━━━━━━━━━━━╮\n  **{asset}  ·  {tf} MIN MARKET**\n  **{("🟢 UP BIAS" if side=="UP" else "🔴 DOWN BIAS" if side=="DOWN" else "⚪ WAIT / MIXED")}**\n╰━━━━━━━━━━━━━━━━━━━━╯\n\n{body[:780]}','color':color,'fields':[{'name':'💡  THE CALL · PLAIN ENGLISH','value':plain_reason[:1024],'inline':False},{'name':'🎯  SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'⚡  SIGNAL POWER · 5 INDICATORS','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{'name':'💎  INITIAL CALL · HOLD METER','value':f'{color_pct_bar(hold,"🩵")} **{hold}%**\nInitial directional hold outlook · heuristic, not odds','inline':False},{'name':'⚡  SNIPE HOLD METER','value':f'{color_pct_bar(snipe_hold,"🟪")} **{snipe_hold}%**\nSeparate live-flow snipe hold evidence · heuristic, not odds' if snipe_hold is not None else 'Awaiting snipe evidence','inline':False},{'name':'⚠️  FLIP-RISK METER','value':f'{color_pct_bar(risk,"🟧")} **{risk}%**\n{level}','inline':False},{'name':'🔄  FLIP HISTORY','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'🟣  POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🚀  LIVE SNIPE · CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'📈  MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'🧭  RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'✦ SIGNALFORGE  /  forecast ≠ certainty  /  heuristic meters  /  PAPER TRADING ONLY'}})
+        result.append({'title':f'{"🟢" if side=="UP" else "🔴" if side=="DOWN" else "⚪"}  ✦  {asset}  /  {tf}M  /  {side}','description':f'╭━━━━━━━━━━━━━━━━━━━━╮\n  **{asset}  ·  {tf} MIN MARKET**\n  **{("🟢 UP BIAS" if side=="UP" else "🔴 DOWN BIAS" if side=="DOWN" else "⚪ WAIT / MIXED")}**\n╰━━━━━━━━━━━━━━━━━━━━╯\n\n{body[:780]}','color':color,'fields':[{'name':'💡  THE CALL · PLAIN ENGLISH','value':plain_reason[:1024],'inline':False},{'name':'🎯  SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'⚡  SIGNAL POWER · 5 INDICATORS','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{{'name':'💎  INITIAL CALL · HOLD METER','value':f'{color_pct_bar(hold,"🩵")} **{hold}%**\\nInitial directional hold outlook · heuristic, not odds','inline':False},{'name':'💎  SNIPE · HOLD METER','value':f'{snipe_hold_bar} **{snipe_hold}%**\\nIndependent fast-snipe hold evidence · not odds' if snipe_hold is not None else 'Awaiting snipe evidence','inline':False},{'name':'⚠️  INITIAL CALL · FLIP-RISK METER','value':f'{color_pct_bar(risk,"🟧")} **{risk}%**\\n{level} · initial call only','inline':False},{'name':'🟥  SNIPE · FLIP-RISK METER','value':f'{snipe_flip_bar} **{snipe_flip_risk}%**\\nIndependent fast-snipe reversal risk · not odds' if snipe_flip_risk is not None else 'Awaiting snipe flip-risk evidence','inline':False},{'name':'🔄  FLIP HISTORY','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'🟣  POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🚀  LIVE SNIPE · CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'📈  MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'🧭  RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'✦ SIGNALFORGE  /  forecast ≠ certainty  /  heuristic meters  /  PAPER TRADING ONLY'}})
     return result
 
 def position_embeds(c):
