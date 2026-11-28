@@ -1805,16 +1805,16 @@ def dashboard(c, lines):
         if not odds_match:
             odds_match=re.search(r'(\d+(?:\.\d+)?)%',odds_source)
         odds=int(round(float(odds_match.group(1)))) if odds_match else None
-        hold_source=get_field('HOLD STRENGTH')
-        flip_source=get_field('FLIP RISK')
-        rate_source=get_field('FLIP RATE')
+        hold_source=get_field('HOLD METER')
+        flip_source=get_field('FLIP-RISK METER')
+        rate_source=get_field('FLIP HISTORY')
         hm=re.search(r'\*\*(\d+(?:\.\d+)?)%\*\*',hold_source)
         fm=re.search(r'\*\*(\d+(?:\.\d+)?)%\*\*',flip_source)
         frm=re.search(r'\*\*(\d+(?:\.\d+)?)%\*\*',rate_source)
         signal_source=get_field('SIGNAL STRENGTH')
         sm=re.search(r'Net score\s*([+-]?\d+)',signal_source,re.I) or re.search(r'([+-]?\d+)/5',signal_source)
         snipe_setup=get_field('🎯 SNIPE SETUP · ENTRY / TARGET / STOP')
-        contract_move=get_field('🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE')
+        contract_move=get_field('LIVE SNIPE · CONTRACT MOVE')
         snipe_text=snipe_setup or 'SNIPE WATCH · no entry approved'
         if contract_move:
             snipe_text += '\n' + contract_move
@@ -1848,11 +1848,12 @@ def dashboard(c, lines):
                 value='⚪ NO VERIFIED MARKET'
             else:
                 odds=item['odds']; h=item['hold']; f=item['flip']
-                oddsline=f'**{odds}%** {pct_bar(odds)}' if odds is not None else '—'
-                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,"🩵")}' if h is not None else '🩵 HOLD —'
-                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,"🟧")}' if f is not None else '🟠 FLIP —'
+                oddsline=f'🟩 **{odds}% CONTRACT PRICE** {color_pct_bar(odds,"🟩")}' if odds is not None else '🟩 **CONTRACT PRICE —**'
+                holdline=f'🩵 **HOLD METER {h}%** {color_pct_bar(h,"🩵")}' if h is not None else '🩵 **HOLD METER —**'
+                flip_icon='🔴' if f is not None and f>=70 else '🟠' if f is not None and f>=45 else '🟢'
+                flipline=f'{flip_icon} **FLIP RISK {f}%** {color_pct_bar(f,flip_icon)}' if f is not None else '🟠 **FLIP RISK —**'
                 fr=item.get('flip_rate')
-                rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,"↩️")} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
+                rateline=f'↩️ **FLIP HISTORY {fr}%** {color_pct_bar(fr,"↩️")} · settled calls' if fr is not None else '↩️ **FLIP HISTORY —** · awaiting settled sample'
                 sigp=max(0,min(100,50+item['score']*10))
                 value=f'{sig} **{item["side"]}** · MKT {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIG **{sigp}%** {color_pct_bar(sigp,"🟦")}'
             snipe_text=str(item.get('snipe') or '')
@@ -1869,10 +1870,11 @@ def dashboard(c, lines):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
                 entry_text=f' · ask {float(entry_match.group(1)):.3f}' if entry_match else ''
                 call_kind="SCALP" if call_match else "HOLD"
-                snipe_label=f'🎯 **{call_kind} {snipe_side}** · {snipe_status}{entry_text} · strength {strength}%'
+                snipe_bar=color_pct_bar(strength,'🎯')
+                snipe_label=f'🎯 **{call_kind} {snipe_side}** · **{snipe_status}**{entry_text} · **EVIDENCE {strength}/100** {snipe_bar}'
             else:
-                bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **{item.get("side","WAIT")} · SNIPE WATCH {bias}** · strength {strength}% · wait for confirmation'
+                bias=(direction_match.group(1).upper() if direction_match else item.get("side","WAIT"))
+                snipe_label=f'👀 **SNIPE WATCH · {bias} BIAS** · **EVIDENCE {strength}/100** {color_pct_bar(strength,"🎯")} · WAIT FOR CONFIRMATION'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
@@ -1908,9 +1910,9 @@ def dashboard(c, lines):
                 snipe_record=(f"📊 SNIPE {sn['wins']}W/{sn['losses']}L · {sn_rate} · streak {sn['current_streak']} (best {sn['best_streak']})")
                 # Keep each timeframe column scannable: forecast, call, meters,
                 # paper sizing and a concise contract-based risk plan.
-                value=(f'**FORECAST {item["side"]}** · MKT {odds if odds is not None else "—"}%\n'
-                       f'HOLD {h if h is not None else "—"}% · FLIP {f if f is not None else "—"}% · SIG {sigp}%\n'
-                       f'{snipe_label}\n{snipe_text[:150]}\n{snipe_record}\n{amount_line}\n'
+                value=(f'📍 **FORECAST: {item["side"]}** · {oddsline}\n'
+                       f'{holdline}\n{flipline}\n{rateline}\n**SIGNAL POWER {sigp}/100** {color_pct_bar(sigp,"🟦")}\n'
+                       f'{snipe_label}\n{snipe_record}\n{amount_line}\n'
                        f'PLAN +4% / +10% / -5% · +${partial_usd:,.0f} / +${target_usd:,.0f} / -${risk_usd:,.0f}\n'
                        f'{tf}m · exit at target, stop or reversal')
             else:
