@@ -1377,15 +1377,15 @@ def compact_discord_board(embeds):
 
         fields=list(embed.get("fields",[]) or [])
         if kind=="summary":
-            priorities=("PAPER ACCOUNT","PAPER WIN / LOSS","SNIPE SCORE","SNIPE STREAK",
-                        "WIN STREAK","OPEN POSITIONS","SIGNAL TREND","FORECAST WINS",
-                        "FORECAST FLIPS","FORECAST LOSSES","RESOLVED")
+            priorities=("ALL-CURRENCY SNIPE W/L","GLOBAL SNIPE STREAK","PER-CURRENCY SNIPE RECORD",
+                        "PAPER ACCOUNT","OPEN PAPER POSITIONS","PAPER WIN / LOSS","WIN STREAK",
+                        "FORECAST WINS","FORECAST FLIPS","FORECAST LOSSES","RESOLVED")
             fields.sort(key=lambda f: next((i for i,p in enumerate(priorities) if p in str(f.get("name",""))),len(priorities)))
             field_limit=6
         elif kind=="live":
             field_limit=3
         elif kind=="asset":
-            asset_priorities=("SNIPE METER","MARKET-BY-MARKET","PAPER W/L + STREAK")
+            asset_priorities=("⏱","SNIPE METER","PAPER W/L + STREAK","MARKET-BY-MARKET")
             fields.sort(key=lambda f: next((i for i,p in enumerate(asset_priorities) if p in str(f.get("name",""))),len(asset_priorities)))
             field_limit=3
         else:
@@ -1396,7 +1396,7 @@ def compact_discord_board(embeds):
             name=clip(field.get("name",""),80 if kind=="summary" else 45)
             if kind=="asset":
                 label=str(field.get("name",""))
-                value_limit=230 if "⏱" in label else 200 if "MARKET-BY-MARKET" in label else 150
+                value_limit=480 if "⏱" in label else 120 if "MARKET-BY-MARKET" in label else 160
             elif kind=="live":
                 value_limit=220
             elif kind=="summary":
@@ -1790,10 +1790,10 @@ def dashboard(c, lines):
             if call_match or (direction_match and "CONFIRMED" in snipe_status):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
                 entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
-                snipe_label=f'🎯 **SNIPE CALL: {snipe_side}** · **{snipe_status}**{entry_text} · strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
+                snipe_label=f'🎯 **SNIPE SIDE: {snipe_side}** · **{snipe_status}**{entry_text} · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
             else:
                 bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **SNIPE BIAS: {bias}** · **{snipe_status}** · enter only when status is CONFIRMED{move_text}'
+                snipe_label=f'🎯 **SNIPE SIDE: {bias}** · **{snipe_status}** · enter only when status is CONFIRMED{move_text}'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
@@ -1831,11 +1831,11 @@ def dashboard(c, lines):
                 sn_rate=f"{sn['win_rate']:.1f}%" if sn['win_rate'] is not None else '—'
                 snipe_record=(f"📊 SNIPE W/L {sn['wins']}/{sn['losses']} · win {sn_rate} · "
                                f"🔥 streak {sn['current_streak']} · best {sn['best_streak']}")
-                value=f'{snipe_label}\n{snipe_record}\n{value}\n{plan_text}'
+                value=f'**BOT FORECAST: {item["side"]}** · separate from snipe\n{snipe_label}\n{snipe_record}\n{value}\n{plan_text}'
             else:
                 value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
-        card_fields.append({'name':'💰 MARKET-BY-MARKET WINS / LOSSES · USD','value':per_asset_market_results(c,asset,5),'inline':False})
+        # Paper P/L remains in the ledger/history; it is not featured on the snipe board.
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
             'description':'  |  '.join(desc)+'\n🔄 Refreshing from latest scan',
