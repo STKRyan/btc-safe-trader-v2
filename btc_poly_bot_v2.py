@@ -30,7 +30,7 @@ TIMEFRAMES = (5, 15)
 # RISK-FIRST MODE: fewer, stricter paper calls; protection beats activity.
 MIN_VOTES = {5: 3, 15: 3}  # majority of five directional checks; second brain/risk gates still apply
 SCAN_INTERVAL_SECONDS = 1
-DISCORD_DASHBOARD_UPDATE_SECONDS = 5  # responsive Discord market display; scanner cadence and signal logic remain unchanged
+DISCORD_DASHBOARD_UPDATE_SECONDS = max(3, int(os.getenv('BTC_DISCORD_REFRESH_SECONDS', '3')))  # faster live board; Discord-safe edit cadence
 SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 1.00
@@ -1555,10 +1555,18 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         position_line = "📂 OPEN PAPER: **No open position**"
 
     odds = (
-        f"🟢 **UP {up_odds}%**  {color_meter(up_odds, '🟩', 8)}\n"
-        f"🔴 **DOWN {down_odds}%**  {color_meter(down_odds, '🟥', 8)}"
+        f"🟢 **UP {up_odds}%**  {color_meter(up_odds, '🟩', 10)}\n"
+        f"🔴 **DOWN {down_odds}%**  {color_meter(down_odds, '🟥', 10)}"
         if up_odds is not None and down_odds is not None
         else "Waiting for live contract prices."
+    )
+    up_odds_display = (
+        f"🟢 **UP {up_odds}% implied**\n{color_meter(up_odds, '🟩', 10)}"
+        if up_odds is not None else "🟢 UP implied odds: waiting for live quote"
+    )
+    down_odds_display = (
+        f"🔴 **DOWN {down_odds}% implied**\n{color_meter(down_odds, '🟥', 10)}"
+        if down_odds is not None else "🔴 DOWN implied odds: waiting for live quote"
     )
 
     why = (
@@ -1656,7 +1664,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         live_badge = "🟢  LONG BIAS" if direct_signal == "UP" else "🔴  SHORT BIAS" if direct_signal == "DOWN" else "⚪  NO TRADE BIAS"
         fields = [
             {"name": "◈  EXECUTIVE CALL", "value": f"**BTC {minutes}M  /  {direct_signal}**\n**PAPER DECISION:** {paper_action}\n**SCORE:** {signal_strength}/100\n{strength_bar}\n\n{note_compact}", "inline": False},
-            {"name": "01  /  LIVE MARKET", "value": f"**BTC/USD**  ${price:,.2f}\n\n🟢 **UP  {up_odds if up_odds is not None else '—'}%**\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%\n\n1m {move1:+.2f}%  ·  3m {move3:+.2f}%\n10m {move10:+.2f}%  ·  RSI {rsi_now:.0f}", "inline": True},
+            {"name": "01  /  LIVE MARKET · IMPLIED ODDS", "value": f"**BTC/USD**  ${price:,.2f}\n\n{up_odds_display}\n{down_odds_display}\n\n**MOMENTUM**\n1m {move1:+.2f}% · 3m {move3:+.2f}%\n10m {move10:+.2f}% · RSI {rsi_now:.0f}", "inline": True},
             {"name": "02  /  POSITION COMMAND", "value": f"**{position_line}**\n\n**EXIT PLAN**\n+4%  →  sell half\n+10%  →  exit remainder\n−5%  →  protective stop\n\nSnipe meter is secondary monitoring only.", "inline": True},
             {"name": "03  /  DESK PERFORMANCE", "value": f"**PAPER P&L TODAY**  ${pnl:+.2f}\n{perf_line}\n\n**FORECAST RECORD ({minutes}M)**\n{forecast_record}\n\nStreak {stats['current_win_streak']}  ·  best {stats['best_win_streak']}", "inline": False},
             {"name": "04  /  INTELLIGENCE BRIEF", "value": f"{why_compact}\n\n**MODEL CONTEXT**\n{all_time_forecast}\n\n**LOSS REVIEW**\n{btc_loss_report_text(conn)}", "inline": False},
@@ -1666,7 +1674,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         # metrics, matched 5m/15m cards, and concise mobile-first sections.
         call_badge = "🟢  UP CALL" if direct_signal == "UP" else "🔴  DOWN CALL" if direct_signal == "DOWN" else "⚪  WAIT"
         fields = [
-            {"name": "01  /  MARKET ODDS", "value": f"🟢 **UP  {up_odds if up_odds is not None else '—'}%**\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%**\n\n**BTC/USD**  ${price:,.2f}", "inline": True},
+            {"name": "01  /  LIVE MARKET · IMPLIED ODDS", "value": f"{up_odds_display}\n{down_odds_display}\n\n**BTC/USD**  ${price:,.2f}", "inline": True},
             {"name": "02  /  MOMENTUM", "value": f"**1m** {move1:+.2f}%\n**3m** {move3:+.2f}%\n**10m** {move10:+.2f}%  ·  **RSI** {rsi_now:.0f}", "inline": True},
             {"name": "03  /  PAPER DESK", "value": f"**{paper_action}**\n{position_line}\n\n**EXIT RULES**  +4% half  ·  +10% rest  ·  −5% stop", "inline": False},
             {"name": "04  /  PERFORMANCE", "value": f"{perf_line}\n\n**FORECAST**  {fw}W  ·  {ff}F  ·  {fl}L  ·  {ftotal} resolved\n**STREAK**  {stats['current_win_streak']} current  /  {stats['best_win_streak']} best", "inline": False},
