@@ -208,12 +208,7 @@ def render_card(m, s, stats):
     rules = str(m.get("rules_primary") or "Settlement rules unavailable")[:650]
     embed = {
         "title": f"{m['_asset']} · KALSHI PAPER · {action}",
-        "description": f"**{m['_display']}**
-{m.get('ticker')}
-
-{s.get('reason','')}
-
-**Primary settlement rules (excerpt):** {rules}",
+        "description": f"**{m['_display']}**\n{m.get('ticker')}\n\n{s.get('reason','')}\n\n**Primary settlement rules (excerpt):** {rules}",
         "color": color, "fields": fields,
         "footer": {"text": "PAPER ONLY · contract-price momentum, not spot-price forecast · strength ≠ win probability"},
         "timestamp": utc_iso(),
