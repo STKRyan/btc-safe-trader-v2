@@ -170,11 +170,23 @@ def render_card(m, s, stats):
     side = s.get("side")
     entry = s.get("entry")
     with sqlite3.connect(DB_PATH) as db:
-        pos = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
+        pos = db.execute("SELECT side,entry,opened_at,status,target_pct,stop_pct FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                          (m["ticker"],)).fetchone()
     position_text = "NO OPEN PAPER POSITION"
+    exit_meter = "No active position"
     if pos and pos[3] == "OPEN":
         position_text = f"{pos[0]} · entry {pos[1]} · {int(time.time()-pos[2])}s held"
+        entry_value = core.decimal(pos[1], Decimal("0"))
+        current_bid = q.get("yes_bid") if pos[0] == "YES" else q.get("no_bid")
+        target_value = Decimal(str(pos[4] or 3.0))
+        if entry_value and entry_value > 0 and current_bid is not None:
+            pnl_now = float((current_bid-entry_value)/entry_value*100)
+            progress = pnl_now/float(target_value)*100 if target_value else 0
+            exit_meter = f"{pnl_now:+.2f}% P&L · {progress:.0f}% of +{target_value:.1f}% target · sell at bid"
+            if pnl_now <= -float(pos[5] or 2.5):
+                exit_meter = f"STOP trigger · {pnl_now:+.2f}% · exit at bid"
+            elif pnl_now >= float(target_value):
+                exit_meter = f"TARGET trigger · {pnl_now:+.2f}% · exit at bid"
     fields = [
         {"name": "YES bid / ask", "value": f"{q.get('yes_bid','—')} / {q.get('yes_ask','—')}", "inline": True},
         {"name": "NO bid / ask", "value": f"{q.get('no_bid','—')} / {q.get('no_ask','—')}", "inline": True},
@@ -183,6 +195,7 @@ def render_card(m, s, stats):
         {"name": "Flip risk", "value": f"{s.get('flip_risk','—')}%", "inline": True},
         {"name": "Contract momentum", "value": f"{s.get('momentum_pct',0):+.2f}%" if s.get("momentum_pct") is not None else "Building history", "inline": True},
         {"name": "Paper position", "value": position_text, "inline": False},
+        {"name": "Sell / Exit meter", "value": exit_meter, "inline": False},
         {"name": "Plan", "value": f"Target +{s.get('target_pct',0)*100:.1f}% · Stop -{s.get('stop_pct',0)*100:.1f}% · max {s.get('max_hold_seconds',0)}s" if side else "No entry until all gates pass", "inline": False},
         {"name": "Initial call · overall", "value": f"{stats['wins']}W / {stats['losses']}L · {stats['win_rate_pct'] if stats['win_rate_pct'] is not None else '—'}% · streak {stats['current_initial_streak']} · best {stats['best_initial_win_streak']}", "inline": False},
         {"name": f"{m['_asset']} record", "value": f"{stats['by_asset'][m['_asset']]['wins']}W / {stats['by_asset'][m['_asset']]['losses']}L · streak {stats['by_asset'][m['_asset']]['current_initial_streak']} · best {stats['by_asset'][m['_asset']]['best_initial_win_streak']}", "inline": True},
@@ -283,8 +296,15 @@ def main():
             with sqlite3.connect(DB_PATH) as db:
                 active_count = db.execute("SELECT COUNT(*) FROM paper_positions WHERE status='OPEN'").fetchone()[0]
             if active_count == 0 and qualified:
-                _, best_market, best_signal = qualified[0]
-                core.open_paper_trade(DB_PATH, best_market["ticker"], best_market["_asset"], best_signal)
+                cooldown_tickers = set()
+                with sqlite3.connect(DB_PATH) as db:
+                    cooldown_tickers = {row[0] for row in db.execute(
+                        "SELECT ticker FROM paper_positions WHERE status='CLOSED' AND closed_at>?",
+                        (time.time()-60,))}
+                next_setup = next((item for item in qualified if item[1]["ticker"] not in cooldown_tickers), None)
+                if next_setup:
+                    _, best_market, best_signal = next_setup
+                    core.open_paper_trade(DB_PATH, best_market["ticker"], best_market["_asset"], best_signal)
             selected = {m["ticker"] for _,m,_ in qualified[:MAX_CARDS]}
             selected.update(open_tickers)
             overall = core.stats(DB_PATH)
