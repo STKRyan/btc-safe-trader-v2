@@ -90,7 +90,7 @@ def manage_position(m, signal):
     if not q:
         return
     with sqlite3.connect(DB_PATH) as db:
-        row = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=?",
+        row = db.execute("SELECT side,entry,opened_at,status,target_pct,stop_pct,max_hold_seconds FROM paper_positions WHERE ticker=?",
                          (ticker,)).fetchone()
     if not row or row[3] != "OPEN":
         if signal.get("side"):
@@ -113,7 +113,7 @@ def manage_position(m, signal):
         reason = "paper stop reached"
     elif opposite:
         reason = "qualified signal flipped; close and reassess"
-    elif age >= 240:
+    elif age >= max_hold:
         reason = "maximum paper hold time reached"
     if reason:
         core.close_paper_trade(DB_PATH, ticker, bid, reason)
