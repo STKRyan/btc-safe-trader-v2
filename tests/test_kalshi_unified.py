@@ -85,6 +85,16 @@ class KalshiCoreTests(unittest.TestCase):
         self.assertEqual(s["managed_closed_trades"], 1)
         self.assertAlmostEqual(s["managed_avg_pnl_pct"], 25.0)
 
+    def test_void_settlement_is_not_a_win_or_loss(self):
+        signal = {"side": "YES", "entry": Decimal("0.37"), "action": "SCALP UP · BUY YES"}
+        core.open_paper_trade(self.db, "VOID", "GOLD", signal, now=1)
+        self.assertTrue(core.record_settlement(self.db, "VOID", "VOID"))
+        core.close_paper_trade(self.db, "VOID", Decimal("0.37"), "void refund", now=2)
+        s = core.stats(self.db)
+        self.assertEqual(s["settled_calls"], 0)
+        self.assertEqual(s["managed_break_even"], 1)
+        self.assertEqual(s["managed_losses"], 0)
+
     def test_reentries_preserve_all_managed_trade_rows(self):
         signal = {"side": "YES", "entry": Decimal("0.40"), "action": "SCALP UP · BUY YES",
                   "target_pct": 0.03, "stop_pct": 0.025, "max_hold_seconds": 90}
