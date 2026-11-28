@@ -86,7 +86,7 @@ def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
         title=f"🔴 SELL / EXIT · {asset} {timeframe}m"
         color=0xEF4444
     elif "ENTRY" in event:
-        title=f"{'⚡ SCALP' if trade_type=='SCALP' else '📍 HOLD'} ENTRY · {asset} {timeframe}m"
+        title=f"{'⚡ SCALP' if trade_type=='SCALP' else '🎯 HOLD'} {side} · {asset} {timeframe}m"
     else:
         title=f"{'🔴' if down else '🟢'} {event} · {asset} {timeframe}m"
     score=max(0,min(100,abs(int((tech or {}).get("score",0)))*20))
@@ -96,7 +96,7 @@ def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
     flipbar=color_pct_bar(risk,'🟧',10)
     def px(v): return f"${float(v):.3f}" if v is not None else "—"
     fields=[
-        {"name":"SIGNAL / TYPE","value":f"**{direction} · {trade_type}**","inline":True},
+        {"name":"TRADE CALL","value":f"**{trade_type} {side}**","inline":True},
         {"name":"HOLD PRESSURE","value":f"**{hold}%**\n{bar}","inline":True},
         {"name":"FLIP RISK","value":f"**{risk}%**\n{flipbar}","inline":True},
         {"name":"ENTRY / CURRENT BID","value":f"{px(entry)} / {px(bid)}","inline":True},
@@ -998,11 +998,15 @@ def maybe_enter(c, asset, tf, m, tech):
         add_ledger(c,call_id,"ENTRY",asset,side,-stake,stats["ask"],qty,0,cash,
                    f"Bought {qty:.4f} contracts at ask; position sizing {PAPER_POSITION_FRACTION*100:.2f}% of paper equity")
         c.commit()
+        trade_type="HOLD" if "SNIPE CONFIRMED" in str(snipe).upper() else "SCALP"
+        target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
+        stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
+        max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
         send("",
-             embed=trade_event_embed(asset,tf,side,"ENTRY","SCALP" if "SCALP" in str(snipe).upper() else "HOLD",
+             embed=trade_event_embed(asset,tf,side,"ENTRY",trade_type,
                  float(stats["ask"]),float(stats["bid"]),0.0,tech,float(stats.get("imbalance",0)),
-                 f"Paper entry accepted by existing filters. Watch the pressure bar; manage target, stop, and reversal risk.",
-                 float(stats["ask"])*(1+TARGET_PROFIT_ROI),float(stats["ask"])*(1+STOP_ROI)))
+                 f"{trade_type} {side} · take profit {target_roi*100:+.1f}% · stop {stop_roi*100:+.1f}% · exit on signal invalidation or after {max_hold_minutes} minutes.",
+                 float(stats["ask"])*(1+target_roi),float(stats["ask"])*(1+stop_roi)))
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
     return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
@@ -1949,10 +1953,11 @@ def cycle(c):
                         alert_key=f"snipe:{asset}:{tf}:{m.get('id','')}:{sside.group(1)}"
                         target_match=re.search(r"target ([0-9.]+)",scalp)
                         stop_match=re.search(r"stop ([0-9.]+)",scalp)
-                        alert=(f"🎯 **SNIPE CALL · {asset} {tf}m · {sside.group(1)}**\n"
-                               f"**ENTRY:** {float(smatch.group(1)):.3f} · **TARGET:** {float(target_match.group(1)) if target_match else 0:.3f} · "
-                               f"**STOP:** {float(stop_match.group(1)) if stop_match else 0:.3f}\n"
-                               f"{scalp}\nPaper signal only; confirm current market before acting.")
+                        alert=(f"⚡ **SCALP {sside.group(1)} · {asset} {tf}m**\n"
+                               f"**ENTRY:** {float(smatch.group(1)):.3f} · **TAKE PROFIT:** {float(target_match.group(1)) if target_match else 0:.3f} (+4%) · "
+                               f"**STOP:** {float(stop_match.group(1)) if stop_match else 0:.3f} (−3%) · **MAX HOLD:** 5m\n"
+                               f"**EXIT:** target, stop, direction invalidation, or 5-minute limit.\n"
+                               f"{scalp}\nPaper signal only; no guaranteed outcome.")
                         send_signal_once(c,alert_key,alert)
                 side=forecast_side
                 action_display=action.replace("WAIT ·","ENTRY NOT CONFIRMED ·",1)
