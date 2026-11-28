@@ -1607,7 +1607,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     all_time_forecast = btc_forecast_score_text(conn)
     all_time_snipe = btc_snipe_score_text(conn)
     snipe_text = (
-        f"**{snipe['status']}**\n"
+        f"**SNIPE SIDE: {snipe_direction}** · **{snipe['status']}**\n"
         f"**{snipe['strength']} / 100**  {snipe_bar}\n"
         f"Contract move: **{snipe_move}**"
     )
@@ -1618,7 +1618,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     )
 
     note_row = conn.execute(
-        "SELECT state_value FROM bot_state WHERE state_key='live_call_note_5m'"
+        "SELECT state_value FROM bot_state WHERE state_key=?",
+        (f"live_call_note_{timeframe}m",),
     ).fetchone()
     latest_call_note = str(note_row["state_value"])[:900] if note_row else (
         f"**{call_words}**\n{plain_reason}"
@@ -1643,10 +1644,19 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
 
     note_compact = re.sub(r"\s+", " ", latest_call_note).strip()[:180]
     why_compact = re.sub(r"\s+", " ", why).strip()[:180]
+    # Keep the directional forecast separate from the paper entry decision.
+    direct_signal = safe_call if safe_call in ("UP", "DOWN") else "WAIT"
+    if "ENTRY FILTERS PASS" in latest_call_note:
+        paper_action = "PAPER ENTRY ELIGIBLE"
+    elif "NO ENTRY" in latest_call_note or not confirmed:
+        paper_action = "WAIT · NO ENTRY"
+    else:
+        paper_action = "WAIT · ENTRY STATUS NOT CONFIRMED"
+    snipe_direction = side if side in ("UP", "DOWN") else "WAIT"
     if dashboard_name == "BTC LIVE":
         # BTC Live uses a trading-terminal layout, distinct from Crypto Radar.
         fields = [
-            {"name": "🧭 LIVE CALL", "value": f"**{call_words}** · strength **{signal_strength}%**\n{strength_bar}\n{note_compact}"[:430], "inline": False},
+            {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}**\n{strength_bar}\n{note_compact}"[:430], "inline": False},
             {"name": "₿ PRICE & MOMENTUM", "value": f"**USD {price:,.2f}** · {minutes}m\n{odds}\nRSI **{rsi_now:.0f}** · 1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}%"[:430], "inline": False},
             {"name": "🛡️ POSITION CONTROL", "value": f"{position_line}\nSNIPE **{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar}\nHOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\nScalp: **{'CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"[:430], "inline": False},
             {"name": "📒 PAPER DESK", "value": f"{forecast_record}\n{perf_line}\nStreak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\nSnipe **{scalp_stats['wins']}W/{scalp_stats['losses']}L**"[:430], "inline": False},
@@ -1655,14 +1665,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     else:
         # Crypto Radar uses a compact market-pulse layout with quick scan rows.
         fields = [
-            {"name": "📡 RADAR PULSE", "value": f"**{call_words}** · **{signal_strength}%**\n{strength_bar}\n{why_compact}"[:430], "inline": False},
+            {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}** · strength **{signal_strength}%**\n{strength_bar}\n{why_compact}"[:430], "inline": False},
             {"name": "💹 MARKET TICK", "value": f"**USD {price:,.2f}** · BTC {minutes}m\nUP **{up_odds if up_odds is not None else '—'}%** · DOWN **{down_odds if down_odds is not None else '—'}%**\n1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}% · RSI {rsi_now:.0f}"[:430], "inline": False},
             {"name": "⚡ SNIPE RADAR", "value": f"**{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar} · move **{snipe_move}**\nHOLD {hold}% {hold_bar} · FLIP {flip}% {flip_bar}\n{position_line}"[:430], "inline": False},
             {"name": "📈 RADAR TRACK RECORD", "value": f"{forecast_record}\n{perf_line}\nStreak {stats['current_win_streak']} · best {stats['best_win_streak']} · Snipe {scalp_stats['wins']}W/{scalp_stats['losses']}L"[:430], "inline": False},
             {"name": "🔎 RADAR LEARNING", "value": f"All-time: {all_time_forecast}\nSnipe: {all_time_snipe}\nLessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
         ]
     description = (
-        f"{call_icon} **{call_words}**\n"
+        f"📣 **BTC {minutes}m SIGNAL: {direct_signal}** · {call_icon} **{call_words}**\n"
+        f"🧾 **PAPER ACTION: {paper_action}**\n"
         f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\n"
         f"{progress_bar} **{progress}%**\n"
         "*Paper signals · live market pulse*"
