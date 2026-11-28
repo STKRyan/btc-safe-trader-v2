@@ -1664,30 +1664,30 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         # metrics, matched 5m/15m cards, and concise mobile-first sections.
         call_badge = "🟢  UP CALL" if direct_signal == "UP" else "🔴  DOWN CALL" if direct_signal == "DOWN" else "⚪  WAIT"
         fields = [
-            {"name": "01  /  MARKET ODDS", "value": f"🟢 **UP  {up_odds if up_odds is not None else '—'}%**\\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%**\\n\\n**BTC/USD**  ${price:,.2f}", "inline": True},
-            {"name": "02  /  MOMENTUM", "value": f"**1m** {move1:+.2f}%\\n**3m** {move3:+.2f}%\\n**10m** {move10:+.2f}%  ·  **RSI** {rsi_now:.0f}", "inline": True},
-            {"name": "03  /  PAPER DESK", "value": f"**{paper_action}**\\n{position_line}\\n\\n**EXIT RULES**  +4% half  ·  +10% rest  ·  −5% stop", "inline": False},
-            {"name": "04  /  PERFORMANCE", "value": f"{perf_line}\\n\\n**FORECAST**  {fw}W  ·  {ff}F  ·  {fl}L  ·  {ftotal} resolved\\n**STREAK**  {stats['current_win_streak']} current  /  {stats['best_win_streak']} best", "inline": False},
-            {"name": "05  /  SIGNAL NOTES", "value": f"{abs(score)}/5 checks lean **{side if side in ('UP','DOWN') else 'NEUTRAL'}**  ·  second check **{'CONFIRMS' if confirmed else 'CAUTION'}**\\nSnipe monitor: **{snipe['status']} · {snipe['strength']}/100** (secondary only)", "inline": False},
+            {"name": "01  /  MARKET ODDS", "value": f"🟢 **UP  {up_odds if up_odds is not None else '—'}%**\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%**\n\n**BTC/USD**  ${price:,.2f}", "inline": True},
+            {"name": "02  /  MOMENTUM", "value": f"**1m** {move1:+.2f}%\n**3m** {move3:+.2f}%\n**10m** {move10:+.2f}%  ·  **RSI** {rsi_now:.0f}", "inline": True},
+            {"name": "03  /  PAPER DESK", "value": f"**{paper_action}**\n{position_line}\n\n**EXIT RULES**  +4% half  ·  +10% rest  ·  −5% stop", "inline": False},
+            {"name": "04  /  PERFORMANCE", "value": f"{perf_line}\n\n**FORECAST**  {fw}W  ·  {ff}F  ·  {fl}L  ·  {ftotal} resolved\n**STREAK**  {stats['current_win_streak']} current  /  {stats['best_win_streak']} best", "inline": False},
+            {"name": "05  /  SIGNAL NOTES", "value": f"{abs(score)}/5 checks lean **{side if side in ('UP','DOWN') else 'NEUTRAL'}**  ·  second check **{'CONFIRMS' if confirmed else 'CAUTION'}**\nSnipe monitor: **{snipe['status']} · {snipe['strength']}/100** (secondary only)", "inline": False},
         ]
     if dashboard_name == "CRYPTO RADAR":
         description = (
-            f"**{call_badge}**  ·  **BTC {minutes} MIN**\\n"
-            f"\\n"
-            f"### {direct_signal}\\n"
-            f"**CALL STRENGTH  {signal_strength} / 100**\\n"
-            f"{strength_bar}\\n"
-            f"\\n**PAPER STATUS**  ·  {paper_action}\\n"
-            f"**BTC/USD**  ${price:,.2f}  ·  **CLOSES IN**  {countdown}\\n"
-            f"{progress_bar}  {progress}% of window\\n"
-            f"\\n*Private Market Desk  /  Live paper signal brief*"
+            f"**{call_badge}**  ·  **BTC {minutes} MIN**\n"
+            f"\n"
+            f"### {direct_signal}\n"
+            f"**CALL STRENGTH  {signal_strength} / 100**\n"
+            f"{strength_bar}\n"
+            f"\n**PAPER STATUS**  ·  {paper_action}\n"
+            f"**BTC/USD**  ${price:,.2f}  ·  **CLOSES IN**  {countdown}\n"
+            f"{progress_bar}  {progress}% of window\n"
+            f"\n*Private Market Desk  /  Live paper signal brief*"
         )
     else:
         description = (
-            f"📣 **BTC {minutes}m SIGNAL: {direct_signal}** · {call_icon} **{call_words}**\\n"
-            f"🧾 **PAPER ACTION: {paper_action}**\\n"
-            f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\\n"
-            f"{progress_bar} **{progress}%**\\n"
+            f"📣 **BTC {minutes}m SIGNAL: {direct_signal}** · {call_icon} **{call_words}**\n"
+            f"🧾 **PAPER ACTION: {paper_action}**\n"
+            f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\n"
+            f"{progress_bar} **{progress}%**\n"
             "*Paper signals · live market pulse*"
         )
     return {
