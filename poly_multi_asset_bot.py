@@ -934,13 +934,13 @@ def market_embeds(lines):
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
         snipe_strength_match=re.search(r'strength (\d+)/100',snipe_line)
         snipe_strength=int(snipe_strength_match.group(1)) if snipe_strength_match else 0
-        snipe_move_match=re.search(r'contract move ([+-]?\d+\.\d+)%',snipe_line)
+        snipe_move_match=re.search(r'contract (?:move|trade) ([+-]?\d+\.\d+)%',snipe_line)
         snipe_move=float(snipe_move_match.group(1)) if snipe_move_match else None
         snipe_bar=color_pct_bar(snipe_strength,'🎯')
         exchange_match=re.search(r'EXCHANGE: (.*?)(?: · CHART | · strength )',snipe_line)
         exchange_display=exchange_match.group(1)[:850] if exchange_match else 'Binance spot trades/order book/candles warming up'
-        chart_match=re.search(r'CHART (https://\\S+)',snipe_line)
-        chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_match.group(1)})' if chart_match else ''
+        chart_url=snipe_line.split('CHART ',1)[1].split(' ',1)[0] if 'CHART ' in snipe_line else ''
+        chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_url})' if chart_url.startswith('https://') else ''
         snipe_display=(f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
                        f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
                        f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\nBuilding live price baseline')
