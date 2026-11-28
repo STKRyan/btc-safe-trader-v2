@@ -127,6 +127,62 @@ def webhook_message_url(message_id=None):
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+DISCORD_MIN_INTERVAL = max(1.0, float(os.getenv("KALSHI_DISCORD_MIN_INTERVAL", "1.25")))
+LAST_DISCORD_REQUEST = 0.0
+DISCORD_BLOCKED_UNTIL = 0.0
+
+
+def discord_request(method, url, **kwargs):
+    """Serialize webhook traffic and honor Discord 429 retry windows."""
+    global LAST_DISCORD_REQUEST, DISCORD_BLOCKED_UNTIL
+    now = time.monotonic()
+    if now < DISCORD_BLOCKED_UNTIL:
+        return None
+    wait = LAST_DISCORD_REQUEST + DISCORD_MIN_INTERVAL - now
+    if wait > 0:
+        time.sleep(wait)
+    response = getattr(HTTP, method.lower())(url, **kwargs)
+    LAST_DISCORD_REQUEST = time.monotonic()
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After") or response.headers.get("X-RateLimit-Reset-After")
+        try:
+            seconds = float(retry_after)
+        except (TypeError, ValueError):
+            try:
+                seconds = float(response.json().get("retry_after", 3))
+            except Exception:
+                seconds = 3.0
+        pause = max(2.0, min(60.0, seconds + 0.5))
+        DISCORD_BLOCKED_UNTIL = time.monotonic() + pause
+        print(f"Discord rate limit · pausing webhook traffic for {pause:.1f}s")
+    return response
+
+
+def send_startup_notice():
+    """Send one low-volume webhook check so the operator can confirm Discord delivery."""
+    if not WEBHOOK:
+        print("Discord webhook is not configured; set KALSHI_UNIFIED_DISCORD_WEBHOOK_URL.")
+        return
+    payload = {
+        "embeds": [{
+            "title": "KALSHI UNIFIED · WORKER ONLINE",
+            "description": "Paper-only worker started. Checking BTC, ETH, and Gold contracts; no real orders are sent.",
+            "color": 0x64748B,
+            "footer": {"text": "Startup check · market scan results follow"},
+            "timestamp": utc_iso(),
+        }],
+        "allowed_mentions": {"parse": []},
+    }
+    try:
+        response = discord_request("POST", webhook_message_url(), params={"wait": "true"}, json=payload, timeout=10)
+        if response is None:
+            return
+        response.raise_for_status()
+        print("Discord startup notice delivered.")
+    except Exception as exc:
+        print(f"Discord startup notice failed: {type(exc).__name__}: {exc")
+
+
 def manage_position(m, signal):
     """Paper exit management uses executable bid, records outcomes append-only."""
     ticker = m["ticker"]
@@ -238,13 +294,17 @@ def send_or_edit(m, s, stats):
         return
     try:
         if message_id:
-            response = HTTP.patch(webhook_message_url(message_id), json=payload, timeout=10)
+            response = discord_request("PATCH", webhook_message_url(message_id), json=payload, timeout=10)
+            if response is None:
+                return
             if response.status_code == 404:
                 message_id = None
             else:
                 response.raise_for_status()
         if not message_id:
-            response = HTTP.post(webhook_message_url(), params={"wait": "true"}, json=payload, timeout=10)
+            response = discord_request("POST", webhook_message_url(), params={"wait": "true"}, json=payload, timeout=10)
+            if response is None:
+                return
             response.raise_for_status()
             message_id = str(response.json()["id"])
         with sqlite3.connect(DB_PATH) as db:
@@ -293,6 +353,7 @@ def settle_pending_calls():
 def main():
     core.init_ledger(DB_PATH)
     print("Kalshi BTC/ETH/Gold paper bot started. Real order endpoints are not present.")
+    send_startup_notice()
     while True:
         started = time.time()
         try:
@@ -326,6 +387,13 @@ def main():
                     core.open_paper_trade(DB_PATH, best_market["ticker"], best_market["_asset"], best_signal)
             selected = {m["ticker"] for _,m,_ in qualified[:MAX_CARDS]}
             selected.update(open_tickers)
+            # If no entry qualifies, still publish a WAIT radar card per asset.
+            if not qualified:
+                wait_by_asset = {}
+                for market, signal in all_signals:
+                    if signal.get("quote") and market["_asset"] not in wait_by_asset:
+                        wait_by_asset[market["_asset"]] = market["ticker"]
+                selected.update(list(wait_by_asset.values())[:MAX_CARDS])
             overall = core.stats(DB_PATH)
             for market, signal in all_signals:
                 if market["ticker"] in selected:
