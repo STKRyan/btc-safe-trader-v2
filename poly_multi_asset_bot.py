@@ -1183,6 +1183,71 @@ def position_embeds(c):
         except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
     return result
 
+
+def live_position_embed(c):
+    """One continuously refreshed mark-to-market card for every open paper market."""
+    rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC LIMIT 10").fetchall()
+    lines=[]
+    total_value=0.0
+    total_unrealized=0.0
+    total_realized=0.0
+    for r in rows:
+        entry=float(r["entry"] or 0)
+        qty=float(r["remaining_qty"] or 0)
+        realized=float(r["realized_pnl"] or 0)
+        try:
+            quote=book_stats(r["token_id"])
+        except Exception as e:
+            quote=None
+            print(f"Live paper mark {r['id']}: {type(e).__name__}: {e}",flush=True)
+        bid=float(quote["bid"]) if quote and quote.get("bid") is not None else None
+        ask=float(quote["ask"]) if quote and quote.get("ask") is not None else None
+        mark=bid if bid is not None else float(r["last_mark"] or entry)
+        value=mark*qty
+        unrealized=(mark-entry)*qty
+        total_value+=value
+        total_unrealized+=unrealized
+        total_realized+=realized
+        if bid is not None:
+            peak=max(float(r["peak_mark"] or entry),bid)
+            c.execute("UPDATE calls SET last_mark=?,peak_mark=? WHERE id=?",(bid,peak,r["id"]))
+            quote_text=f"**LIVE BID / ASK:** {bid:.3f} / {ask:.3f}" if ask is not None else f"**LIVE BID:** {bid:.3f}"
+            freshness="🟢 LIVE QUOTE"
+        else:
+            quote_text=f"**LAST MARK:** {mark:.3f} · current quote unavailable"
+            freshness="🟠 STALE / WAITING FOR QUOTE"
+        roi=(mark/entry-1)*100 if entry>0 else 0.0
+        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))
+        lines.append({
+            "name":f"{r['asset']} {r['timeframe']}m · {r['side']} · {freshness}"[:256],
+            "value":(
+                f"**Market:** {market[:220]}\n{quote_text}\n"
+                f"Entry {entry:.3f} · Contracts {qty:.4f} · Entry cost ${entry*qty:,.2f}\n"
+                f"**Current value ${value:,.2f} · Unrealized {unrealized:+,.2f} USD ({roi:+.2f}%)**\n"
+                f"Realized on this position {realized:+,.2f} USD · P/L if closed now {realized+unrealized:+,.2f} USD"
+            )[:1024],
+            "inline":False
+        })
+    if rows:
+        c.commit()
+        color=0x19C37D if total_unrealized>0 else 0xEF4444 if total_unrealized<0 else 0x8794A8
+        desc=(f"**Open markets:** {len(rows)} · **Live marked value:** ${total_value:,.2f}\n"
+              f"**Unrealized P/L:** {total_unrealized:+,.2f} USD · **Realized on open positions:** {total_realized:+,.2f} USD\n"
+              "Values update from the latest available Polymarket contract bid; stale quotes are labeled.")
+    else:
+        color=0x8794A8
+        desc="No open paper positions right now. New entries will appear here and update with market prices."
+        lines=[{"name":"STATUS","value":"WAITING FOR A PAPER ENTRY","inline":False}]
+    return {
+        "title":"📈 LIVE PAPER POSITIONS · MARKET VALUE",
+        "description":desc[:4096],
+        "color":color,
+        "fields":lines[:10],
+        "footer":{"text":"Live mark-to-market simulation · paper only · quotes can be delayed or unavailable"},
+        "timestamp":iso()
+    }
+
+
 def publish_board(c, embeds):
     """Post once, then edit the same multi-bot Discord message to prevent alert flooding."""
     webhook=os.getenv("DISCORD_WEBHOOK_URL","").strip()
@@ -1353,6 +1418,7 @@ def recent_market_result_embeds(c, limit=2):
 
 def dashboard(c, lines):
     update_shared_learning(c)
+    live_position_card=live_position_embed(c)
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
     wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
@@ -1456,7 +1522,7 @@ def dashboard(c, lines):
         })
     if not asset_embeds:
         asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
-    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,3)+position_embeds(c)[:1])
+    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,3)+[live_position_card])
 def cycle(c):
     global _ASSET_CYCLE
     register_exchange_assets(TOP_ASSETS)
