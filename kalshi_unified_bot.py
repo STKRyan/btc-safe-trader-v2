@@ -103,8 +103,9 @@ def manage_position(m, signal):
         return
     pnl_pct = float((bid-entry)/entry*100)
     age = time.time()-opened
-    target = 3.0 if age < 90 else 6.0
-    stop = -2.5
+    target = float(row[4] or 3.0)
+    stop = -float(row[5] or 2.5)
+    max_hold = int(row[6] or 90)
     opposite = signal.get("side") and signal.get("side") != side
     reason = None
     if pnl_pct >= target:
@@ -194,12 +195,33 @@ def send_or_edit(m, s, stats):
         print(f"Discord card error {ticker}: {type(exc).__name__}: {exc}")
 
 
+def settle_pending_calls():
+    """Reconcile recorded calls against official Kalshi settlement result."""
+    with sqlite3.connect(DB_PATH) as db:
+        rows = db.execute("SELECT ticker FROM initial_calls WHERE settlement_result IS NULL ORDER BY created_at LIMIT 50").fetchall()
+    for (ticker,) in rows:
+        try:
+            market = get_json("/markets/" + ticker).get("market", {})
+            result = str(market.get("result") or "").upper()
+            if str(market.get("status") or "").lower() != "settled" or result not in ("YES", "NO", "VOID"):
+                continue
+            core.record_settlement(DB_PATH, ticker, result)
+            with sqlite3.connect(DB_PATH) as db:
+                pos = db.execute("SELECT side,status FROM paper_positions WHERE ticker=?", (ticker,)).fetchone()
+            if pos and pos[1] == "OPEN":
+                payout = Decimal("1") if pos[0] == result else Decimal("0")
+                core.close_paper_trade(DB_PATH, ticker, payout, "official settlement")
+        except Exception as exc:
+            print(f"Settlement check failed {ticker}: {type(exc).__name__}: {exc")
+
+
 def main():
     core.init_ledger(DB_PATH)
     print("Kalshi BTC/ETH/Gold paper bot started. Real order endpoints are not present.")
     while True:
         started = time.time()
         try:
+            settle_pending_calls()
             markets = discover_markets()
             evaluated = []
             for market in markets:
