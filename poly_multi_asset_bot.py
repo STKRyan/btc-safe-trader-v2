@@ -1470,7 +1470,7 @@ def compact_discord_board(embeds):
             name=clip(field.get("name",""),80 if kind=="summary" else 45)
             if kind=="asset":
                 label=str(field.get("name",""))
-                value_limit=480 if "⏱" in label else 120 if "MARKET-BY-MARKET" in label else 160
+                value_limit=360 if "⏱" in label else 120 if "MARKET-BY-MARKET" in label else 160
             elif kind=="live":
                 value_limit=220
             elif kind=="summary":
@@ -1850,7 +1850,7 @@ def dashboard(c, lines):
                 fr=item.get('flip_rate')
                 rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,"↩️")} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
                 sigp=max(0,min(100,50+item['score']*10))
-                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,"🟦")}'
+                value=f'{sig} **{item["side"]}** · MKT {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIG **{sigp}%** {color_pct_bar(sigp,"🟦")}'
             snipe_text=str(item.get('snipe') or '')
             call_match=re.search(r'\bSCALP CALL\s+(UP|DOWN)\b',snipe_text,re.I)
             direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_text,re.I)
@@ -1863,11 +1863,12 @@ def dashboard(c, lines):
             entry_match=re.search(r'\bask\s+([0-9]+(?:\.[0-9]+)?)',snipe_text,re.I)
             if call_match or (direction_match and "CONFIRMED" in snipe_status):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
-                entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
-                snipe_label=f'🎯 **SNIPE CALL: {snipe_side}** · **{snipe_status}**{entry_text} · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
+                entry_text=f' · ask {float(entry_match.group(1)):.3f}' if entry_match else ''
+                call_kind="SCALP" if call_match else "HOLD"
+                snipe_label=f'🎯 **{call_kind} {snipe_side}** · {snipe_status}{entry_text} · strength {strength}%'
             else:
                 bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **SNIPE DIRECTIONAL BIAS: {bias}** · **{snipe_status}** · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text} · WAIT until confirmed'
+                snipe_label=f'🎯 **{item.get("side","WAIT")} · SNIPE WATCH {bias}** · strength {strength}% · wait for confirmation'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
@@ -1883,36 +1884,38 @@ def dashboard(c, lines):
                     actual_stake=float(open_call["stake"] or 0)
                     remaining_cost=float(open_call["entry"] or 0)*float(open_call["remaining_qty"] or 0)
                     plan_base=max(0.0,remaining_cost)
-                    amount_line=(f"🧾 ACTUAL PAPER ENTRY: ${actual_stake:,.2f} original · "
-                                 f"${remaining_cost:,.2f} remaining cost")
+                    amount_line=(f"🧾 PAPER IN: ${actual_stake:,.0f} · LEFT ${remaining_cost:,.0f}")
                 else:
                     plan_base=paper_size
-                    amount_line=(f"🧾 PAPER SIZE IDEA: ${paper_size:,.2f} · not invested unless entry is approved\n"
-                                 f"🛡️ TOTAL EXPOSURE LIMIT: ${total_cap:,.2f} · open exposure ${float(portfolio['invested']):,.2f} · "
-                                 f"budget left ${exposure_left:,.2f}")
+                    amount_line=(f"🧾 SIZE IDEA ${paper_size:,.0f} · not entered\n"
+                                 f"🛡️ CAP ${total_cap:,.0f} · open ${float(portfolio['invested']):,.0f} · left ${exposure_left:,.0f}")
                 evidence=max(0,min(100,50+item['score']*10))
                 risk_usd=plan_base*0.05
                 target_usd=plan_base*0.10
                 partial_usd=plan_base*0.04
                 plan_text=(
                     f"{amount_line}\n"
-                    f"🧠 BOT TRUST / EVIDENCE: {evidence}/100 · signal evidence, NOT profit odds\n"
-                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · +10% target ≈ +${target_usd:,.2f} · -5% stop ≈ -${risk_usd:,.2f}\n"
-                    f"⏳ HOLD GUIDE: {tf}m market window · recheck each scan; exit sooner on stop, "
-                    f"profit target, or reversal. No fixed hold guarantee."
+                    f"🧠 EVIDENCE {evidence}/100 · not win odds\n"
+                    f"🛡️ PLAN +4% review (+${partial_usd:,.0f}) · +10% target (+${target_usd:,.0f}) · -5% stop (-${risk_usd:,.0f})\n"
+                    f"⏳ {tf}m window · exit at target/stop or reversal"
                 )
                 sn=asset_paper_stats(c,asset,True)
                 sn_rate=f"{sn['win_rate']:.1f}%" if sn['win_rate'] is not None else '—'
-                snipe_record=(f"📊 SNIPE W/L {sn['wins']}/{sn['losses']} · win {sn_rate} · "
-                               f"🔥 streak {sn['current_streak']} · best {sn['best_streak']}")
-                value=f'**BOT FORECAST: {item["side"]}** · separate from snipe\n{snipe_label}\n{snipe_record}\n{value}\n{plan_text}'
+                snipe_record=(f"📊 SNIPE {sn['wins']}W/{sn['losses']}L · {sn_rate} · streak {sn['current_streak']} (best {sn['best_streak']})")
+                # Keep each timeframe column scannable: forecast, call, meters,
+                # paper sizing and a concise contract-based risk plan.
+                value=(f'**FORECAST {item["side"]}** · MKT {odds if odds is not None else "—"}%\n'
+                       f'HOLD {h if h is not None else "—"}% · FLIP {f if f is not None else "—"}% · SIG {sigp}%\n'
+                       f'{snipe_label}\n{snipe_text[:150]}\n{snipe_record}\n{amount_line}\n'
+                       f'PLAN +4% / +10% / -5% · +${partial_usd:,.0f} / +${target_usd:,.0f} / -${risk_usd:,.0f}\n'
+                       f'{tf}m · exit at target, stop or reversal')
             else:
-                value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
-            card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
+                value=f'{value}\n{snipe_label}\n🧾 No paper entry · wait for verified market and confirmed setup'
+            card_fields.append({'name':f'⏱ {tf}M','value':value[:700],'inline':True})
         # Paper P/L remains in the ledger/history; it is not featured on the snipe board.
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
-            'description':'  |  '.join(desc)+'\n🔄 Refreshing from latest scan',
+            'description':'  |  '.join(desc)+' · LIVE',
             'color':color,'fields':card_fields,
             'footer':{'text':'Market % = contract price · hold/flip/signal = indicator meters'},
             'timestamp':iso()
