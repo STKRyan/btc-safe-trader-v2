@@ -191,13 +191,12 @@ def portfolio_metrics(c):
     invested=sum(float(x["entry"] or 0)*float(x["remaining_qty"] or 0) for x in rows)
     market_value=sum(float(x["last_mark"] or x["entry"] or 0)*float(x["remaining_qty"] or 0) for x in rows)
     unrealized=sum((float(x["last_mark"] or x["entry"] or 0)-float(x["entry"] or 0))*float(x["remaining_qty"] or 0) for x in rows)
-    realized_closed=float(c.execute("SELECT COALESCE(SUM(pnl),0) n FROM calls WHERE status='RESOLVED'").fetchone()["n"])
-    realized_open=sum(float(x["realized_pnl"] or 0) for x in c.execute("SELECT realized_pnl FROM calls WHERE status='OPEN'").fetchall())
+    realized_account=float(c.execute("SELECT COALESCE(SUM(realized_pnl),0) n FROM paper_ledger WHERE event IN ('PARTIAL_EXIT','EXIT','SETTLEMENT')").fetchone()["n"])
     equity=cash+market_value
     total_pnl=equity-starting
     progress=max(0.0,min(100.0,(equity-starting)/max(1.0,goal-starting)*100))
     return {"starting":starting,"goal":goal,"cash":cash,"invested":invested,"market_value":market_value,
-            "equity":equity,"realized_pnl":realized_closed+realized_open,"unrealized_pnl":unrealized,
+            "equity":equity,"realized_pnl":realized_account,"unrealized_pnl":unrealized,
             "total_pnl":total_pnl,"goal_progress":progress,"open_positions":len(rows)}
 
 
