@@ -1208,6 +1208,7 @@ def market_embeds(lines):
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
         scalp_score=max(5,min(95,50+abs(int(score))*8-risk//4)) if scalp_active else 0
+        snipe_direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_line,re.I)
         scalp_direction_match=re.search(r'SCALP CALL (UP|DOWN)',scalp_line)
         scalp_direction=scalp_direction_match.group(1) if scalp_direction_match else 'NONE · WAIT'
         if risk>=70: level='HIGH · reversal warning'
@@ -1217,7 +1218,18 @@ def market_embeds(lines):
         elif side=='UP': color=0x19C37D
         elif side=='DOWN': color=0xEF4444
         else: color=0x8794A8
-        scalp_value=(f'**SNIPE DIRECTION: {scalp_direction}**\n**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**SNIPE DIRECTION: NONE · WAIT**\n**{scalp_line}**\nNo snipe entry approved on this scan.')
+        if snipe_direction_match:
+            scalp_direction=snipe_direction_match.group(1).upper()
+            status_match=re.search(r'\b(CONFIRMED|WATCH|BLOCKED|FLIP RISK)\b',snipe_line,re.I)
+            snipe_status=status_match.group(1).upper() if status_match else 'BIAS'
+            ask_match=re.search(r'\bask\s+([0-9]+(?:\.[0-9]+)?)',snipe_line,re.I)
+            entry_hint=(f'ENTRY PRICE: {float(ask_match.group(1)):.3f} · buy the {scalp_direction} contract' if ask_match and snipe_status=='CONFIRMED' else 'ENTRY: wait for status CONFIRMED before entering')
+            scalp_value=(f'🎯 **SNIPE SIDE: {scalp_direction}**\n**STATUS: {snipe_status}**\n{entry_hint}\n\n{snipe_line[:700]}')
+        else:
+            scalp_direction=scalp_direction_match.group(1) if scalp_direction_match else 'NO VERIFIED SIDE'
+            scalp_value=(f'🎯 **SNIPE SIDE: {scalp_direction}**\n**STATUS: WATCH**\n{scalp_line[:700]}\nWait for a verified side and confirmed setup.')
+        if scalp_active:
+            scalp_value += f'\nSCALP INDICATOR STRENGTH: {pct_bar(scalp_score)} **{scalp_score}/100** · not win odds'
         result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
     return result
 
