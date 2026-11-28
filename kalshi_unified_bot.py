@@ -180,7 +180,7 @@ def send_startup_notice():
         response.raise_for_status()
         print("Discord startup notice delivered.")
     except Exception as exc:
-        print(f"Discord startup notice failed: {type(exc).__name__}: {exc")
+        print(f"Discord startup notice failed: {type(exc).__name__}: {exc}")
 
 
 def manage_position(m, signal):
