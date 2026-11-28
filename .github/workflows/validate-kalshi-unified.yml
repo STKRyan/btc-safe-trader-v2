@@ -12,6 +12,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - requirements-kalshi.txt
       - kalshi_unified_bot.py
       - kalshi_unified/**
       - tests/test_kalshi_unified.py
@@ -29,5 +30,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-kalshi.txt
-      - run: python -m py_compile kalshi_unified_bot.py tests/test_kalshi_unified.py
+      - run: python -m py_compile kalshi_unified_bot.py kalshi_unified/core.py tests/test_kalshi_unified.py
       - run: python -m unittest discover -s tests -p 'test_kalshi_unified.py'
