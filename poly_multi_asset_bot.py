@@ -939,9 +939,11 @@ def market_embeds(lines):
         snipe_bar=color_pct_bar(snipe_strength,'🎯')
         exchange_match=re.search(r'EXCHANGE: (.*?)(?: · CHART | · strength )',snipe_line)
         exchange_display=exchange_match.group(1)[:850] if exchange_match else 'Binance spot trades/order book/candles warming up'
+        chart_match=re.search(r'CHART (https://\\S+)',snipe_line)
+        chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_match.group(1)})' if chart_match else ''
         snipe_display=(f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
-                       f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}' if snipe_move is not None else
-                       f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}\nBuilding live price baseline')
+                       f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
+                       f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\nBuilding live price baseline')
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
         up_count=int(re.search(r'MAJORITY VOTE: UP (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: UP (\d)/5',raw) else 0
         down_count=int(re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw) else 0
