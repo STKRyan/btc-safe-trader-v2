@@ -1786,7 +1786,7 @@ def dashboard(c, lines):
             move_text=f' · contract {float(move_match.group(1)):+.2f}%' if move_match else ''
             status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED)|FLIP RISK',snipe_text,re.I)
             snipe_status=status_match.group(0).upper() if status_match else "WATCH"
-            entry_match=re.search(r'\\bask\\s+([0-9]+(?:\\.[0-9]+)?)',snipe_text,re.I)
+            entry_match=re.search(r'\bask\s+([0-9]+(?:\.[0-9]+)?)',snipe_text,re.I)
             if call_match or (direction_match and "CONFIRMED" in snipe_status):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
                 entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
