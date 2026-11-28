@@ -1780,8 +1780,8 @@ def dashboard(c, lines):
             snipe_text=str(item.get('snipe') or '')
             call_match=re.search(r'\bSCALP CALL\s+(UP|DOWN)\b',snipe_text,re.I)
             direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_text,re.I)
-            strength_match=re.search(r'(?:SCALP|SNIPE) STRENGTH\s*(\d+)(?:/100|%)',snipe_text,re.I)
-            strength=int(strength_match.group(1)) if strength_match else 0
+            strength_match=re.search(r'(?:SCALP|SNIPE )?STRENGTH\s*(\d+)(?:/100|%)|\bstrength\s*(\d+)/100',snipe_text,re.I)
+            strength=int(strength_match.group(1) or strength_match.group(2)) if strength_match else 0
             move_match=re.search(r'CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%',snipe_text,re.I)
             move_text=f' · contract {float(move_match.group(1)):+.2f}%' if move_match else ''
             status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED)|FLIP RISK',snipe_text,re.I)
