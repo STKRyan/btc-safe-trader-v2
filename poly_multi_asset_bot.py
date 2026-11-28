@@ -1517,6 +1517,35 @@ def per_asset_tracker_field(c, asset):
     )
 
 
+
+def per_asset_market_results(c, asset, limit=5):
+    """Show gross paper winnings and losses for each settled market on this asset card."""
+    rows=c.execute(
+        "SELECT market_id,slug,"
+        "COALESCE(SUM(CASE WHEN pnl>0 THEN pnl ELSE 0 END),0) won,"
+        "COALESCE(SUM(CASE WHEN pnl<0 THEN -pnl ELSE 0 END),0) lost,"
+        "COALESCE(SUM(pnl),0) net,"
+        "SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,"
+        "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) losses,"
+        "MAX(resolved_at) latest "
+        "FROM calls WHERE asset=? AND status='RESOLVED' "
+        "GROUP BY market_id,slug ORDER BY latest DESC LIMIT ?",
+        (asset,max(1,int(limit)))
+    ).fetchall()
+    if not rows:
+        return "No resolved market P/L recorded yet."
+    lines=[]
+    for row in rows:
+        label=(row["slug"] or row["market_id"] or "market")[:42]
+        lines.append(
+            f"**{label}**\\n"
+            f"🟢 Won $ {float(row['won']):,.2f} ({int(row['wins'] or 0)} W) · "
+            f"🔴 Lost $ {float(row['lost']):,.2f} ({int(row['losses'] or 0)} L) · "
+            f"NET {float(row['net']):+,.2f} USD"
+        )
+    return "\\n".join(lines)[:1024]
+
+
 def recent_market_result_embeds(c, limit=2):
     """Show settled paper outcomes grouped by the exact market entered."""
     rows=c.execute(
@@ -1651,6 +1680,7 @@ def dashboard(c, lines):
             value=f'{value}\n🎯 SNIPE: {snipe_text}'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
         card_fields.append({'name':'📈 PAPER W/L + STREAK TRACKER','value':per_asset_tracker_field(c,asset)[:1024],'inline':False})
+        card_fields.append({'name':'💰 MARKET-BY-MARKET WINS / LOSSES · USD','value':per_asset_market_results(c,asset,5),'inline':False})
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
             'description':'  |  '.join(desc)+'\n🔄 Refreshing from latest scan',
