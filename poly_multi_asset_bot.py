@@ -375,7 +375,7 @@ def indicators(candles):
            1 if move3>=0.035 and move10>0 else -1 if move3<=-0.035 and move10<0 else 0,
            1 if vr>=1.1 and move3>0 else -1 if vr>=1.1 and move3<0 else 0]
     up_votes=votes.count(1); down_votes=votes.count(-1)
-    majority_side="UP" if up_votes>=3 else "DOWN" if down_votes>=3 else "WAIT"
+    majority_side="UP" if up_votes>=3 else "DOWN" if down_votes>=3 else ("UP" if sum(votes)>0 else "DOWN" if sum(votes)<0 else ("UP" if move1>=0 else "DOWN"))
     return {"score":sum(votes),"side":majority_side,"up_votes":up_votes,"down_votes":down_votes,
             "rsi":rsi,"move1":move1,"move3":move3,"move10":move10,"volume_ratio":vr,"price":closes[-1],"range_high":recent_high,"range_low":recent_low,"range_position":range_position,"range_pct":range_pct,"votes":votes}
 
@@ -494,7 +494,7 @@ def adaptive_forecast_side(c, market_id, tf, tech, exchange):
     evidence=sum((against_flow,against_book,against_chart,against_move))
     if fresh and against_flow and evidence>=2:
         opposite="DOWN" if base=="UP" else "UP"
-        severe=abs(net)>=35 and against_book and against_chart
+        severe=abs(net)>=30 and evidence>=3
         return opposite,"live spot reversal: aggressor flow plus book/chart",severe
     return base,"base direction; no confirmed exchange reversal",False
 
@@ -1690,7 +1690,7 @@ def dashboard(c, lines):
     recent_rows=c.execute("SELECT event,asset,side,amount,realized_pnl FROM paper_ledger ORDER BY id DESC LIMIT 5").fetchall()
     recent_text="\n".join(f"{x['event']} · {x['asset']} {x['side']} · cash {x['amount']:+,.2f} · P/L {x['realized_pnl']:+,.2f}" for x in recent_rows) or "No paper transactions recorded yet."
     ledger_field={'name':'🧾 RECENT PAPER CASH MOVES','value':recent_text[:1024],'inline':False}
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 SNIPE SCORE','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES**\nWin rate {snipe_stats["win_rate"]:.1f}%' if snipe_stats['sample'] else 'Waiting for first confirmed snipe to settle','inline':True},{'name':'SNIPE STREAK','value':f'🔥 **{snipe_stats["current_streak"]}** current\n🏆 **{snipe_stats["best_streak"]}** all-time','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True},portfolio_field,ledger_field],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 ALL-CURRENCY SNIPE W/L','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES** · {snipe_stats["win_rate"]:.1f}% win rate' if snipe_stats['sample'] else 'No settled snipes yet','inline':True},{'name':'🔥 GLOBAL SNIPE STREAK','value':f'**{snipe_stats["current_streak"]}** current · **{snipe_stats["best_streak"]}** best','inline':True},{'name':'🪙 PER-CURRENCY SNIPE RECORD','value':'\\n'.join(f\'{asset}: {asset_paper_stats(c,asset,True)["wins"]}W/{asset_paper_stats(c,asset,True)["losses"]}L · streak {asset_paper_stats(c,asset,True)["current_streak"]} · best {asset_paper_stats(c,asset,True)["best_streak"]}' for asset in TOP_ASSETS)[:1024],'inline':False},{'name':'📈 FORECAST RECORD','value':f'**{fw} W · {ff} corrected · {fl} L** · streak {current_streak} · best {best_streak}','inline':False},{'name':'OPEN PAPER POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     # Five concise coin cards, refreshed with the latest scan values.
@@ -1762,6 +1762,7 @@ def dashboard(c, lines):
                 value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
             snipe_text=str(item.get('snipe') or '')
             call_match=re.search(r'\bSCALP CALL\s+(UP|DOWN)\b',snipe_text,re.I)
+            direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_text,re.I)
             strength_match=re.search(r'(?:SCALP|SNIPE) STRENGTH\s*(\d+)(?:/100|%)',snipe_text,re.I)
             strength=int(strength_match.group(1)) if strength_match else 0
             move_match=re.search(r'CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%',snipe_text,re.I)
@@ -1769,7 +1770,8 @@ def dashboard(c, lines):
             if call_match:
                 snipe_label=f'🎯 **SNIPE CALL: {call_match.group(1).upper()}** · strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
             else:
-                snipe_label=f'👀 **SNIPE WATCH** · no entry approved{move_text}'
+                bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
+                snipe_label=f'🎯 **SNIPE BIAS: {bias}** · entry not confirmed{move_text}'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
@@ -1807,8 +1809,6 @@ def dashboard(c, lines):
             else:
                 value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
-        card_fields.append({'name':'🎯 SNIPE METER · 5M / 15M','value':asset_snipe_meter(windows),'inline':False})
-        card_fields.append({'name':'📈 PAPER W/L + STREAK TRACKER','value':per_asset_tracker_field(c,asset)[:1024],'inline':False})
         card_fields.append({'name':'💰 MARKET-BY-MARKET WINS / LOSSES · USD','value':per_asset_market_results(c,asset,5),'inline':False})
         asset_embeds.append({
             'title':f'{emoji} {asset} · LIVE RADAR',
@@ -1819,7 +1819,7 @@ def dashboard(c, lines):
         })
     if not asset_embeds:
         asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
-    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,1)+[live_position_card])
+    publish_board(c,[summary]+asset_embeds[:5]+[live_position_card])
 def cycle(c):
     global _ASSET_CYCLE
     register_exchange_assets(TOP_ASSETS)
@@ -1867,11 +1867,15 @@ def cycle(c):
                     if smatch and sside:
                         record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)),features=decision_tech)
                 side=forecast_side
+                scalp_display=scalp
+                if not scalp.startswith("SCALP CALL "):
+                    scalp_display=(f"SCALP BIAS {side} · evidence {int(decision_tech.get('score',0)):+d}/5 · entry unconfirmed · "
+                                   + scalp.replace("SCALP: ","",1))
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
                 vote_line=(f"MAJORITY VOTE: UP {decision_tech['up_votes']}/5" if decision_tech['up_votes']>=3 else f"MAJORITY VOTE: DOWN {decision_tech['down_votes']}/5" if decision_tech['down_votes']>=3 else f"NO MAJORITY: UP {decision_tech['up_votes']}/5 · DOWN {decision_tech['down_votes']}/5")
                 flip_display=f" · {forecast_note}" if any(x in forecast_note for x in ("FLIP","HOLDING CURRENT")) else ""
-                lines.append(f"**{asset} {tf}m** · **{side}** ({decision_tech['score']:+d}/5 net) · {vote_line}{flip_display} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
+                lines.append(f"**{asset} {tf}m** · **{side}** ({decision_tech['score']:+d}/5 net) · {vote_line}{flip_display} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp_display}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
     # Keep the most recent scan for every supported coin so the site shows the full radar.
