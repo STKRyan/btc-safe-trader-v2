@@ -693,16 +693,6 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, f
     exchange=exchange or {}
     ex_n=int(exchange.get("trade_count",0) or 0)
     ex_net=float(exchange.get("net_flow_pct",0) or 0)
-    large_buy_n=int(exchange.get("large_buy_count",0) or 0)
-    large_sell_n=int(exchange.get("large_sell_count",0) or 0)
-    large_net_raw=float(exchange.get("large_net_flow_pct",0) or 0)
-    large_buy_value=float(exchange.get("large_buy_notional",0) or 0)
-    large_sell_value=float(exchange.get("large_sell_notional",0) or 0)
-    large_direction_value=large_buy_value if side=="UP" else large_sell_value
-    large_net=large_net_raw*sign
-    stack_side=str(exchange.get("stack_side","NEUTRAL"))
-    stack_persistence=float(exchange.get("stack_persistence_pct",0) or 0)
-    stack_observations=int(exchange.get("stack_observations",0) or 0)
     ex_move=exchange.get("trade_move_pct")
     ex_imb=float(exchange.get("imbalance",0) or 0)
     ex_age=exchange.get("trade_age"); ex_book_age=exchange.get("book_age"); ex_quote_age=exchange.get("quote_age")
@@ -868,6 +858,15 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_trade_age=exchange.get("trade_age"); ex_book_age=exchange.get("book_age"); ex_quote_age=exchange.get("quote_age")
     ex_fresh=bool(exchange.get("stream_connected")) and ex_trade_age is not None and float(ex_trade_age)<=2.5 and ex_book_age is not None and float(ex_book_age)<=2.5 and ex_quote_age is not None and float(ex_quote_age)<=2.5
     sign=1 if side=="UP" else -1
+    large_buy_n=int(exchange.get("large_buy_count",0) or 0)
+    large_sell_n=int(exchange.get("large_sell_count",0) or 0)
+    large_net=float(exchange.get("large_net_flow_pct",0) or 0)*sign
+    large_buy_value=float(exchange.get("large_buy_notional",0) or 0)
+    large_sell_value=float(exchange.get("large_sell_notional",0) or 0)
+    large_direction_value=large_buy_value if side=="UP" else large_sell_value
+    stack_side=str(exchange.get("stack_side","NEUTRAL"))
+    stack_persistence=float(exchange.get("stack_persistence_pct",0) or 0)
+    stack_observations=int(exchange.get("stack_observations",0) or 0)
     ex_net_aligned=ex_net*sign
     ex_book_aligned=ex_imb*sign
     ex_flow_confirm=ex_fresh and ex_n>=4 and ex_net_aligned>=15
