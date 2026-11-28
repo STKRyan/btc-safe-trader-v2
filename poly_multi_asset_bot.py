@@ -72,7 +72,8 @@ def send(text, embed=None):
 
 
 def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
-                      roi, tech, imbalance=0.0, detail="", target=None, stop=None):
+                      roi, tech, imbalance=0.0, detail="", target=None, stop=None,
+                      target_roi=None, stop_roi=None, max_hold_minutes=None):
     """Premium multi-asset paper-trade event card; percentages are heuristic strength, not odds."""
     side=str(side).upper()
     down=side=="DOWN"
@@ -95,16 +96,19 @@ def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
     bar=color_pct_bar(hold,'🟥' if down else '🟩',12)
     flipbar=color_pct_bar(risk,'🟧',10)
     def px(v): return f"${float(v):.3f}" if v is not None else "—"
+    target_label=(f"{float(target_roi)*100:+.1f}% contract ROI" if target_roi is not None else "contract target")
+    stop_label=(f"{float(stop_roi)*100:+.1f}% contract ROI" if stop_roi is not None else "contract stop")
+    hold_label=f"Max hold: {int(max_hold_minutes)}m" if max_hold_minutes is not None else "Exit at target/stop or signal invalidation"
     fields=[
-        {"name":"TRADE CALL","value":f"**{trade_type} {side}**","inline":True},
-        {"name":"HOLD PRESSURE","value":f"**{hold}%**\n{bar}","inline":True},
-        {"name":"FLIP RISK","value":f"**{risk}%**\n{flipbar}","inline":True},
-        {"name":"ENTRY / CURRENT BID","value":f"{px(entry)} / {px(bid)}","inline":True},
-        {"name":"PAPER P&L","value":f"**{roi*100:+.2f}%**","inline":True},
-        {"name":"TARGET / STOP","value":f"{px(target)} / {px(stop)}","inline":True},
-        {"name":"UPDATE","value":str(detail or event)[:850],"inline":False}
+        {"name":"TRADE CALL","value":f"**{trade_type} {side}**\\n{target_label} · {stop_label}\\n{hold_label}","inline":False},
+        {"name":"HOLD PRESSURE","value":f"**{hold}%**\\n{bar}","inline":True},
+        {"name":"FLIP RISK","value":f"**{risk}%**\\n{flipbar}","inline":True},
+        {"name":"CONTRACT ENTRY / LIVE BID","value":f"{px(entry)} / {px(bid)}","inline":True},
+        {"name":"CONTRACT P&L","value":f"**{roi*100:+.2f}%** (ask entry → current bid)","inline":True},
+        {"name":"TARGET / STOP CONTRACT PRICE","value":f"{px(target)} / {px(stop)}","inline":True},
+        {"name":"EXIT RULE","value":str(detail or "Exit at target, stop, time limit, or signal invalidation.")[:850],"inline":False}
     ]
-    return {"title":title,"description":"Multi-asset paper trading · pressure/strength are heuristic, not win probabilities.","color":color,"fields":fields,"footer":{"text":"BTC · ETH · SOL · XRP · BNB · paper trades only"},"timestamp":iso()}
+    return {"title":title,"description":"Uses the selected UP/DOWN contract's live bid/ask. P&L and target percentages are calculated from contract prices; pressure is heuristic, not a win probability.","color":color,"fields":fields,"footer":{"text":"Multi-asset paper trading · no real orders submitted"},"timestamp":iso()}
 
 
 def send_signal_once(c, key, message):
