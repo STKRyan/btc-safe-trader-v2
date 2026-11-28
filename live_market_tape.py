@@ -100,6 +100,26 @@ def _handle(raw):
                         continue
 
 
+def large_print_summary(trades, seconds=10, minimum_notional=5000.0):
+    """Flag unusually large executed aggressor prints against a 60-second median."""
+    now=time.time()
+    history=[x for x in trades if now-x[0]<=60]
+    recent=[x for x in history if now-x[0]<=seconds]
+    notionals=[float(x[2])*float(x[3]) for x in history if float(x[2])*float(x[3])>0]
+    threshold=float(minimum_notional)
+    if notionals:
+        ordered=sorted(notionals); threshold=max(threshold,ordered[len(ordered)//2]*4.0)
+    large=[x for x in recent if float(x[2])*float(x[3])>=threshold]
+    buys=[x for x in large if x[1]=="BUY"]; sells=[x for x in large if x[1]=="SELL"]
+    buy_value=sum(float(x[2])*float(x[3]) for x in buys)
+    sell_value=sum(float(x[2])*float(x[3]) for x in sells)
+    total=buy_value+sell_value
+    return {"large_trade_threshold":threshold,"large_buy_count":len(buys),
+            "large_sell_count":len(sells),"large_buy_notional":buy_value,
+            "large_sell_notional":sell_value,
+            "large_net_flow_pct":100*(buy_value-sell_value)/total if total else 0.0}
+
+
 def flow_snapshot(token, seconds=10):
     now=time.time()
     empty={"trade_count":0,"buy_notional":0.0,"sell_notional":0.0,"net_flow_pct":0.0,
@@ -109,8 +129,10 @@ def flow_snapshot(token, seconds=10):
     with _LOCK:
         st=_STATE.get(str(token))
         if not st: return empty
-        trades=[x for x in st["trades"] if now-x[0]<=seconds]
+        all_trades=list(st["trades"])
+        trades=[x for x in all_trades if now-x[0]<=seconds]
         bid=st["bid"]; ask=st["ask"]; imbalance=st["imbalance"]; book_ts=st["book_ts"]; quote_ts=st["quote_ts"]
+        large=large_print_summary(all_trades,seconds,minimum_notional=100.0)
     buy=sum(p*z for _,side,p,z in trades if side=="BUY"); sell=sum(p*z for _,side,p,z in trades if side=="SELL")
     total=buy+sell; prices=[x[2] for x in trades]
     move=(prices[-1]/prices[0]-1)*100 if len(prices)>=2 and prices[0]>0 else None
@@ -120,7 +142,7 @@ def flow_snapshot(token, seconds=10):
             "trade_move_pct":move,"last_trade_price":prices[-1] if prices else None,
             "trade_age":now-last if last else None,"bid":bid,"ask":ask,"imbalance":imbalance,
             "book_age":now-book_ts if book_ts else None,"quote_age":now-quote_ts if quote_ts else None,
-            "stream_connected":_CONNECTED}
+            **large,"stream_connected":_CONNECTED}
 
 
 def streamed_book_stats(token):
