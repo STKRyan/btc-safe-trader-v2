@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - poly_multi_asset_bot.py
+      - live_market_tape.py
+      - requirements.txt
       - render.yaml
   workflow_dispatch:
 
@@ -22,4 +24,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Validate BTC bot Python syntax
-        run: python -m py_compile poly_multi_asset_bot.py
+        run: python -m py_compile poly_multi_asset_bot.py live_market_tape.py
