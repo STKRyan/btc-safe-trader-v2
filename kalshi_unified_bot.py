@@ -133,8 +133,6 @@ def manage_position(m, signal):
         row = db.execute("SELECT side,entry,opened_at,status,target_pct,stop_pct,max_hold_seconds FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                          (ticker,)).fetchone()
     if not row or row[3] != "OPEN":
-        if signal.get("side"):
-            core.open_paper_trade(DB_PATH, ticker, m["_asset"], signal)
         return
     side, entry_text, opened = row[:3]
     entry = core.decimal(entry_text)
@@ -273,13 +271,20 @@ def main():
                 open_tickers = {row[0] for row in db.execute("SELECT ticker FROM paper_positions WHERE status='OPEN'")}
             for market in markets:
                 signal = evaluate(market)
-                manage_position(market, signal)
+                if market["ticker"] in open_tickers:
+                    manage_position(market, signal)
                 all_signals.append((market, signal))
                 if signal.get("side"):
                     rank = (signal.get("hold_strength",0), signal.get("signal_strength",0),
                             -signal.get("flip_risk",100))
                     qualified.append((rank, market, signal))
             qualified.sort(key=lambda item: item[0], reverse=True)
+            # One active paper trade at a time: select the strongest qualified setup across all assets.
+            with sqlite3.connect(DB_PATH) as db:
+                active_count = db.execute("SELECT COUNT(*) FROM paper_positions WHERE status='OPEN'").fetchone()[0]
+            if active_count == 0 and qualified:
+                _, best_market, best_signal = qualified[0]
+                core.open_paper_trade(DB_PATH, best_market["ticker"], best_market["_asset"], best_signal)
             selected = {m["ticker"] for _,m,_ in qualified[:MAX_CARDS]}
             selected.update(open_tickers)
             overall = core.stats(DB_PATH)
