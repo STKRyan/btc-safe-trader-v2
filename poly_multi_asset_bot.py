@@ -70,6 +70,47 @@ def send(text, embed=None):
         r=S.post(WEBHOOK, json=payload, timeout=12); r.raise_for_status(); return True
     except Exception as e: print(f"Discord send failed: {type(e).__name__}: {e}"); return False
 
+
+def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
+                      roi, tech, imbalance=0.0, detail="", target=None, stop=None,
+                      target_roi=None, stop_roi=None, max_hold_minutes=None):
+    """Premium multi-asset paper-trade event card; percentages are heuristic strength, not odds."""
+    side=str(side).upper()
+    down=side=="DOWN"
+    direction="🔴 DOWN" if down else "🟢 UP"
+    color=0xEF4444 if down else 0x22C55E
+    event=str(event).upper()
+    if "FLIP" in event:
+        title=f"🟠 FLIP / REASSESS · {asset} {timeframe}m"
+        color=0xF59E0B
+    elif "EXIT" in event or "SELL" in event or "STOP" in event:
+        title=f"🔴 SELL / EXIT · {asset} {timeframe}m"
+        color=0xEF4444
+    elif "ENTRY" in event:
+        title=f"{'⚡ SCALP' if trade_type=='SCALP' else '🎯 HOLD'} {side} · {asset} {timeframe}m"
+    else:
+        title=f"{'🔴' if down else '🟢'} {event} · {asset} {timeframe}m"
+    score=max(0,min(100,abs(int((tech or {}).get("score",0)))*20))
+    risk=flip_risk(tech or {},side,imbalance) if side in ("UP","DOWN") else 50
+    hold=max(0,min(100,100-risk))
+    bar=color_pct_bar(hold,'🟥' if down else '🟩',12)
+    flipbar=color_pct_bar(risk,'🟧',10)
+    def px(v): return f"${float(v):.3f}" if v is not None else "—"
+    target_label=(f"{float(target_roi)*100:+.1f}% contract ROI" if target_roi is not None else "contract target")
+    stop_label=(f"{float(stop_roi)*100:+.1f}% contract ROI" if stop_roi is not None else "contract stop")
+    hold_label=f"Max hold: {int(max_hold_minutes)}m" if max_hold_minutes is not None else "Exit at target/stop or signal invalidation"
+    fields=[
+        {"name":"TRADE CALL","value":f"**{trade_type} {side}**\n{target_label} · {stop_label}\n{hold_label}","inline":False},
+        {"name":"HOLD PRESSURE","value":f"**{hold}%**\n{bar}","inline":True},
+        {"name":"FLIP RISK","value":f"**{risk}%**\n{flipbar}","inline":True},
+        {"name":"CONTRACT ENTRY / LIVE BID","value":f"{px(entry)} / {px(bid)}","inline":True},
+        {"name":"CONTRACT P&L","value":f"**{roi*100:+.2f}%** (ask entry → current bid)","inline":True},
+        {"name":"TARGET / STOP CONTRACT PRICE","value":f"{px(target)} / {px(stop)}","inline":True},
+        {"name":"EXIT RULE","value":str(detail or "Exit at target, stop, time limit, or signal invalidation.")[:850],"inline":False}
+    ]
+    return {"title":title,"description":"Uses the selected UP/DOWN contract's live bid/ask. P&L and target percentages are calculated from contract prices; pressure is heuristic, not a win probability.","color":color,"fields":fields,"footer":{"text":"Multi-asset paper trading · no real orders submitted"},"timestamp":iso()}
+
+
 def send_signal_once(c, key, message):
     """Repeat a current paper signal only after its cooldown; avoid scan-loop spam."""
     row=c.execute("SELECT sent_at FROM signal_alerts WHERE alert_key=?",(key,)).fetchone()
@@ -952,15 +993,28 @@ def maybe_enter(c, asset, tf, m, tech):
                 f"cap ${exposure_cap:,.2f} · currently invested ${portfolio['invested']:,.2f} · "
                 f"remaining budget ${exposure_remaining:,.2f}")
     qty=stake/stats["ask"]
+    trade_type="HOLD" if "SNIPE CONFIRMED" in str(snipe).upper() else "SCALP"
+    target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
+    stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
+    max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
+    trade_features=dict(tech)
+    trade_features.update({"trade_mode":trade_type,"trade_target_roi":target_roi,
+                           "trade_stop_roi":stop_roi,"max_hold_minutes":max_hold_minutes})
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at,last_mark,peak_mark) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],stake,qty,qty,tech["score"],json.dumps(tech),iso(),float(stats["bid"]),float(stats["ask"])))
+          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],stake,qty,qty,tech["score"],json.dumps(trade_features),iso(),float(stats["bid"]),float(stats["ask"])))
         call_id=c.execute("SELECT last_insert_rowid() n").fetchone()["n"]
         cash=portfolio["cash"]-stake
         set_bot_state(c,"paper_cash",cash)
         add_ledger(c,call_id,"ENTRY",asset,side,-stake,stats["ask"],qty,0,cash,
                    f"Bought {qty:.4f} contracts at ask; position sizing {PAPER_POSITION_FRACTION*100:.2f}% of paper equity")
         c.commit()
+        send("",
+             embed=trade_event_embed(asset,tf,side,"ENTRY",trade_type,
+                 float(stats["ask"]),float(stats["bid"]),0.0,tech,float(stats.get("imbalance",0)),
+                 f"{trade_type} {side} · take profit {target_roi*100:+.1f}% · stop {stop_roi*100:+.1f}% · exit on signal invalidation or after {max_hold_minutes} minutes.",
+                 min(0.99,float(stats["ask"])*(1+target_roi)),max(0.01,float(stats["ask"])*(1+stop_roi)),
+                 target_roi,stop_roi,max_hold_minutes))
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
     return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
@@ -1019,18 +1073,27 @@ def manage_open_calls(c, asset, tech):
             entry=float(r["entry"]); bid=float(stats["bid"])
             if entry<=0: continue
             roi=bid/entry-1.0; rem=float(r["remaining_qty"] or 0.0)
+            try: call_features=json.loads(r["features"] or "{}")
+            except Exception: call_features={}
+            trade_type="SCALP" if str(call_features.get("trade_mode","HOLD")).upper()=="SCALP" else "HOLD"
+            target_roi=float(call_features.get("trade_target_roi",0.04 if trade_type=="SCALP" else TARGET_PROFIT_ROI))
+            stop_roi=float(call_features.get("trade_stop_roi",-0.03 if trade_type=="SCALP" else STOP_ROI))
+            max_hold_minutes=int(call_features.get("max_hold_minutes",int(r["timeframe"])*(1 if trade_type=="SCALP" else 2)))
+            try: elapsed_minutes=max(0.0,(now()-datetime.fromisoformat(str(r["created_at"]).replace("Z","+00:00"))).total_seconds()/60.0)
+            except Exception: elapsed_minutes=0.0
             realized=float(r["realized_pnl"] or 0.0); partial=int(r["partial_taken"] or 0)
             aligned=int(tech["score"])*(1 if r["side"]=="UP" else -1)
             peak=max(float(r["peak_mark"] or entry),bid)
             opposing=stats["imbalance"]*(1 if r["side"]=="UP" else -1)
             exit_qty=0.0; action="HOLD"
-            if roi<=STOP_ROI: action="FAST PROTECTIVE EXIT"; exit_qty=rem
-            elif roi>=TARGET_PROFIT_ROI: action="TARGET EXIT"; exit_qty=rem
+            if roi<=stop_roi: action="FAST PROTECTIVE EXIT"; exit_qty=rem
+            elif roi>=target_roi: action="TARGET EXIT"; exit_qty=rem
+            elif elapsed_minutes>=max_hold_minutes: action="TIME LIMIT EXIT"; exit_qty=rem
             elif partial and bid<=peak*(1.0-TRAILING_GIVEBACK): action="TRAILING PROFIT EXIT"; exit_qty=rem
             elif roi>=0.02 and (flip_risk(tech,r["side"],float(stats.get("imbalance",0)))>=70 or opposing<-0.12 or aligned<=-2):
                 action="PROTECT OPEN PROFIT · MARKET TURNING"; exit_qty=rem
             elif aligned<=-2 and opposing<-0.08: action="EARLY SIGNAL BREAK EXIT"; exit_qty=rem
-            elif roi>=PARTIAL_PROFIT_ROI and not partial and rem>0:
+            elif roi>=min(PARTIAL_PROFIT_ROI,target_roi*0.5) and not partial and rem>0:
                 action="PARTIAL PROFIT · SELL 50%"; exit_qty=rem/2
             cash=float(bot_state_value(c,"paper_cash",str(PAPER_STARTING_BANKROLL)))
             if exit_qty>0:
@@ -1052,6 +1115,14 @@ def manage_open_calls(c, asset, tech):
                 c.commit()
             if action!=r["last_action"]:
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
+                event="FLIP" if ("SIGNAL BREAK" in action or "MARKET TURNING" in action) else ("SELL / EXIT" if exit_qty>0 else "HOLD")
+                target=min(0.99,float(entry)*(1+target_roi))
+                stop=max(0.01,float(entry)*(1+stop_roi))
+                send("",embed=trade_event_embed(
+                    r["asset"],int(r["timeframe"]),r["side"],event,trade_type,
+                    entry,bid,roi,tech,float(stats.get("imbalance",0)),
+                    f"{trade_type} {r['side']} · {action}. {'Position exited/trimmed at executable bid.' if exit_qty>0 else 'Hold only while direction remains valid.'} · elapsed {elapsed_minutes:.1f}/{max_hold_minutes}m.",
+                    target,stop,target_roi,stop_roi,max_hold_minutes))
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
 
@@ -1186,7 +1257,7 @@ def market_embeds(lines):
             odds_match=re.search(r'buy-side implied ([0-9.]+)%',pm_value)
             if odds_match:
                 odds=max(0,min(100,round(float(odds_match.group(1)))))
-                pm_value=f'{pm_value} {color_pct_bar(odds,'🟩')} **{odds}%**'
+                pm_value=f'{pm_value} {color_pct_bar(odds,"🟩")} **{odds}%**'
         else:
             pm_value='Live Polymarket bid/ask unavailable this scan'
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
@@ -1233,7 +1304,7 @@ def market_embeds(lines):
             scalp_value=(f'🎯 **SNIPE SIDE: {scalp_direction}**\n**STATUS: WATCH**\n{scalp_line[:700]}\nWait for a verified side and confirmed setup.')
         if scalp_active:
             scalp_value += f'\nSCALP INDICATOR STRENGTH: {pct_bar(scalp_score)} **{scalp_score}/100** · not win odds'
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH · INDICATOR SCORE','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH · INDICATOR SCORE','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,"🩵")} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,"🟧")} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
     return result
 
 def position_embeds(c):
@@ -1265,8 +1336,8 @@ def position_embeds(c):
                 'description':f'**{reason}** · PAPER',
                 'color':color,
                 'fields':[
-                    {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,'🟦')}','inline':True},
-                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,'🩵')}','inline':True},
+                    {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,"🟦")}','inline':True},
+                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,"🩵")}','inline':True},
                     {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
                     {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True},
                     {'name':'PAPER POSITION','value':f'Invested ${float(r["entry"])*float(r["remaining_qty"] or 0):,.2f} · {float(r["remaining_qty"] or 0):,.2f} contracts','inline':False},
@@ -1774,12 +1845,12 @@ def dashboard(c, lines):
             else:
                 odds=item['odds']; h=item['hold']; f=item['flip']
                 oddsline=f'**{odds}%** {pct_bar(odds)}' if odds is not None else '—'
-                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,'🩵')}' if h is not None else '🩵 HOLD —'
-                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,'🟧')}' if f is not None else '🟠 FLIP —'
+                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,"🩵")}' if h is not None else '🩵 HOLD —'
+                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,"🟧")}' if f is not None else '🟠 FLIP —'
                 fr=item.get('flip_rate')
                 rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,"↩️")} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
                 sigp=max(0,min(100,50+item['score']*10))
-                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
+                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,"🟦")}'
             snipe_text=str(item.get('snipe') or '')
             call_match=re.search(r'\bSCALP CALL\s+(UP|DOWN)\b',snipe_text,re.I)
             direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_text,re.I)
@@ -1898,10 +1969,11 @@ def cycle(c):
                         alert_key=f"snipe:{asset}:{tf}:{m.get('id','')}:{sside.group(1)}"
                         target_match=re.search(r"target ([0-9.]+)",scalp)
                         stop_match=re.search(r"stop ([0-9.]+)",scalp)
-                        alert=(f"🎯 **SNIPE CALL · {asset} {tf}m · {sside.group(1)}**\n"
-                               f"**ENTRY:** {float(smatch.group(1)):.3f} · **TARGET:** {float(target_match.group(1)) if target_match else 0:.3f} · "
-                               f"**STOP:** {float(stop_match.group(1)) if stop_match else 0:.3f}\n"
-                               f"{scalp}\nPaper signal only; confirm current market before acting.")
+                        alert=(f"⚡ **SCALP {sside.group(1)} · {asset} {tf}m**\n"
+                               f"**ENTRY:** {float(smatch.group(1)):.3f} · **TAKE PROFIT:** {float(target_match.group(1)) if target_match else 0:.3f} (+4%) · "
+                               f"**STOP:** {float(stop_match.group(1)) if stop_match else 0:.3f} (−3%) · **MAX HOLD:** 5m\n"
+                               f"**EXIT:** target, stop, direction invalidation, or 5-minute limit.\n"
+                               f"{scalp}\nPaper signal only; no guaranteed outcome.")
                         send_signal_once(c,alert_key,alert)
                 side=forecast_side
                 action_display=action.replace("WAIT ·","ENTRY NOT CONFIRMED ·",1)

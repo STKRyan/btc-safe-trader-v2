@@ -1,6 +1,14 @@
 name: Validate BTC bot code
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - poly_multi_asset_bot.py
+      - live_market_tape.py
+      - requirements.txt
+      - render.yaml
+      - .github/workflows/validate-btc-bot.yml
   push:
     branches: [main]
     paths:
