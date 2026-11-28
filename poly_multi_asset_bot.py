@@ -1127,6 +1127,8 @@ def market_embeds(lines):
         scalp_active='SCALP CALL' in scalp_line
         # Scalp score is an indicator-strength score, not a chance of winning.
         scalp_score=max(5,min(95,50+abs(int(score))*8-risk//4)) if scalp_active else 0
+        scalp_direction_match=re.search(r'SCALP CALL (UP|DOWN)',scalp_line)
+        scalp_direction=scalp_direction_match.group(1) if scalp_direction_match else 'NONE · WAIT'
         if risk>=70: level='HIGH · reversal warning'
         elif risk>=45: level='MODERATE · stay alert'
         else: level='LOWER · signal currently aligned'
@@ -1134,7 +1136,7 @@ def market_embeds(lines):
         elif side=='UP': color=0x19C37D
         elif side=='DOWN': color=0xEF4444
         else: color=0x8794A8
-        scalp_value=(f'**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
+        scalp_value=(f'**SNIPE DIRECTION: {scalp_direction}**\n**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**{scalp_line}**\nNo scalp entry approved on this scan.')
         result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
     return result
 
