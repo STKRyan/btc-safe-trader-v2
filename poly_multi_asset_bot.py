@@ -834,7 +834,7 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     c1=exchange.get("candle_1m_pct"); c5=exchange.get("candle_5m_pct")
     ex_summary=(f"EXCHANGE: {exchange.get('symbol',asset)} price {float(ex_price):,.2f} · 10s buy {ex_buy:,.0f}/sell {ex_sell:,.0f} USD · net {ex_net:+.0f}% · book {ex_imb:+.2f} · spread {float(ex_spread):.3f}% · candles 1m {float(c1):+.3f}% / 5m {float(c5):+.3f}% · depth {float(exchange.get('depth_usd',0) or 0):,.0f} USD" if ex_price is not None and c1 is not None and c5 is not None and ex_spread is not None else f"EXCHANGE: {exchange.get('symbol',asset)} live trade/book/candles warming up")
     chart=f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{str(exchange.get('symbol',asset+'USDT')).upper()}"
-    return (f"🎯 {status} · ask {ask_text} · contract trade {tape_text} · {band} · "
+    return (f"🎯 SNIPE DIRECTION: {side} · {status} · ask {ask_text} · contract trade {tape_text} · {band} · "
             f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 (heuristic, not win probability)")
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
