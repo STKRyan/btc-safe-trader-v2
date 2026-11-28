@@ -751,6 +751,23 @@ def scalp_call(c, asset, tf, market, tech):
     exchange=exchange_snapshot(asset,seconds=10)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=market.get('id'),flow=flow,exchange=exchange)
     if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
+    # Reject paper scalp calls without fresh, direction-aligned contract and exchange evidence.
+    flow_age=flow.get("trade_age"); q_age=flow.get("quote_age"); tape_move=flow.get("trade_move_pct")
+    if not flow.get("stream_connected") or flow_age is None or float(flow_age)>3 or q_age is None or float(q_age)>5 or int(flow.get("trade_count",0) or 0)<3:
+        return "SCALP: SIT OUT · Polymarket live tape/quote is stale or too quiet"
+    if float(flow.get("net_flow_pct",0) or 0)*sign<20 or tape_move is None or float(tape_move)*sign<0.20:
+        return "SCALP: SIT OUT · no strong direction-aligned contract buying"
+    ex_age=exchange.get("trade_age"); book_age=exchange.get("book_age"); quote_age=exchange.get("quote_age")
+    ex_fresh=bool(exchange.get("stream_connected")) and all(x is not None and float(x)<=2.5 for x in (ex_age,book_age,quote_age))
+    ex_net=float(exchange.get("net_flow_pct",0) or 0)*sign
+    ex_imb=float(exchange.get("imbalance",0) or 0)*sign
+    ex_n=int(exchange.get("trade_count",0) or 0)
+    ex_move=exchange.get("trade_move_pct")
+    c1=exchange.get("candle_1m_pct"); c5=exchange.get("candle_5m_pct")
+    if not ex_fresh or ex_n<4 or ex_net<15 or ex_imb<0.04 or float(exchange.get("depth_usd",0) or 0)<10000:
+        return "SCALP: SIT OUT · fresh Binance flow/book/depth not aligned"
+    if ex_move is None or float(ex_move)*sign<0.02 or c1 is None or c5 is None or float(c1)*sign<=0 or float(c5)*sign<=0:
+        return "SCALP: SIT OUT · Binance trade move and 1m/5m candles do not confirm direction"
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
     sm=brain.get("snipe_memory",{})
     wr=f"{sm['win_rate']:.0f}%" if sm.get("win_rate") is not None else "new sample"
@@ -809,19 +826,29 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_book_conflict=ex_fresh and ex_book_aligned<=-0.10
     ex_chart_conflict=ex_c1 is not None and ex_c5 is not None and float(ex_c1)*sign<0 and float(ex_c5)*sign<0
     brain_ok=bool(brain.get("agrees")) and int(brain.get("flip_risk",95))<65
+    # A confirmed snipe requires several independent, fresh sources and a minimum evidence score.
+    evidence_count=sum((move_support,book_ok,brain_ok,flow_confirm,ex_flow_confirm,ex_book_confirm,ex_move_confirm,chart_confirm))
     confirmed=move_support and book_ok and brain_ok and flow_confirm and not flow_conflict and ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm and not ex_flow_conflict and not ex_book_conflict and not ex_chart_conflict
     strength=max(0,min(100,round(move_size*4+(15 if book_ok else 0)+(15 if brain_ok else 0)+
                     min(12,max(0,net)/5)+(8 if tape_live and quote_fresh else 0)+
                     (15 if ex_flow_confirm else 0)+(10 if ex_book_confirm else 0)+(10 if chart_confirm else 0))))
+    # Strength is an evidence meter, never a calibrated probability of winning.
+    flip_risk_value=int(brain.get("flip_risk",95))
+    flip_chance=flip_risk_value>=60
+    review_level="🔎 REVIEW · 40+ evidence" if strength>=40 else "⚪ LOW EVIDENCE · below review threshold"
+    if flip_chance:
+        review_level=f"🟠 FLIP CHANCE · risk {flip_risk_value}/100 · possible {('DOWN' if side=='UP' else 'UP')} reversal"
+    # Require at least 60 evidence points to promote an otherwise aligned setup.
+    confirmed=confirmed and strength>=60 and evidence_count>=7 and not flip_chance
     if not tape_live or not quote_fresh:
         status="SNIPE WATCH · waiting for fresh Polymarket trades/quote"
     elif not ex_fresh: status="SNIPE WATCH · waiting for fresh Binance spot trades/order book"
     elif flow_conflict or ex_flow_conflict: status="SNIPE BLOCKED · live selling pressure outweighs buying"
-    elif int(brain.get("flip_risk",95))>=65: status="SNIPE FLIP RISK · entry blocked"
+    elif flip_chance: status=f"SNIPE FLIP CHANCE · {('DOWN' if side=='UP' else 'UP')} reversal watch · entry blocked"
     elif not flow_confirm: status="SNIPE WATCH · Polymarket contract buying not confirmed"
     elif not (ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm): status="SNIPE WATCH · exchange flow, order book or candle chart not aligned"
     elif ex_book_conflict or ex_chart_conflict: status="SNIPE BLOCKED · Binance book/candle structure opposes entry"
-    elif confirmed: status="SNIPE CONFIRMED · exchange + contract flow, books, candles and brains aligned"
+    elif confirmed: status="SNIPE CONFIRMED · 7+ fresh evidence checks aligned · 60+ evidence strength"
     else: status="SNIPE WATCH · price move or liquidity not fully confirmed"
     ask_text="—" if ask_move is None else f"{ask_move:+.2f}%"
     tape_text="—" if tape_move is None else f"{float(tape_move):+.2f}%"
@@ -834,8 +861,16 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     c1=exchange.get("candle_1m_pct"); c5=exchange.get("candle_5m_pct")
     ex_summary=(f"EXCHANGE: {exchange.get('symbol',asset)} price {float(ex_price):,.2f} · 10s buy {ex_buy:,.0f}/sell {ex_sell:,.0f} USD · net {ex_net:+.0f}% · book {ex_imb:+.2f} · spread {float(ex_spread):.3f}% · candles 1m {float(c1):+.3f}% / 5m {float(c5):+.3f}% · depth {float(exchange.get('depth_usd',0) or 0):,.0f} USD" if ex_price is not None and c1 is not None and c5 is not None and ex_spread is not None else f"EXCHANGE: {exchange.get('symbol',asset)} live trade/book/candles warming up")
     chart=f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{str(exchange.get('symbol',asset+'USDT')).upper()}"
-    return (f"🎯 SNIPE DIRECTION: {side} · {status} · ask {ask_text} · contract trade {tape_text} · {band} · "
-            f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 (heuristic, not win probability)")
+    reason_bits=[]
+    reason_bits.append("contract bid/ask movement supports direction" if ask_move is not None and ask_move>=0.75 else "contract price move not yet confirmed")
+    reason_bits.append("fresh Polymarket buy tape supports direction" if flow_confirm else "Polymarket tape lacks fresh aligned buying")
+    reason_bits.append("selected contract book supports direction" if book_ok else "contract book/spread/depth not strong enough")
+    reason_bits.append("Binance flow/book/candles aligned" if ex_flow_confirm and ex_book_confirm and chart_confirm else "Binance flow/book/candle confirmation incomplete")
+    reason_bits.append("second brain agrees" if brain_ok else "second brain does not fully agree")
+    reason_text=" · REASONS: "+"; ".join(reason_bits)
+    return (f"🎯 SNIPE DIRECTION: {side} · {status} · {review_level} · ask {ask_text} · contract trade {tape_text} · {band} · "
+            f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 evidence (not win probability) · "
+            f"flip risk {flip_risk_value}/100{reason_text}")
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
