@@ -30,7 +30,7 @@ TIMEFRAMES = (5, 15)
 # RISK-FIRST MODE: fewer, stricter paper calls; protection beats activity.
 MIN_VOTES = {5: 3, 15: 3}  # majority of five directional checks; second brain/risk gates still apply
 SCAN_INTERVAL_SECONDS = 1
-DISCORD_DASHBOARD_UPDATE_SECONDS = 3  # refresh live BTC dashboards every 3 seconds without pushing Discord too hard
+DISCORD_DASHBOARD_UPDATE_SECONDS = 15  # calmer Discord dashboard refresh; scanner cadence and signal logic remain unchanged
 SIGNAL_REPEAT_SECONDS = 30  # keep active paper calls updating without a long quiet period
 PAPER_BANKROLL_USD = 100.00
 PAPER_STAKE_USD = 1.00
@@ -1641,27 +1641,52 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         direction_fill = "⬜"
     strength_bar = color_meter(signal_strength, direction_fill, 18)
 
+    note_compact = re.sub(r"\\s+", " ", latest_call_note).strip()[:180]
+    why_compact = re.sub(r"\\s+", " ", why).strip()[:180]
     fields = [
-        {"name":f"{call_icon} LIVE STRENGTH","value":f"**{signal_strength}%**\n{strength_bar}\n*Signal strength, not a win chance.*","inline":False},
-        {"name":"🧒 WHAT DOES IT MEAN?","value":f"**{call_words}**\n{plain_reason}\n{position_line}","inline":False},
-        {"name":"📡 LATEST CALL NOTE","value":latest_call_note[:900],"inline":False},
-        {"name":"🩵 LIVE SNIPE METER","value":snipe_text[:900],"inline":False},
-        {"name":"📊 WINS · FLIPS · LOSSES","value":forecast_record[:900],"inline":False},
-        {"name":"🔥 WINS & STREAK","value":(perf_line+"\n"+streak_line)[:900],"inline":True},
-        {"name":"🛡️ HOLD / FLIP","value":risk_text[:900],"inline":True},
-        {"name":"📚 ALL-TIME RECORDS","value":(all_time_forecast+"\n"+all_time_snipe)[:1000],"inline":False},
-        {"name":"🧠 WHY THIS CALL?","value":why[:900],"inline":False},
-        {"name":"📉 LIVE UP / DOWN PRICE","value":odds[:900],"inline":False},
-        {"name":"📖 LOSS LESSONS","value":btc_loss_report_text(conn)[:700],"inline":False},
+        {
+            "name": "🎯 CALL & STRENGTH",
+            "value": f"**{call_words}** · **{signal_strength}%**\\n{strength_bar}\\n{note_compact}\\n{why_compact}"[:430],
+            "inline": False,
+        },
+        {
+            "name": "📊 LIVE MARKET",
+            "value": f"{odds}\\nRSI **{rsi_now:.0f}** · 1m **{move1:+.2f}%** · 3m **{move3:+.2f}%** · 10m **{move10:+.2f}%**"[:430],
+            "inline": False,
+        },
+        {
+            "name": "⚡ SNIPE · RISK · POSITION",
+            "value": (
+                f"**{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar} · move **{snipe_move}**\\n"
+                f"HOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\\n"
+                f"{position_line} · Scalp **{'READY TO CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"
+            )[:430],
+            "inline": False,
+        },
+        {
+            "name": "📈 PAPER PERFORMANCE",
+            "value": (
+                f"**{timeframe}m:** {forecast_record}\\n{perf_line}\\n"
+                f"Streak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\\n"
+                f"Snipe **{scalp_stats['wins']}W/{scalp_stats['losses']}L** · streak {scalp_stats['current_win_streak']}/{scalp_stats['best_win_streak']}"
+            )[:430],
+            "inline": False,
+        },
+        {
+            "name": "🧠 LEARNING & ALL-TIME",
+            "value": (
+                f"Forecast: {all_time_forecast}\\nSnipe: {all_time_snipe}\\n"
+                f"Loss lessons: {btc_loss_report_text(conn)}"
+            )[:430],
+            "inline": False,
+        },
     ]
     description = (
-        f"## {call_icon} **{call_words}**\n"
-        f"### ₿ BTC **$PRICE_PLACEHOLDER**\n"
-        f"**{minutes} MIN** · closes in **{countdown}**\n"
-        f"{progress_bar} **{progress}%**\n\n"
-        f"**{call_words}**\n"
-        f"*Updates live · paper signals only*"
-    ).replace("$PRICE_PLACEHOLDER", f"{price:,.2f}")
+        f"{call_icon} **{call_words}**\\n"
+        f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\\n"
+        f"{progress_bar} **{progress}%**\\n"
+        "*Paper signals · compact live dashboard*"
+    )
     return {
         "author":{"name":f"🟠 CRYPTO RADAR · {minutes}M LIVE","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "title":f"🟠 CRYPTO RADAR · BTC {minutes} MIN",
