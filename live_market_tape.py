@@ -389,16 +389,24 @@ def exchange_snapshot(asset, seconds=10):
            "spread_pct":None,"imbalance":0.0,"depth_usd":0.0,"book_age":None,
            "quote_age":None,"last_price":None,"candle_1m_pct":None,"candle_5m_pct":None,
            "candle_bias":"UNKNOWN","candle_high":None,"candle_low":None,
+           "stack_side":"NEUTRAL","stack_persistence_pct":0.0,"stack_observations":0,
+           "large_trade_threshold":5000.0,"large_buy_count":0,"large_sell_count":0,
+           "large_buy_notional":0.0,"large_sell_notional":0.0,"large_net_flow_pct":0.0,
            "stream_connected":_BX_CONNECTED}
     if not symbol: return empty
     now=time.time()
     with _BX_LOCK:
         st=_BX_STATE.get(symbol)
         if not st: return empty
-        trades=[x for x in st["trades"] if now-x[0]<=seconds]
+        all_trades=list(st["trades"])
+        trades=[x for x in all_trades if now-x[0]<=seconds]
         bids=list(st["bids"]); asks=list(st["asks"]); bid=st["bid"]; ask=st["ask"]
         book_ts=st["book_ts"]; quote_ts=st["quote_ts"]; candles=list(st["candles"])
+        book_history=[x for x in st.get("book_history",[]) if now-x[0]<=5]
         last_price=st["last_price"]; last_price_ts=st["last_price_ts"]
+    large=large_print_summary(all_trades,seconds,minimum_notional=5000.0)
+    stack_side="UP" if imbalance>=0.04 else "DOWN" if imbalance<=-0.04 else "NEUTRAL"
+    stack_persistence=100*sum(1 for _,hist_imb,_ in book_history if (hist_imb>=0.04 if stack_side=="UP" else hist_imb<=-0.04 if stack_side=="DOWN" else False))/max(1,len(book_history))
     buy=sum(p*q for _,side,p,q in trades if side=="BUY")
     sell=sum(p*q for _,side,p,q in trades if side=="SELL")
     total=buy+sell; prices=[x[2] for x in trades]
@@ -426,7 +434,9 @@ def exchange_snapshot(asset, seconds=10):
             "book_age":now-book_ts if book_ts else None,"quote_age":now-quote_ts if quote_ts else None,
             "last_price":last_price,"price_age":now-last_price_ts if last_price_ts else None,
             "candle_1m_pct":c1,"candle_5m_pct":c5,"candle_bias":bias,
-            "candle_high":hi,"candle_low":lo,"stream_connected":_BX_CONNECTED}
+            "candle_high":hi,"candle_low":lo,
+            "stack_side":stack_side,"stack_persistence_pct":stack_persistence,
+            "stack_observations":len(book_history),**large,"stream_connected":_BX_CONNECTED}
 
 
 def live_flow_snapshot(token, seconds=10):
