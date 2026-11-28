@@ -1835,26 +1835,24 @@ def update_dashboard(conn: sqlite3.Connection, tech: dict, opinions: dict, opini
 def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state_prefix: str, embed: dict, interval: int) -> None:
     """Create a channel message once, then edit it at a controlled cadence."""
     webhook = os.getenv(webhook_env, "").strip()
+    logged_key = state_prefix + "_missing_webhook_logged"
     if not webhook:
-        # Log this once for the chart channel so a missing Render variable
-        # is visible without flooding logs on the 1-second scanner loop.
-        if state_prefix == "btc_live_chart":
-            logged_key = state_prefix + "_missing_webhook_logged"
-            logged = conn.execute(
-                "SELECT state_value FROM bot_state WHERE state_key=?", (logged_key,)
-            ).fetchone()
-            if not logged:
-                print(f"{state_prefix} skipped: {webhook_env} is missing from the running Render environment.")
-                conn.execute(
-                    "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
-                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
-                    (logged_key, "1"),
-                )
-                conn.commit()
+        # Log missing dashboard webhooks once, so Render makes configuration
+        # problems visible without flooding logs on the 1-second scan loop.
+        logged = conn.execute(
+            "SELECT state_value FROM bot_state WHERE state_key=?", (logged_key,)
+        ).fetchone()
+        if not logged:
+            print(f"{state_prefix} skipped: required Render environment variable {webhook_env} is missing.")
+            conn.execute(
+                "INSERT INTO bot_state(state_key,state_value) VALUES(?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value",
+                (logged_key, "1"),
+            )
+            conn.commit()
         return
-    if state_prefix == "btc_live_chart":
-        conn.execute("DELETE FROM bot_state WHERE state_key=?", (state_prefix + "_missing_webhook_logged",))
-        conn.commit()
+    conn.execute("DELETE FROM bot_state WHERE state_key=?", (logged_key,))
+    conn.commit()
     if not (webhook.startswith("https://discord.com/api/webhooks/") or
             webhook.startswith("https://discordapp.com/api/webhooks/")):
         print(f"{state_prefix} skipped: invalid Discord webhook URL.")
