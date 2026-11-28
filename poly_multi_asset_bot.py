@@ -1302,6 +1302,43 @@ def per_asset_tracker_field(c, asset):
     )
 
 
+def recent_market_result_embeds(c, limit=2):
+    """Show settled paper outcomes grouped by the exact market entered."""
+    rows=c.execute(
+        "SELECT market_id,slug,asset,timeframe,side,result,pnl,entry,stake,resolved_at "
+        "FROM calls WHERE status='RESOLVED' ORDER BY resolved_at DESC,id DESC LIMIT 24"
+    ).fetchall()
+    grouped={}
+    for row in rows:
+        key=(str(row["market_id"]),str(row["asset"]),int(row["timeframe"]),str(row["slug"] or ""))
+        grouped.setdefault(key,[]).append(row)
+    cards=[]
+    for (market_id,asset,tf,slug),items in list(grouped.items())[:max(1,int(limit))]:
+        wins=sum(float(x["pnl"] or 0)>0 for x in items)
+        losses=sum(float(x["pnl"] or 0)<0 for x in items)
+        net=sum(float(x["pnl"] or 0) for x in items)
+        market_name=slug or ("market ID "+market_id)
+        lines=[]
+        for x in items[:8]:
+            pnl=float(x["pnl"] or 0)
+            outcome=str(x["result"] or ("WIN" if pnl>0 else "LOSS" if pnl<0 else "BREAKEVEN"))
+            icon="🟢" if pnl>0 else "🔴" if pnl<0 else "⚪"
+            lines.append(
+                f"{icon} **{x['side']} · {outcome} · P/L {pnl:+,.2f} USD**\n"
+                f"Entry {float(x['entry'] or 0):.3f} · stake {float(x['stake'] or 0):,.2f} USD · "
+                f"settled {str(x['resolved_at'] or '—')[:16]}"
+            )
+        cards.append({
+            "title":f"📋 MARKET RESULT · {asset} {tf}m",
+            "description":f"**Market:** {market_name[:180]}\n**Market paper total:** {wins} W · {losses} L · **NET {net:+,.2f} USD**\n"
+                         f"**Paper calls resolved under this market:**",
+            "color":0x19C37D if net>0 else 0xEF4444 if net<0 else 0x8794A8,
+            "fields":[{"name":"CALL RESULTS · SIDE / OUTCOME / P&L","value":"\n\n".join(lines)[:1024] or "No resolved entries yet","inline":False}],
+            "footer":{"text":"Market-specific simulated trade results · paper only"}
+        })
+    return cards
+
+
 def dashboard(c, lines):
     update_shared_learning(c)
     rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
@@ -1407,7 +1444,7 @@ def dashboard(c, lines):
         })
     if not asset_embeds:
         asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
-    publish_board(c,[summary]+asset_embeds[:5]+position_embeds(c)[:4])
+    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,2)+position_embeds(c)[:2])
 def cycle(c):
     global _ASSET_CYCLE
     register_exchange_assets(TOP_ASSETS)
