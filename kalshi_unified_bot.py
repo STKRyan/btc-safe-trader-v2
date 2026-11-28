@@ -19,7 +19,7 @@ DB_PATH = os.getenv("KALSHI_UNIFIED_DB", "kalshi_unified.sqlite3")
 WEBHOOK = os.getenv("KALSHI_UNIFIED_DISCORD_WEBHOOK_URL", "").strip()
 SCAN_SECONDS = max(3, float(os.getenv("KALSHI_SCAN_SECONDS", "5")))
 CARD_SECONDS = max(15, int(os.getenv("KALSHI_CARD_UPDATE_SECONDS", "30")))
-MAX_CARDS = max(1, min(8, int(os.getenv("KALSHI_MAX_CARDS", "4"))))
+MAX_CARDS = max(1, min(8, int(os.getenv("KALSHI_MAX_CARDS", "4"))))\nUNIVERSE_REFRESH_SECONDS = max(60, int(os.getenv("KALSHI_UNIVERSE_REFRESH_SECONDS", "120")))\nMAX_TRACKED_MARKETS = max(10, min(100, int(os.getenv("KALSHI_MAX_TRACKED_MARKETS", "80"))))\nMARKET_CACHE = []\nMARKET_CACHE_AT = 0.0
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "STK-Kalshi-Paper/1.0", "Accept": "application/json"})
 
@@ -59,6 +59,37 @@ def discover_markets():
         if not cursor:
             break
     return candidates
+
+
+def refresh_market_quotes():
+    """Refresh live quotes in one bounded request; discover the universe less often."""
+    global MARKET_CACHE, MARKET_CACHE_AT
+    now = time.time()
+    if not MARKET_CACHE or now - MARKET_CACHE_AT >= UNIVERSE_REFRESH_SECONDS:
+        MARKET_CACHE = discover_markets()
+        # Prioritize contracts with meaningful reported activity, without claiming liquidity guarantees.
+        MARKET_CACHE.sort(key=lambda m: float(core.decimal(m.get("volume_fp"), Decimal(0)) or 0)
+                          + float(core.decimal(m.get("open_interest_fp"), Decimal(0)) or 0), reverse=True)
+        MARKET_CACHE = MARKET_CACHE[:MAX_TRACKED_MARKETS]
+        MARKET_CACHE_AT = now
+    if not MARKET_CACHE:
+        return []
+    tickers = ",".join(m["ticker"] for m in MARKET_CACHE)
+    data = get_json("/markets", {"tickers": tickers, "limit": MAX_TRACKED_MARKETS})
+    latest = {m.get("ticker"): m for m in data.get("markets", [])}
+    refreshed = []
+    for old in MARKET_CACHE:
+        current = latest.get(old["ticker"])
+        if not current:
+            continue
+        eligible, _ = core.contract_is_eligible(current)
+        if not eligible:
+            continue
+        current["_asset"] = old["_asset"]
+        current["_display"] = old["_display"]
+        current["_eligibility_reason"] = old["_eligibility_reason"]
+        refreshed.append(current)
+    return refreshed
 
 
 def evaluate(m):
@@ -222,7 +253,7 @@ def main():
         started = time.time()
         try:
             settle_pending_calls()
-            markets = discover_markets()
+            markets = refresh_market_quotes()
             qualified, all_signals = [], []
             with sqlite3.connect(DB_PATH) as db:
                 open_tickers = {row[0] for row in db.execute("SELECT ticker FROM paper_positions WHERE status='OPEN'")}
