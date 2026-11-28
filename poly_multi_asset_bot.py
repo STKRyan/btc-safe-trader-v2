@@ -789,8 +789,8 @@ def scalp_call(c, asset, tf, market, tech):
     if not stats: return "SCALP: SIT OUT · order book unavailable"
     if not (0.20<=stats["ask"]<=0.80 and stats["spread"]<=0.02 and stats["depth"]>=1000):
         return "SCALP: SIT OUT · price, spread, or liquidity is not safe enough"
-    flow=live_flow_snapshot(tid,seconds=10)
-    exchange=exchange_snapshot(asset,seconds=10)
+    flow=live_flow_snapshot(tid,seconds=5)
+    exchange=exchange_snapshot(asset,seconds=5)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=market.get('id'),flow=flow,exchange=exchange)
     if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
     # Reject paper scalp calls without fresh, direction-aligned contract and exchange evidence.
@@ -808,6 +808,13 @@ def scalp_call(c, asset, tf, market, tech):
     c1=exchange.get("candle_1m_pct"); c5=exchange.get("candle_5m_pct")
     if not ex_fresh or ex_n<4 or ex_net<15 or ex_imb<0.04 or float(exchange.get("depth_usd",0) or 0)<10000:
         return "SCALP: SIT OUT · fresh Binance flow/book/depth not aligned"
+    large_n=int(exchange.get("large_buy_count",0) or 0) if side=="UP" else int(exchange.get("large_sell_count",0) or 0)
+    large_net=float(exchange.get("large_net_flow_pct",0) or 0)*sign
+    large_value=float(exchange.get("large_buy_notional",0) or 0) if side=="UP" else float(exchange.get("large_sell_notional",0) or 0)
+    if large_n<1 or large_net<20 or large_value<float(exchange.get("large_trade_threshold",5000) or 5000):
+        return "SCALP: SIT OUT · no large direction-aligned aggressor print"
+    if exchange.get("stack_side")!=side or float(exchange.get("stack_persistence_pct",0) or 0)<60 or int(exchange.get("stack_observations",0) or 0)<3:
+        return "SCALP: SIT OUT · buyer/seller stack is not persistent; possible fake burst"
     if ex_move is None or float(ex_move)*sign<0.02 or c1 is None or c5 is None or float(c1)*sign<=0 or float(c5)*sign<=0:
         return "SCALP: SIT OUT · Binance trade move and 1m/5m candles do not confirm direction"
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
