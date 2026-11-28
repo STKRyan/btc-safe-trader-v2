@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any
 
 ASSET_PATTERNS = {
-    "BTC": re.compile(r"\\b(bitcoin|btc)\\b", re.I),
-    "ETH": re.compile(r"\\b(ethereum|ether|eth)\\b", re.I),
-    "GOLD": re.compile(r"\\b(gold|xau)\\b", re.I),
+    "BTC": re.compile(r"\b(bitcoin|btc)\b", re.I),
+    "ETH": re.compile(r"\b(ethereum|ether|eth)\b", re.I),
+    "GOLD": re.compile(r"\b(gold|xau)\b", re.I),
 }
 DIRECTIONAL_PATTERNS = (
-    re.compile(r"\\b(above|higher than|greater than|at least|over|exceed)\\b", re.I),
-    re.compile(r"\\b(below|lower than|less than|at most|under)\\b", re.I),
+    re.compile(r"\b(above|higher than|greater than|at least|over|exceed)\b", re.I),
+    re.compile(r"\b(below|lower than|less than|at most|under)\b", re.I),
 )
 PRICE_FIELDS = ("yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars", "no_ask_dollars")
 
