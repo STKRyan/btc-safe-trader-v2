@@ -19,7 +19,11 @@ DB_PATH = os.getenv("KALSHI_UNIFIED_DB", "kalshi_unified.sqlite3")
 WEBHOOK = os.getenv("KALSHI_UNIFIED_DISCORD_WEBHOOK_URL", "").strip()
 SCAN_SECONDS = max(3, float(os.getenv("KALSHI_SCAN_SECONDS", "5")))
 CARD_SECONDS = max(15, int(os.getenv("KALSHI_CARD_UPDATE_SECONDS", "30")))
-MAX_CARDS = max(1, min(8, int(os.getenv("KALSHI_MAX_CARDS", "4"))))\nUNIVERSE_REFRESH_SECONDS = max(60, int(os.getenv("KALSHI_UNIVERSE_REFRESH_SECONDS", "120")))\nMAX_TRACKED_MARKETS = max(10, min(100, int(os.getenv("KALSHI_MAX_TRACKED_MARKETS", "80"))))\nMARKET_CACHE = []\nMARKET_CACHE_AT = 0.0
+MAX_CARDS = max(1, min(8, int(os.getenv("KALSHI_MAX_CARDS", "4"))))
+UNIVERSE_REFRESH_SECONDS = max(60, int(os.getenv("KALSHI_UNIVERSE_REFRESH_SECONDS", "120")))
+MAX_TRACKED_MARKETS = max(10, min(100, int(os.getenv("KALSHI_MAX_TRACKED_MARKETS", "80"))))
+MARKET_CACHE = []
+MARKET_CACHE_AT = 0.0
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "STK-Kalshi-Paper/1.0", "Accept": "application/json"})
 
@@ -204,7 +208,12 @@ def render_card(m, s, stats):
     rules = str(m.get("rules_primary") or "Settlement rules unavailable")[:650]
     embed = {
         "title": f"{m['_asset']} · KALSHI PAPER · {action}",
-        "description": f"**{m['_display']}**\n{m.get('ticker')}\n\n{s.get('reason','')}\n\n**Primary settlement rules (excerpt):** {rules}",
+        "description": f"**{m['_display']}**
+{m.get('ticker')}
+
+{s.get('reason','')}
+
+**Primary settlement rules (excerpt):** {rules}",
         "color": color, "fields": fields,
         "footer": {"text": "PAPER ONLY · contract-price momentum, not spot-price forecast · strength ≠ win probability"},
         "timestamp": utc_iso(),
