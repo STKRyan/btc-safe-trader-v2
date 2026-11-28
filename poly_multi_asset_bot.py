@@ -1117,7 +1117,7 @@ def market_embeds(lines):
         exchange_display=exchange_match.group(1)[:850] if exchange_match else 'Binance spot trades/order book/candles warming up'
         chart_url=snipe_line.split('CHART ',1)[1].split(' ',1)[0] if 'CHART ' in snipe_line else ''
         chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_url})' if chart_url.startswith('https://') else ''
-        snipe_display=(f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
+        snipe_display=(f'**SNIPE DIRECTION: {side}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
                        f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
                        f'**SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\nBuilding live price baseline')
         scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
