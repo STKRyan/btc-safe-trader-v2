@@ -1136,7 +1136,532 @@ def market_embeds(lines):
         pm_match=re.search(r'(POLYMARKET (?:UP|DOWN) · bid [^·]+ · buy-side implied [^·]+)',body)
         if pm_match:
             pm_value=pm_match.group(1)
-            odds_source=get_field('POLYMARKET LIVE ODDS')
+            odds_match=re.search(r'buy-side implied ([0-9.]+)%',pm_value)
+            if odds_match:
+                odds=max(0,min(100,round(float(odds_match.group(1)))))
+                pm_value=f'{pm_value} {color_pct_bar(odds,'🟩')} **{odds}%**'
+        else:
+            pm_value='Live Polymarket bid/ask unavailable this scan'
+        snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
+        snipe_strength_match=re.search(r'strength (\d+)/100',snipe_line)
+        snipe_status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)',snipe_line)
+        snipe_status=snipe_status_match.group(0) if snipe_status_match else 'SNIPE WATCH'
+        snipe_strength=int(snipe_strength_match.group(1)) if snipe_strength_match else 0
+        snipe_move_match=re.search(r'contract (?:move|trade) ([+-]?\d+\.\d+)%',snipe_line)
+        snipe_move=float(snipe_move_match.group(1)) if snipe_move_match else None
+        snipe_bar=color_pct_bar(snipe_strength,'🎯')
+        exchange_match=re.search(r'EXCHANGE: (.*?)(?: · CHART | · strength )',snipe_line)
+        exchange_display=exchange_match.group(1)[:850] if exchange_match else 'Binance spot trades/order book/candles warming up'
+        chart_url=snipe_line.split('CHART ',1)[1].split(' ',1)[0] if 'CHART ' in snipe_line else ''
+        chart_display=f'\n[OPEN LIVE CANDLE CHART]({chart_url})' if chart_url.startswith('https://') else ''
+        snipe_display=(f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n'
+                       f'**CONTRACT MOVE {snipe_move:+.2f}%**\n**LIVE EXCHANGE:** {exchange_display}{chart_display}' if snipe_move is not None else
+                       f'**SNIPE DIRECTION: {side}** · **{snipe_status}** · **SNIPE STRENGTH {snipe_strength}%** {snipe_bar}\n**LIVE EXCHANGE:** {exchange_display}{chart_display}\nBuilding live price baseline')
+        scalp_line=next((line.replace('⚡ SCALP:','').strip() for line in raw.splitlines() if '⚡ SCALP:' in line),'SCALP: no scalp details')
+        up_count=int(re.search(r'MAJORITY VOTE: UP (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: UP (\d)/5',raw) else 0
+        down_count=int(re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw).group(1)) if re.search(r'MAJORITY VOTE: DOWN (\d)/5',raw) else 0
+        majority_line=f'**MAJORITY CALL: UP · {up_count}/5 indicators**' if up_count>=3 else f'**MAJORITY CALL: DOWN · {down_count}/5 indicators**' if down_count>=3 else '**NO MAJORITY · WAIT**'
+        scalp_active='SCALP CALL' in scalp_line
+        # Scalp score is an indicator-strength score, not a chance of winning.
+        scalp_score=max(5,min(95,50+abs(int(score))*8-risk//4)) if scalp_active else 0
+        scalp_direction_match=re.search(r'SCALP CALL (UP|DOWN)',scalp_line)
+        scalp_direction=scalp_direction_match.group(1) if scalp_direction_match else 'NONE · WAIT'
+        if risk>=70: level='HIGH · reversal warning'
+        elif risk>=45: level='MODERATE · stay alert'
+        else: level='LOWER · signal currently aligned'
+        if risk>=70: color=0xF59E0B
+        elif side=='UP': color=0x19C37D
+        elif side=='DOWN': color=0xEF4444
+        else: color=0x8794A8
+        scalp_value=(f'**SNIPE DIRECTION: {scalp_direction}**\n**{scalp_line}**\n\nSCALP STRENGTH  {pct_bar(scalp_score)} **{scalp_score}/100**\nIndicator score · not win odds' if scalp_active else f'**SNIPE DIRECTION: NONE · WAIT**\n**{scalp_line}**\nNo snipe entry approved on this scan.')
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH','value':f'{majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
+    return result
+
+def position_embeds(c):
+    """Return concise position cards with live return, hold and exit meters."""
+    result=[]
+    rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC").fetchall()
+    for r in rows:
+        try:
+            b=book_stats(r['token_id']); bid=float(b['bid']) if b else None; entry=float(r['entry'])
+            roi=(bid/entry-1)*100 if bid is not None and entry>0 else None
+            feat=json.loads(r['features'] or '{}')
+            aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
+            risk=flip_risk(feat,r['side'],float(b.get('imbalance',0)) if b else 0)
+            hold=max(0,min(100,100-risk))
+            if roi is not None and roi<=-5: action='FAST EXIT / PROTECT'; reason='5% contract-price stop threshold reached'
+            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Full profit target reached'
+            elif int(r['partial_taken'] or 0) and bid is not None and bid<=float(r['peak_mark'] or entry)*0.96: action='TRAILING EXIT'; reason='Protecting gains after a 4% peak giveback'
+            elif roi is not None and roi>=4 and not r['partial_taken']: action='SELL 50%'; reason='Partial-profit threshold reached'
+            elif risk>=70 or aligned<=-2: action='EXIT RISK'; reason='Signal is turning against the position'
+            else: action='HOLD'; reason='No exit trigger detected'
+            if 'EXIT' in action: color,emoji=0xEF4444,'🔴'
+            elif 'SELL' in action or 'PROFIT' in action: color,emoji=0xF59E0B,'🟠'
+            elif action=='HOLD': color,emoji=0x14B8A6,'🩵'
+            else: color,emoji=0x8794A8,'⚪'
+            roi_text='—' if roi is None else f'{roi:+.2f}%'
+            roi_meter=max(0,min(100,50+(roi or 0)*5))
+            result.append({
+                'title':f'{emoji} {action} · {r["asset"]} {r["timeframe"]}M {r["side"]}',
+                'description':f'**{reason}** · PAPER',
+                'color':color,
+                'fields':[
+                    {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,'🟦')}','inline':True},
+                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,'🩵')}','inline':True},
+                    {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
+                    {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True},
+                    {'name':'PAPER POSITION','value':f'Invested ${float(r["entry"])*float(r["remaining_qty"] or 0):,.2f} · {float(r["remaining_qty"] or 0):,.2f} contracts','inline':False},
+                    {'name':'IF SOLD NOW','value':f'Value ${float(bid or 0)*float(r["remaining_qty"] or 0):,.2f} · P/L {(float(bid or entry)-entry)*float(r["remaining_qty"] or 0)+float(r["realized_pnl"] or 0):+,.2f}' if bid is not None else 'Waiting for a fresh bid','inline':False}
+                ],
+                'footer':{'text':'Paper position · meters are live indicators, not guarantees'}
+            })
+        except Exception as e: print(f'Position embed error {r["id"]}: {type(e).__name__}: {e}')
+    return result
+
+
+def live_position_embed(c):
+    """One continuously refreshed mark-to-market card for every open paper market."""
+    rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id DESC LIMIT 10").fetchall()
+    lines=[]
+    total_value=0.0
+    total_unrealized=0.0
+    total_realized=0.0
+    for r in rows:
+        entry=float(r["entry"] or 0)
+        qty=float(r["remaining_qty"] or 0)
+        realized=float(r["realized_pnl"] or 0)
+        try:
+            quote=book_stats(r["token_id"])
+        except Exception as e:
+            quote=None
+            print(f"Live paper mark {r['id']}: {type(e).__name__}: {e}",flush=True)
+        bid=float(quote["bid"]) if quote and quote.get("bid") is not None else None
+        ask=float(quote["ask"]) if quote and quote.get("ask") is not None else None
+        mark=bid if bid is not None else float(r["last_mark"] or entry)
+        value=mark*qty
+        unrealized=(mark-entry)*qty
+        total_value+=value
+        total_unrealized+=unrealized
+        total_realized+=realized
+        if bid is not None:
+            peak=max(float(r["peak_mark"] or entry),bid)
+            c.execute("UPDATE calls SET last_mark=?,peak_mark=? WHERE id=?",(bid,peak,r["id"]))
+            quote_text=f"**LIVE BID / ASK:** {bid:.3f} / {ask:.3f}" if ask is not None else f"**LIVE BID:** {bid:.3f}"
+            freshness="🟢 LIVE QUOTE"
+        else:
+            quote_text=f"**LAST MARK:** {mark:.3f} · current quote unavailable"
+            freshness="🟠 STALE / WAITING FOR QUOTE"
+        roi=(mark/entry-1)*100 if entry>0 else 0.0
+        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))
+        lines.append({
+            "name":f"{r['asset']} {r['timeframe']}m · {r['side']} · {freshness}"[:256],
+            "value":(
+                f"**Market:** {market[:220]}\n{quote_text}\n"
+                f"Entry {entry:.3f} · Contracts {qty:.4f} · Entry cost ${entry*qty:,.2f}\n"
+                f"**Current value ${value:,.2f} · Unrealized {unrealized:+,.2f} USD ({roi:+.2f}%)**\n"
+                f"Realized on this position {realized:+,.2f} USD · P/L if closed now {realized+unrealized:+,.2f} USD"
+            )[:1024],
+            "inline":False
+        })
+    if rows:
+        c.commit()
+        color=0x19C37D if total_unrealized>0 else 0xEF4444 if total_unrealized<0 else 0x8794A8
+        desc=(f"**Open markets:** {len(rows)} · **Live marked value:** ${total_value:,.2f}\n"
+              f"**Unrealized P/L:** {total_unrealized:+,.2f} USD · **Realized on open positions:** {total_realized:+,.2f} USD\n"
+              "Values update from the latest available Polymarket contract bid; stale quotes are labeled.")
+    else:
+        color=0x8794A8
+        desc="No open paper positions right now. New entries will appear here and update with market prices."
+        lines=[{"name":"STATUS","value":"WAITING FOR A PAPER ENTRY","inline":False}]
+    return {
+        "title":"📈 LIVE PAPER POSITIONS · MARKET VALUE",
+        "description":desc[:4096],
+        "color":color,
+        "fields":lines[:10],
+        "footer":{"text":"Live mark-to-market simulation · paper only · quotes can be delayed or unavailable"},
+        "timestamp":iso()
+    }
+
+
+def compact_discord_board(embeds):
+    """Keep the complete multi-embed board below Discord's 6,000-char message limit."""
+    def clip(value, limit):
+        value=str(value or "")
+        return value if len(value)<=limit else value[:max(0,limit-1)]+"…"
+
+    compact=[]
+    for original in embeds[:10]:
+        embed=dict(original)
+        title=str(embed.get("title",""))
+        if title.startswith("SIGNALFORGE"):
+            kind="summary"; budget=1000
+        elif "LIVE PAPER POSITIONS" in title:
+            kind="live"; budget=850
+        elif "MARKET RESULT" in title:
+            kind="result"; budget=250
+        elif "LIVE RADAR" in title:
+            kind="asset"; budget=760
+        else:
+            kind="other"; budget=300
+
+        out={}
+        if title:
+            out["title"]=clip(title,256)
+        used=len(out.get("title",""))
+        desc_limits={"summary":100,"asset":65,"result":120,"live":150,"other":80}
+        description=clip(embed.get("description",""),desc_limits[kind])
+        if description:
+            out["description"]=description
+            used+=len(description)
+        footer=embed.get("footer")
+        footer_text=clip(footer.get("text",""),{"summary":80,"asset":45,"result":45,"live":70,"other":40}[kind]) if isinstance(footer,dict) else ""
+        if footer_text:
+            out["footer"]={"text":footer_text}
+            used+=len(footer_text)
+
+        fields=list(embed.get("fields",[]) or [])
+        if kind=="summary":
+            priorities=("PAPER ACCOUNT","PAPER WIN / LOSS","SNIPE SCORE","SNIPE STREAK",
+                        "WIN STREAK","OPEN POSITIONS","SIGNAL TREND","FORECAST WINS",
+                        "FORECAST FLIPS","FORECAST LOSSES","RESOLVED")
+            fields.sort(key=lambda f: next((i for i,p in enumerate(priorities) if p in str(f.get("name",""))),len(priorities)))
+            field_limit=6
+        elif kind=="live":
+            field_limit=3
+        elif kind=="asset":
+            asset_priorities=("SNIPE METER","MARKET-BY-MARKET","PAPER W/L + STREAK")
+            fields.sort(key=lambda f: next((i for i,p in enumerate(asset_priorities) if p in str(f.get("name",""))),len(asset_priorities)))
+            field_limit=3
+        else:
+            field_limit=1 if kind=="result" else 2
+
+        fitted=[]
+        for index,field in enumerate(fields[:field_limit]):
+            name=clip(field.get("name",""),80 if kind=="summary" else 45)
+            if kind=="asset":
+                label=str(field.get("name",""))
+                value_limit=160 if "SNIPE METER" in label else 200 if "MARKET-BY-MARKET" in label else 150
+            elif kind=="live":
+                value_limit=220
+            elif kind=="summary":
+                label=str(field.get("name",""))
+                value_limit=230 if "PAPER ACCOUNT" in label else 160 if any(p in label for p in ("PAPER WIN / LOSS","SNIPE SCORE")) else 120
+            elif kind=="result":
+                value_limit=170
+            else:
+                value_limit=120
+            remaining=max(0,budget-used-len(name)-4)
+            value=clip(field.get("value",""),min(value_limit,remaining))
+            if not name or not value:
+                continue
+            fitted_field={"name":name,"value":value}
+            if field.get("inline") is not None:
+                fitted_field["inline"]=field.get("inline")
+            fitted.append(fitted_field)
+            used+=len(name)+len(value)
+        if fitted:
+            out["fields"]=fitted
+        for key in ("color","timestamp"):
+            if key in embed:
+                out[key]=embed[key]
+        compact.append(out)
+
+    # The chosen card budgets total 5,900 characters for the current board layout.
+    # Keep a final safety trim in case a future card type is added.
+    total=sum(len(str(e.get("title","")))+len(str(e.get("description","")))+
+              len(str(e.get("footer",{}).get("text","")))+
+              sum(len(str(f.get("name","")))+len(str(f.get("value",""))) for f in e.get("fields",[]))
+              for e in compact)
+    while total>5900 and compact:
+        target=compact[-1]
+        fields=target.get("fields",[])
+        if fields and fields[-1].get("value"):
+            excess=total-5900
+            old=fields[-1]["value"]
+            fields[-1]["value"]=clip(old,max(1,len(old)-excess-2))
+        elif target.get("description"):
+            old=target["description"]
+            target["description"]=clip(old,max(1,len(old)-(total-5900)-2))
+        else:
+            break
+        total=sum(len(str(e.get("title","")))+len(str(e.get("description","")))+
+                  len(str(e.get("footer",{}).get("text","")))+
+                  sum(len(str(f.get("name","")))+len(str(f.get("value",""))) for f in e.get("fields",[]))
+                  for e in compact)
+    return compact
+
+
+def publish_board(c, embeds):
+    """Post once, then edit the same multi-bot Discord message to prevent alert flooding."""
+    webhook=os.getenv("DISCORD_WEBHOOK_URL","").strip()
+    if not webhook.startswith(("https://discord.com/api/webhooks/","https://discordapp.com/api/webhooks/")):
+        print("Multi-bot Discord webhook missing or invalid; board not sent.")
+        return
+    row=c.execute("SELECT value FROM bot_state WHERE key='multi_dashboard_message_id'").fetchone()
+    message_id=str(row["value"]) if row else ""
+    payload={"embeds":compact_discord_board(embeds),"allowed_mentions":{"parse":[]}}
+    try:
+        if message_id:
+            response=S.patch(webhook.rstrip("/")+"/messages/"+message_id,json=payload,timeout=12)
+            if response.status_code!=404:
+                if not response.ok:
+                    print(f"Discord board PATCH rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
+                    response.raise_for_status()
+                print("Discord multi-bot board updated successfully.",flush=True)
+                return
+        response=S.post(webhook+"?wait=true",json=payload,timeout=12)
+        if not response.ok:
+            print(f"Discord board POST rejected: HTTP {response.status_code}: {response.text[:1200]}",flush=True)
+            response.raise_for_status()
+        new_id=str(response.json().get("id",""))
+        print("Discord multi-bot board posted successfully.",flush=True)
+        if new_id:
+            c.execute("INSERT INTO bot_state(key,value) VALUES('multi_dashboard_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(new_id,))
+            c.commit()
+    except Exception as e:
+        print(f"Multi-bot Discord board update failed: {type(e).__name__}: {e}")
+
+def record_snipe_signal(c, asset, tf, market, side, entry, features=None):
+    """Journal each snipe with technical and live-flow evidence."""
+    market_id=str(market.get("id",""))
+    if not market_id or side not in ("UP","DOWN"): return
+    captured=dict(features or {})
+    token=tokens(market).get(side)
+    if token:
+        captured["live_flow"]=live_flow_snapshot(token,seconds=10)
+    captured["exchange_flow"]=exchange_snapshot(asset,seconds=10)
+    captured["snipe_recorded_at"]=iso()
+    c.execute(
+        "INSERT OR IGNORE INTO snipe_journal(market_id,asset,timeframe,side,entry,created_at,features) VALUES(?,?,?,?,?,?,?)",
+        (market_id,asset,int(tf),side,float(entry),iso(),json.dumps(captured)))
+    c.commit()
+def all_snipe_stats(c):
+    """Global settled snipe scoreboard and persistent all-time win streak."""
+    rows=c.execute("SELECT result FROM snipe_journal WHERE status='RESOLVED' "
+                   "AND result IN ('WIN','LOSS') ORDER BY resolved_at ASC,id ASC").fetchall()
+    wins=sum(r["result"]=="WIN" for r in rows)
+    losses=sum(r["result"]=="LOSS" for r in rows)
+    current=0; best=0
+    for r in rows:
+        if r["result"]=="WIN":
+            current+=1; best=max(best,current)
+        else:
+            current=0
+    saved=c.execute("SELECT value FROM bot_state WHERE key='global_snipe_best_streak'").fetchone()
+    best=max(best,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES('global_snipe_best_streak',?) "
+              "ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best),))
+    c.commit()
+    n=wins+losses
+    return {"wins":wins,"losses":losses,"sample":n,
+            "win_rate":100*wins/n if n else None,
+            "current_streak":current,"best_streak":best}
+
+
+def asset_paper_stats(c, asset, snipe=False):
+    """Per-asset settled forecast outcomes: WIN, FLIP, LOSS, independent streak."""
+    if snipe:
+        rows=c.execute(
+            "SELECT result AS outcome,resolved_at FROM snipe_journal "
+            "WHERE asset=? AND status='RESOLVED' ORDER BY resolved_at ASC,id ASC",(asset,)).fetchall()
+        key=f"asset_snipe_best_streak_{asset}"
+        positive=("WIN",)
+    else:
+        rows=c.execute(
+            "SELECT outcome,resolved_at FROM forecast_journal "
+            "WHERE asset=? AND status='RESOLVED' AND outcome IN ('WIN','FLIP','LOSS') "
+            "ORDER BY resolved_at ASC,market_id ASC,timeframe ASC",(asset,)).fetchall()
+        key=f"asset_forecast_best_streak_{asset}"
+        positive=("WIN","FLIP")
+    wins=sum(r["outcome"]=="WIN" for r in rows)
+    flips=sum(r["outcome"]=="FLIP" for r in rows)
+    losses=sum(r["outcome"]=="LOSS" for r in rows)
+    current=0; best=0
+    for r in rows:
+        if r["outcome"] in positive:
+            current+=1; best=max(best,current)
+        elif r["outcome"]=="LOSS":
+            current=0
+    saved=c.execute("SELECT value FROM bot_state WHERE key=?",(key,)).fetchone()
+    best=max(best,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              (key,str(best)))
+    n=wins+flips+losses
+    return {"wins":wins,"flips":flips,"losses":losses,"sample":n,
+            "win_rate":100*(wins+flips)/n if n else None,
+            "loss_rate":100*losses/n if n else None,
+            "current_streak":current,"best_streak":best}
+
+
+def per_asset_tracker_field(c, asset):
+    stats=asset_paper_stats(c,asset,False)
+    sn=asset_paper_stats(c,asset,True)
+    rate=f"{stats['win_rate']:.1f}%" if stats["win_rate"] is not None else "—"
+    loss_rate=f"{stats['loss_rate']:.1f}%" if stats["loss_rate"] is not None else "—"
+    srate=f"{sn['win_rate']:.1f}%" if sn["win_rate"] is not None else "—"
+    sloss=f"{sn['loss_rate']:.1f}%" if sn["loss_rate"] is not None else "—"
+    paper=c.execute("SELECT COUNT(*) n,COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) wins,COALESCE(SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END),0) losses,COALESCE(SUM(pnl),0) net FROM calls WHERE asset=? AND status='RESOLVED'",(asset,)).fetchone()
+    market_rollup=c.execute("SELECT market_id,slug,COALESCE(SUM(pnl),0) net FROM calls WHERE asset=? AND status='RESOLVED' GROUP BY market_id,slug ORDER BY net DESC",(asset,)).fetchall()
+    best=market_rollup[0] if market_rollup else None
+    worst=market_rollup[-1] if market_rollup else None
+    best_label=(best["slug"] or best["market_id"])[:35] if best else "—"
+    worst_label=(worst["slug"] or worst["market_id"])[:35] if worst else "—"
+    market_summary=(
+        f"🏆 Best market: {best_label} · {float(best['net']):+,.2f} USD\n"
+        f"⚠️ Weakest market: {worst_label} · {float(worst['net']):+,.2f} USD"
+    ) if best and worst else "No resolved paper markets yet."
+    return (
+        f"📊 **{asset} FORECAST RECORD (5m + 15m)**\n"
+        f"WIN **{stats['wins']}** · FLIP **{stats['flips']}** · LOSS **{stats['losses']}** · Resolved **{stats['sample']}**\n"
+        f"Correct incl. flips **{rate}** · Loss rate **{loss_rate}**\n"
+        f"🔥 Current streak **{stats['current_streak']}** · 🏆 Best **{stats['best_streak']}**\n"
+        f"🎯 **SNIPE** W/L **{sn['wins']}/{sn['losses']}** · Win {srate} / Loss {sloss} "
+        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}\n"
+        f"💵 **PAPER W/L:** {int(paper['wins'])}/{int(paper['losses'])} · {int(paper['n'])} settled · NET **{float(paper['net']):+,.2f} USD**\n"
+        f"{market_summary}"
+    )
+
+
+
+
+def asset_snipe_meter(windows):
+    """Show an unmistakable WATCH or actual approved UP/DOWN snipe, with its strength."""
+    lines=[]
+    for tf in ("5","15"):
+        item=windows.get(tf)
+        if not item:
+            lines.append(f"{tf}m · 👀 SNIPE WATCH · data unavailable")
+            continue
+        raw=str(item.get("snipe") or "")
+        call_match=re.search(r"\bSCALP CALL\s+(UP|DOWN)\b",raw,re.I)
+        strength_match=re.search(r"(?:SCALP|SNIPE) STRENGTH\s*(\d+)(?:/100|%)",raw,re.I)
+        move_match=re.search(r"CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%",raw,re.I)
+        strength=max(0,min(100,int(strength_match.group(1)))) if strength_match else 0
+        bar=color_pct_bar(strength,"🎯")
+        move=f" · contract {float(move_match.group(1)):+.2f}%" if move_match else ""
+        if call_match:
+            status=f"🎯 **SNIPE CALL: {call_match.group(1).upper()}**"
+        else:
+            status="👀 **SNIPE WATCH** · no entry approved"
+        lines.append(f"{tf}m {status} · strength **{strength}%** {bar}{move}")
+    return "\n".join(lines)[:1024]
+
+def per_asset_market_results(c, asset, limit=5):
+    """Show gross paper winnings and losses for each settled market on this asset card."""
+    rows=c.execute(
+        "SELECT market_id,slug,"
+        "COALESCE(SUM(CASE WHEN pnl>0 THEN pnl ELSE 0 END),0) won,"
+        "COALESCE(SUM(CASE WHEN pnl<0 THEN -pnl ELSE 0 END),0) lost,"
+        "COALESCE(SUM(pnl),0) net,"
+        "SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) wins,"
+        "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) losses,"
+        "MAX(resolved_at) latest "
+        "FROM calls WHERE asset=? AND status='RESOLVED' "
+        "GROUP BY market_id,slug ORDER BY latest DESC LIMIT ?",
+        (asset,max(1,int(limit)))
+    ).fetchall()
+    if not rows:
+        return "No resolved market P/L recorded yet."
+    lines=[]
+    for row in rows:
+        label=(row["slug"] or row["market_id"] or "market")[:42]
+        lines.append(
+            f"**{label}**\n"
+            f"🟢 Won ${float(row['won']):,.2f} ({int(row['wins'] or 0)} W) · "
+            f"🔴 Lost ${float(row['lost']):,.2f} ({int(row['losses'] or 0)} L) · "
+            f"NET {float(row['net']):+,.2f} USD"
+        )
+    return "\n".join(lines)[:1024]
+
+
+def recent_market_result_embeds(c, limit=2):
+    """Show settled paper outcomes grouped by the exact market entered."""
+    rows=c.execute(
+        "SELECT market_id,slug,asset,timeframe,side,result,pnl,entry,stake,resolved_at "
+        "FROM calls WHERE status='RESOLVED' ORDER BY resolved_at DESC,id DESC LIMIT 24"
+    ).fetchall()
+    grouped={}
+    for row in rows:
+        key=(str(row["market_id"]),str(row["asset"]),int(row["timeframe"]),str(row["slug"] or ""))
+        grouped.setdefault(key,[]).append(row)
+    cards=[]
+    for (market_id,asset,tf,slug),items in list(grouped.items())[:max(1,int(limit))]:
+        wins=sum(float(x["pnl"] or 0)>0 for x in items)
+        losses=sum(float(x["pnl"] or 0)<0 for x in items)
+        net=sum(float(x["pnl"] or 0) for x in items)
+        market_name=slug or ("market ID "+market_id)
+        lines=[]
+        for x in items[:8]:
+            pnl=float(x["pnl"] or 0)
+            outcome=str(x["result"] or ("WIN" if pnl>0 else "LOSS" if pnl<0 else "BREAKEVEN"))
+            icon="🟢" if pnl>0 else "🔴" if pnl<0 else "⚪"
+            lines.append(
+                f"{icon} **{x['side']} · {outcome} · P/L {pnl:+,.2f} USD**\n"
+                f"Entry {float(x['entry'] or 0):.3f} · stake {float(x['stake'] or 0):,.2f} USD · "
+                f"settled {str(x['resolved_at'] or '—')[:16]}"
+            )
+        cards.append({
+            "title":f"📋 MARKET RESULT · {asset} {tf}m",
+            "description":f"**Market:** {market_name[:180]}\n**Market paper total:** {wins} W · {losses} L · **NET {net:+,.2f} USD**\n"
+                         f"**Paper calls resolved under this market:**",
+            "color":0x19C37D if net>0 else 0xEF4444 if net<0 else 0x8794A8,
+            "fields":[{"name":"CALL RESULTS · SIDE / OUTCOME / P&L","value":"\n\n".join(lines)[:1024] or "No resolved entries yet","inline":False}],
+            "footer":{"text":"Market-specific simulated trade results · paper only"}
+        })
+    return cards
+
+
+def dashboard(c, lines):
+    update_shared_learning(c)
+    live_position_card=live_position_embed(c)
+    rows=c.execute('SELECT score FROM observations ORDER BY id DESC LIMIT 24').fetchall()
+    wins_rows=c.execute('SELECT pnl FROM calls WHERE status=\'RESOLVED\' ORDER BY id DESC LIMIT 50').fetchall()
+    wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
+    opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
+    snipe_stats=all_snipe_stats(c)
+    top_assets=select_top_assets(lines)
+    display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
+    desc='\n'.join(display_lines)[:2500] or 'No matching active markets found.'
+    scores=[max(-5,min(5,int(r['score']))) for r in reversed(rows)]
+    bars='▁▂▃▄▅▆▇█'; spark=''.join(bars[round((s+5)/10*7)] for s in scores) or 'No signal history yet'
+    write_site_data(c,display_lines)
+    print('\n=== PAPER SCANNER SIGNALS ===',flush=True); print(desc,flush=True); print(f'Signal trend (-5 to +5): {spark}',flush=True); print('=== END PAPER SCANNER SIGNALS ===\n',flush=True)
+    frows=c.execute("SELECT outcome FROM forecast_journal WHERE status='RESOLVED' ORDER BY resolved_at ASC").fetchall()
+    fw=sum(x["outcome"]=="WIN" for x in frows)
+    ff=sum(x["outcome"]=="FLIP" for x in frows)
+    fl=sum(x["outcome"]=="LOSS" for x in frows)
+    current_streak=0; best_streak=0
+    for item in frows:
+        if item["outcome"] in ("WIN","FLIP"):
+            current_streak+=1; best_streak=max(best_streak,current_streak)
+        else:
+            current_streak=0
+    # Persist the all-time record so it survives restarts and remains visible.
+    saved=c.execute("SELECT value FROM bot_state WHERE key='forecast_win_streak_record'").fetchone()
+    best_streak=max(best_streak,int(saved["value"]) if saved else 0)
+    c.execute("INSERT INTO bot_state(key,value) VALUES('forecast_win_streak_record',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best_streak),))
+    c.commit()
+    portfolio=portfolio_metrics(c)
+    portfolio_field={'name':'💵 PAPER ACCOUNT · $100K → $1M GOAL','value':f"Start ${portfolio['starting']:,.0f} · Goal ${portfolio['goal']:,.0f}\nCash ${portfolio['cash']:,.2f} · Invested ${portfolio['invested']:,.2f}\nEquity ${portfolio['equity']:,.2f} · Total P/L {portfolio['total_pnl']:+,.2f}\nRealized {portfolio['realized_pnl']:+,.2f} · Unrealized {portfolio['unrealized_pnl']:+,.2f}\nGoal progress {portfolio['goal_progress']:.2f}%",'inline':False}
+    recent_rows=c.execute("SELECT event,asset,side,amount,realized_pnl FROM paper_ledger ORDER BY id DESC LIMIT 5").fetchall()
+    recent_text="\n".join(f"{x['event']} · {x['asset']} {x['side']} · cash {x['amount']:+,.2f} · P/L {x['realized_pnl']:+,.2f}" for x in recent_rows) or "No paper transactions recorded yet."
+    ledger_field={'name':'🧾 RECENT PAPER CASH MOVES','value':recent_text[:1024],'inline':False}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 SNIPE SCORE','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES**\nWin rate {snipe_stats["win_rate"]:.1f}%' if snipe_stats['sample'] else 'Waiting for first confirmed snipe to settle','inline':True},{'name':'SNIPE STREAK','value':f'🔥 **{snipe_stats["current_streak"]}** current\n🏆 **{snipe_stats["best_streak"]}** all-time','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True},portfolio_field,ledger_field],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
+    cards=market_embeds(display_lines); positions=position_embeds(c)
+    # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
+    # Five concise coin cards, refreshed with the latest scan values.
+    import re
+    by_asset={}
+    for card in cards:
+        title=card.get('title','')
+        mt=re.match(r'([A-Z0-9]{2,12}) · (5|15) MIN · (.+)$',title)
+        if not mt: continue
+        asset,tf,side_text=mt.groups()
+        side=side_text if side_text in ('UP','DOWN','WAIT') else 'WAIT'
+        missing='NO VERIFIED MARKET' in side_text
+        fields=card.get('fields',[])
+        get_field=lambda label: next((x.get('value','') for x in fields if label in x.get('name','')),'')
+        odds_source=get_field('POLYMARKET LIVE ODDS')
         odds_match=re.search(r'buy-side implied\s*([0-9]+(?:\.[0-9]+)?)%',odds_source,re.I)
         if not odds_match:
             odds_match=re.search(r'(\d+(?:\.\d+)?)%',odds_source)
