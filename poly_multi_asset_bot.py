@@ -117,6 +117,11 @@ def db():
         c.execute("ALTER TABLE snipe_journal ADD COLUMN last_check REAL NOT NULL DEFAULT 0")
     if "features" not in snipe_cols:
         c.execute("ALTER TABLE snipe_journal ADD COLUMN features TEXT NOT NULL DEFAULT '{}'")
+    forecast_cols={r[1] for r in c.execute("PRAGMA table_info(forecast_journal)")}
+    if "pending_side" not in forecast_cols:
+        c.execute("ALTER TABLE forecast_journal ADD COLUMN pending_side TEXT NOT NULL DEFAULT ''")
+    if "pending_count" not in forecast_cols:
+        c.execute("ALTER TABLE forecast_journal ADD COLUMN pending_count INTEGER NOT NULL DEFAULT 0")
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
     for name,decl in {
         "remaining_qty":"REAL NOT NULL DEFAULT 0", "realized_pnl":"REAL NOT NULL DEFAULT 0",
@@ -370,25 +375,96 @@ def learning_adjustment(c, asset, tf):
             "pause":pause,"caution":caution,"win_rate":old_wr,"flips":flips,
             "flip_rate":flip_rate,"peer":peer}
 
-def record_forecast(c, market, asset, tf, side, features):
-    """Track first call and every direction change for each market window."""
-    if side not in ("UP","DOWN"): return
+def adaptive_forecast_side(c, market_id, tf, tech, exchange):
+    """Use fresh exchange flow/book/chart evidence to recognize a real reversal, not a single noisy tick."""
+    base=str(tech.get("side","WAIT"))
+    if base not in ("UP","DOWN"):
+        return base,"technical vote is mixed",False
+    row=c.execute("SELECT current_side FROM forecast_journal WHERE market_id=? AND timeframe=?",
+                   (str(market_id),int(tf))).fetchone()
+    current=row["current_side"] if row else None
+    ex=exchange or {}
+    n=int(ex.get("trade_count",0) or 0)
+    net=float(ex.get("net_flow_pct",0) or 0)
+    imbalance=float(ex.get("imbalance",0) or 0)
+    age=ex.get("trade_age"); book_age=ex.get("book_age"); quote_age=ex.get("quote_age")
+    fresh=bool(ex.get("stream_connected")) and n>=6 and age is not None and float(age)<=3 and book_age is not None and float(book_age)<=3 and quote_age is not None and float(quote_age)<=3
+    move=ex.get("trade_move_pct"); c1=ex.get("candle_1m_pct"); c5=ex.get("candle_5m_pct")
+    sign=1 if base=="UP" else -1
+    aligned_flow=fresh and net*sign>=15
+    aligned_book=fresh and imbalance*sign>=0.08
+    aligned_chart=c1 is not None and c5 is not None and float(c1)*sign>=0.04 and float(c5)*sign>=0.06
+    aligned_move=move is not None and float(move)*sign>=0.03
+    tech_aligned=(float(tech.get("score",0))*sign>=3 and
+                  float(tech.get("move1",0))*sign>0 and float(tech.get("move3",0))*sign>0)
+
+    # If the existing forecast is opposite the indicator vote, don't bounce back
+    # on a lone indicator change. Require fresh spot flow plus at least one
+    # other exchange/price confirmation before accepting the new direction.
+    if current in ("UP","DOWN") and current!=base:
+        supports=sum((aligned_flow,aligned_book,aligned_chart,aligned_move))
+        if fresh and aligned_flow and supports>=2 and tech_aligned:
+            return base,"reversal confirmed by exchange flow/book/chart",False
+        return current,"holding prior direction; waiting for reversal confirmation",False
+
+    # Current direction is under pressure. Moderate reversals need two consecutive
+    # scans; extreme, multi-source reversals can be acted on immediately.
+    against_flow=fresh and net*sign<=-18
+    against_book=fresh and imbalance*sign<=-0.08
+    against_chart=c1 is not None and c5 is not None and float(c1)*sign<=-0.04 and float(c5)*sign<=-0.06
+    against_move=move is not None and float(move)*sign<=-0.03
+    evidence=sum((against_flow,against_book,against_chart,against_move))
+    if fresh and against_flow and evidence>=2:
+        opposite="DOWN" if base=="UP" else "UP"
+        severe=abs(net)>=35 and against_book and against_chart
+        return opposite,"live spot reversal: aggressor flow plus book/chart",severe
+    return base,"base direction; no confirmed exchange reversal",False
+
+
+def record_forecast(c, market, asset, tf, side, features, flip_reason="", immediate=False):
+    """Track each asset/timeframe forecast and debounce reversals to avoid flip-flopping."""
+    if side not in ("UP","DOWN"): return side,"WAIT"
     market_id=str(market.get("id","")); slug=str(market.get("slug",""))
-    if not market_id: return
+    if not market_id: return side,"NO MARKET ID"
     row=c.execute("SELECT * FROM forecast_journal WHERE market_id=? AND timeframe=?",(market_id,tf)).fetchone()
     stamp=time.time()
     if row is None:
-        history=[{"side":side,"at":iso()}]
-        c.execute("INSERT OR IGNORE INTO forecast_journal(market_id,timeframe,slug,asset,initial_side,current_side,flip_count,side_history,features,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",(market_id,tf,slug,asset,side,side,0,json.dumps(history),json.dumps(features),stamp))
+        history=[{"side":side,"at":iso(),"reason":"initial forecast"}]
+        c.execute("INSERT OR IGNORE INTO forecast_journal(market_id,timeframe,slug,asset,initial_side,current_side,flip_count,side_history,features,last_seen,pending_side,pending_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (market_id,tf,slug,asset,side,side,0,json.dumps(history),json.dumps(features),stamp,"",0))
+        c.commit()
+        return side,"INITIAL FORECAST"
+    current=row["current_side"]; flips=int(row["flip_count"])
+    try: history=json.loads(row["side_history"] or "[]")
+    except Exception: history=[]
+    pending=str(row["pending_side"] or ""); pending_count=int(row["pending_count"] or 0)
+    note="STABLE"
+    if side!=current:
+        if immediate:
+            pending=""; pending_count=0
+            history.append({"side":side,"at":iso(),"reason":flip_reason or "strong reversal","confirmed":"immediate"})
+            flips+=1
+            note=f"FAST FLIP {current} → {side} · {flip_reason}"
+            current=side
+        else:
+            pending_count=pending_count+1 if pending==side else 1
+            pending=side
+            if pending_count>=2:
+                history.append({"side":side,"at":iso(),"reason":flip_reason or "confirmed reversal","confirmed":"2 scans"})
+                flips+=1
+                note=f"FLIP CONFIRMED {current} → {side} · {flip_reason}"
+                current=side; pending=""; pending_count=0
+            else:
+                note=f"FLIP WATCH {pending_count}/2 · {flip_reason}"
     else:
-        current=row["current_side"]; flips=int(row["flip_count"])
-        try: history=json.loads(row["side_history"] or "[]")
-        except Exception: history=[]
-        if side!=current:
-            flips+=1; history.append({"side":side,"at":iso()}); history=history[-30:]
-            print(f"Forecast flip tracked: {asset} {tf}m {current} -> {side} (flip {flips})",flush=True)
-        c.execute("UPDATE forecast_journal SET current_side=?,flip_count=?,side_history=?,features=?,last_seen=? WHERE market_id=? AND timeframe=?",(side,flips,json.dumps(history),json.dumps(features),stamp,market_id,tf))
+        pending=""; pending_count=0
+        if flip_reason and "holding prior" in flip_reason:
+            note="HOLDING CURRENT SIDE · "+flip_reason
+    history=history[-30:]
+    c.execute("UPDATE forecast_journal SET current_side=?,flip_count=?,side_history=?,features=?,last_seen=?,pending_side=?,pending_count=? WHERE market_id=? AND timeframe=?",
+              (current,flips,json.dumps(history),json.dumps(features),stamp,pending,pending_count,market_id,tf))
     c.commit()
+    return current,note
 
 def resolve_forecasts(c):
     """Resolve expired forecasts; correct final direction after a flip is a neutral FLIP."""
