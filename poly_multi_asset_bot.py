@@ -579,7 +579,7 @@ def scalp_call(c, asset, tf, market, tech):
     flow_note=f" · tape {flow['trade_count']} prints/10s, net {flow['net_flow_pct']:+.0f}%"
     return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}"
 def snipe_update(c, market_id, side, stats, tech, brain, token=None):
-    """Confirm snipes with selected-token movement, real trades and liquidity."""
+    """Confirm a snipe only when fresh selected-token buying, movement and liquidity align."""
     ask=float(stats["ask"]); stamp=time.time()
     row=c.execute("SELECT ask,ts FROM snipe_ticks WHERE market_id=? AND side=?",
                   (str(market_id),side)).fetchone()
@@ -591,30 +591,40 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None):
               (str(market_id),side,ask,stamp)); c.commit()
     flow=live_flow_snapshot(token,seconds=10)
     tape_move=flow.get("trade_move_pct")
-    # Both selected outcome tokens should rise when that outcome gains demand.
-    move_size=max([abs(x) for x in (ask_move,tape_move) if x is not None] or [0.0])
-    move_support=(ask_move is not None and ask_move>=1.0) or (
-        tape_move is not None and float(tape_move)>=0.60 and flow["trade_count"]>=2)
-    book_ok=float(stats.get("imbalance",0))>=0.05 and float(stats.get("spread",1))<=MAX_SPREAD and float(stats.get("depth",0))>=MIN_DEPTH
-    flow_n=int(flow.get("trade_count",0) or 0); net=float(flow.get("net_flow_pct",0) or 0)
-    flow_confirm=flow_n>=3 and net>=15 and (tape_move is None or float(tape_move)>=-0.20)
-    flow_conflict=flow_n>=3 and net<=-15
-    brain_ok=bool(brain.get("agrees")) and int(brain.get("flip_risk",95))<70
-    confirmed=move_support and book_ok and brain_ok and not flow_conflict and (flow_n<3 or flow_confirm)
-    strength=max(0,min(100,round(move_size*4+(20 if book_ok else 0)+(20 if brain_ok else 0)+
-                    min(20,max(0,net)/5)))) if ask_move is not None or tape_move is not None else 0
-    if ask_move is None and tape_move is None: status="SNIPE WATCH · building live baseline"
+    flow_n=int(flow.get("trade_count",0) or 0)
+    net=float(flow.get("net_flow_pct",0) or 0)
+    trade_age=flow.get("trade_age")
+    quote_age=flow.get("quote_age")
+    tape_live=bool(flow.get("stream_connected")) and flow_n>=3 and trade_age is not None and float(trade_age)<=3
+    quote_fresh=quote_age is not None and float(quote_age)<=5
+    # Only favorable movement counts as snipe strength; a fast drop is sell pressure, not a strong snipe.
+    favorable_moves=[float(x) for x in (ask_move,tape_move) if x is not None and float(x)>0]
+    move_size=max(favorable_moves or [0.0])
+    move_support=(ask_move is not None and ask_move>=0.75) or (
+        tape_move is not None and float(tape_move)>=0.35 and flow_n>=3)
+    book_ok=(float(stats.get("imbalance",0))>=0.05 and
+             float(stats.get("spread",1))<=MAX_SPREAD and
+             float(stats.get("depth",0))>=MIN_DEPTH)
+    # No confirmation from stale/no-print data: the tape must show active net buying.
+    flow_confirm=tape_live and quote_fresh and net>=20 and tape_move is not None and float(tape_move)>=0.20
+    flow_conflict=flow_n>=2 and trade_age is not None and float(trade_age)<=5 and net<=-20
+    brain_ok=bool(brain.get("agrees")) and int(brain.get("flip_risk",95))<65
+    confirmed=move_support and book_ok and brain_ok and flow_confirm and not flow_conflict
+    strength=max(0,min(100,round(move_size*5+(20 if book_ok else 0)+(20 if brain_ok else 0)+
+                    min(20,max(0,net)/4)+(10 if tape_live and quote_fresh else 0))))
+    if not tape_live or not quote_fresh:
+        status="SNIPE WATCH · waiting for fresh live trades/quote"
     elif flow_conflict: status="SNIPE BLOCKED · live sells outweigh buys"
-    elif int(brain.get("flip_risk",95))>=70: status="SNIPE FLIP RISK · entry blocked"
-    elif flow_n>=3 and not flow_confirm: status="SNIPE WATCH · buy flow not confirmed"
-    elif confirmed: status="SNIPE CONFIRMED · selected-token price, tape, book and brains aligned"
-    else: status="SNIPE WATCH · not fully confirmed"
+    elif int(brain.get("flip_risk",95))>=65: status="SNIPE FLIP RISK · entry blocked"
+    elif not flow_confirm: status="SNIPE WATCH · active buy flow not confirmed"
+    elif confirmed: status="SNIPE CONFIRMED · fresh buy flow, price, book and brains aligned"
+    else: status="SNIPE WATCH · price move or liquidity not fully confirmed"
     ask_text="—" if ask_move is None else f"{ask_move:+.2f}%"
     tape_text="—" if tape_move is None else f"{float(tape_move):+.2f}%"
     buy=float(flow.get("buy_notional",0)); sell=float(flow.get("sell_notional",0))
     flow_text=(f"10s BUY {buy:.0f} / SELL {sell:.0f} contract-notional · net {net:+.0f}% · {flow_n} prints"
                if flow_n else "10s tape awaiting trade prints")
-    band="NO BASELINE" if move_size==0 else "MICRO <1%" if move_size<1 else "FAST 1–5%" if move_size<5 else "BURST 5%+"
+    band="NO FAVORABLE MOVE" if move_size==0 else "MICRO <1%" if move_size<1 else "FAST 1–5%" if move_size<5 else "BURST 5%+"
     return (f"🎯 {status} · ask {ask_text} · trade {tape_text} · {band} · "
             f"{flow_text} · strength {strength}/100 (heuristic, not win probability)")
 def maybe_enter(c, asset, tf, m, tech):
