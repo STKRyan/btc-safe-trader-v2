@@ -1824,7 +1824,7 @@ def dashboard(c, lines):
         })
     if not asset_embeds:
         asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
-    publish_board(c,[summary]+asset_embeds[:5]+[live_position_card])
+    publish_board(c,[summary]+asset_embeds[:5])
 def cycle(c):
     global _ASSET_CYCLE
     register_exchange_assets(TOP_ASSETS)
