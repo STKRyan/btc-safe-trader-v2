@@ -1017,7 +1017,7 @@ def maybe_enter(c, asset, tf, m, tech, defer_entry=False):
     if not confirm:reasons.append("short momentum not aligned")
     if not brain["agrees"]:reasons.append("SECOND BRAIN: "+brain["label"])
     if not confidence["ready"]:reasons.append(confidence["reason"])
-    elif confidence["rate"]<MIN_ENTRY_CONFIDENCE:reasons.append("LEARNED SUCCESS RATE "+str(round(confidence["rate"],1))+"% below 60% entry floor"
+    elif confidence["rate"]<MIN_ENTRY_CONFIDENCE:reasons.append("LEARNED SUCCESS RATE "+str(round(confidence["rate"],1))+"% below 60% entry floor")
     if current_risk>=70:reasons.append(f"FLIP RISK {current_risk}/100 · no new entry")
     if signed_imb< -0.10:reasons.append("selected-token order book opposes signal")
     if stats["spread"]>MAX_SPREAD:reasons.append("spread too wide")
