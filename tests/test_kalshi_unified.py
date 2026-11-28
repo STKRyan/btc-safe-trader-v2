@@ -85,6 +85,16 @@ class KalshiCoreTests(unittest.TestCase):
         self.assertEqual(s["managed_closed_trades"], 1)
         self.assertAlmostEqual(s["managed_avg_pnl_pct"], 25.0)
 
+    def test_reentries_preserve_all_managed_trade_rows(self):
+        signal = {"side": "YES", "entry": Decimal("0.40"), "action": "SCALP UP · BUY YES",
+                  "target_pct": 0.03, "stop_pct": 0.025, "max_hold_seconds": 90}
+        self.assertTrue(core.open_paper_trade(self.db, "REPEAT", "BTC", signal, now=10))
+        self.assertFalse(core.open_paper_trade(self.db, "REPEAT", "BTC", signal, now=11))
+        core.close_paper_trade(self.db, "REPEAT", Decimal("0.44"), "first exit", now=20)
+        self.assertTrue(core.open_paper_trade(self.db, "REPEAT", "BTC", signal, now=30))
+        core.close_paper_trade(self.db, "REPEAT", Decimal("0.42"), "second exit", now=40)
+        self.assertEqual(core.stats(self.db)["managed_closed_trades"], 2)
+
     def test_streaks_count_settled_initial_calls_only(self):
         for ticker, side, result in (("A","YES","YES"),("B","NO","NO"),("C","YES","YES")):
             core.open_paper_trade(self.db, ticker, "ETH",
