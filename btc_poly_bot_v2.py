@@ -1641,24 +1641,24 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         direction_fill = "⬜"
     strength_bar = color_meter(signal_strength, direction_fill, 18)
 
-    note_compact = re.sub(r"\\s+", " ", latest_call_note).strip()[:180]
-    why_compact = re.sub(r"\\s+", " ", why).strip()[:180]
+    note_compact = re.sub(r"\s+", " ", latest_call_note).strip()[:180]
+    why_compact = re.sub(r"\s+", " ", why).strip()[:180]
     fields = [
         {
             "name": "🎯 CALL & STRENGTH",
-            "value": f"**{call_words}** · **{signal_strength}%**\\n{strength_bar}\\n{note_compact}\\n{why_compact}"[:430],
+            "value": f"**{call_words}** · **{signal_strength}%**\n{strength_bar}\n{note_compact}\n{why_compact}"[:430],
             "inline": False,
         },
         {
             "name": "📊 LIVE MARKET",
-            "value": f"{odds}\\nRSI **{rsi_now:.0f}** · 1m **{move1:+.2f}%** · 3m **{move3:+.2f}%** · 10m **{move10:+.2f}%**"[:430],
+            "value": f"{odds}\nRSI **{rsi_now:.0f}** · 1m **{move1:+.2f}%** · 3m **{move3:+.2f}%** · 10m **{move10:+.2f}%**"[:430],
             "inline": False,
         },
         {
             "name": "⚡ SNIPE · RISK · POSITION",
             "value": (
-                f"**{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar} · move **{snipe_move}**\\n"
-                f"HOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\\n"
+                f"**{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar} · move **{snipe_move}**\n"
+                f"HOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\n"
                 f"{position_line} · Scalp **{'READY TO CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"
             )[:430],
             "inline": False,
@@ -1666,8 +1666,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         {
             "name": "📈 PAPER PERFORMANCE",
             "value": (
-                f"**{timeframe}m:** {forecast_record}\\n{perf_line}\\n"
-                f"Streak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\\n"
+                f"**{timeframe}m:** {forecast_record}\n{perf_line}\n"
+                f"Streak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\n"
                 f"Snipe **{scalp_stats['wins']}W/{scalp_stats['losses']}L** · streak {scalp_stats['current_win_streak']}/{scalp_stats['best_win_streak']}"
             )[:430],
             "inline": False,
@@ -1675,26 +1675,26 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         {
             "name": "🧠 LEARNING & ALL-TIME",
             "value": (
-                f"Forecast: {all_time_forecast}\\nSnipe: {all_time_snipe}\\n"
+                f"Forecast: {all_time_forecast}\nSnipe: {all_time_snipe}\n"
                 f"Loss lessons: {btc_loss_report_text(conn)}"
             )[:430],
             "inline": False,
         },
     ]
     description = (
-        f"{call_icon} **{call_words}**\\n"
-        f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\\n"
-        f"{progress_bar} **{progress}%**\\n"
+        f"{call_icon} **{call_words}**\n"
+        f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\n"
+        f"{progress_bar} **{progress}%**\n"
         "*Paper signals · compact live dashboard*"
     )
     return {
-        "author":{"name":f"🟠 CRYPTO RADAR · {minutes}M LIVE","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
-        "title":f"🟠 CRYPTO RADAR · BTC {minutes} MIN",
+        "author":{"name":f"₿ BTC LIVE · {minutes}M PAPER","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "title":f"BTC LIVE SIGNALS · {minutes} MIN",
         "description":description,
         "color":call_color,
         "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "fields":fields,
-        "footer":{"text":"LIVE PAPER SIGNALS · NO LIVE ORDERS · ORANGE BARS = LIVE INDICATOR METERS"},
+        "footer":{"text":"PAPER SIGNALS · NO LIVE ORDERS · DASHBOARD REFRESH ~15s"},
         "timestamp":utc_now().isoformat(),
     }
 
