@@ -30,6 +30,9 @@ PAPER_POSITION_FRACTION = min(0.05, max(0.001, float(os.getenv("PAPER_POSITION_F
 PAPER_TOTAL_EXPOSURE_FRACTION = 0.05
 DAILY_LOSS_LIMIT = max(1.0, float(os.getenv("DAILY_LOSS_LIMIT_USD", str(PAPER_STARTING_BANKROLL * 0.01))))
 MAX_OPEN = min(10, max(1, int(os.getenv("MAX_OPEN_PAPER_TRADES", "5"))))
+# Empirical entry gate: observed settled outcomes, not a fabricated probability.
+MIN_ENTRY_CONFIDENCE = 60.0
+MIN_CONFIDENCE_SAMPLE = 12
 STOP_ROI = -0.05
 PARTIAL_PROFIT_ROI = 0.04
 TARGET_PROFIT_ROI = 0.10
@@ -825,7 +828,12 @@ def scalp_call(c, asset, tf, market, tech):
     ex_net=float(exchange.get("net_flow_pct",0) or 0); ex_imb=float(exchange.get("imbalance",0) or 0)
     ex_c1=exchange.get("candle_1m_pct"); ex_c5=exchange.get("candle_5m_pct")
     exchange_note=f" · Binance {exchange.get('symbol',asset)} flow {ex_net:+.0f}% / book {ex_imb:+.2f} / 1m {float(ex_c1):+.3f}% / 5m {float(ex_c5):+.3f}%" if ex_c1 is not None and ex_c5 is not None else " · Binance live chart data warming up"
-    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}{exchange_note}"
+    confidence=entry_confidence(c,asset,tf,"SCALP")
+    if not confidence["ready"]:
+        return "SCALP: SIT OUT · "+confidence["reason"]
+    if confidence["rate"]<MIN_ENTRY_CONFIDENCE:
+        return "SCALP: SIT OUT · learned snipe success rate "+str(round(confidence["rate"],1))+"% is below 60%"
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree · learned {confidence['rate']:.1f}%/{confidence['sample']}{memory_note}{flow_note}{exchange_note}"
 def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=None, asset="BTC", tf=5):
     """Confirm a snipe only when fresh selected-token buying, movement and liquidity align."""
     ask=float(stats["ask"]); stamp=time.time()
@@ -987,7 +995,7 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     return (f"🎯 SNIPE DIRECTION: {side} · {status} · {review_level} · ask {ask_text} · contract trade {tape_text} · {band} · "
             f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 evidence (not win probability) · "
             f"SNIPE HOLD METER {snipe_hold}/100 (separate evidence blend, not odds) · flip risk {flip_risk_value}/100{streak_note}{reason_text}")
-def maybe_enter(c, asset, tf, m, tech):
+def maybe_enter(c, asset, tf, m, tech, defer_entry=False):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
     mapping=tokens(m); tid=mapping.get(side)
@@ -1003,6 +1011,8 @@ def maybe_enter(c, asset, tf, m, tech):
     exchange=exchange_snapshot(asset,seconds=10)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'),flow=flow,exchange=exchange)
     snipe=snipe_update(c,m.get("id"),side,stats,tech,brain,token=tid,exchange=exchange,asset=asset,tf=tf)
+    trade_type="SCALP" if tf==5 and "SNIPE CONFIRMED" in str(snipe).upper() else "HOLD"
+    confidence=entry_confidence(c,asset,tf,trade_type)
     if "SNIPE CONFIRMED" in snipe:
         record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]),features=tech)
     current_risk=int(brain.get("flip_risk",95))
@@ -1011,6 +1021,8 @@ def maybe_enter(c, asset, tf, m, tech):
     if abs(tech["score"])<required:reasons.append(f"signal votes {abs(tech['score'])}/5; need {required}")
     if not confirm:reasons.append("short momentum not aligned")
     if not brain["agrees"]:reasons.append("SECOND BRAIN: "+brain["label"])
+    if not confidence["ready"]:reasons.append(confidence["reason"])
+    elif confidence["rate"]<MIN_ENTRY_CONFIDENCE:reasons.append("LEARNED SUCCESS RATE "+str(round(confidence["rate"],1))+"% below 60% entry floor")
     if current_risk>=70:reasons.append(f"FLIP RISK {current_risk}/100 · no new entry")
     if signed_imb< -0.10:reasons.append("selected-token order book opposes signal")
     if stats["spread"]>MAX_SPREAD:reasons.append("spread too wide")
@@ -1021,7 +1033,17 @@ def maybe_enter(c, asset, tf, m, tech):
     if day_pnl<=-DAILY_LOSS_LIMIT:reasons.append(f"daily paper loss limit reached ({day_pnl:+.2f}/{-DAILY_LOSS_LIMIT:.2f} USD)")
     open_n=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
-    if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
+    if reasons:return "WAIT · "+"; ".join(dict.fromkeys(reasons))+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
+    asset_stats=paper_trade_stats(c,asset=asset,mode=trade_type)
+    forecast_stats=asset_paper_stats(c,asset,False)
+    snipe_stats=asset_paper_stats(c,asset,True)
+    rank=(abs(int(tech.get("score",0)))*10 + max(0,int(brain.get("score",0)))*5 +
+          (100-current_risk)*0.5 + float(confidence["rate"])*0.25 +
+          min(10,int(asset_stats["current_streak"]))*2 +
+          min(10,int(forecast_stats["current_streak"]))*1.0 +
+          min(10,int(snipe_stats["current_streak"]))*1.5)
+    if defer_entry:
+        return "QUALIFIED CANDIDATE · PRIORITY "+str(round(rank,1))+" · learned "+str(round(confidence["rate"],1))+"%/"+str(confidence["sample"])+" · streak "+str(asset_stats["current_streak"])
     portfolio=portfolio_metrics(c)
     exposure_cap=portfolio["starting"]*PAPER_TOTAL_EXPOSURE_FRACTION
     exposure_remaining=max(0.0,exposure_cap-portfolio["invested"])
@@ -1032,7 +1054,6 @@ def maybe_enter(c, asset, tf, m, tech):
                 f"remaining budget ${exposure_remaining:,.2f}")
     qty=stake/stats["ask"]
     # A confirmed 5m snipe is the quick in/out SCALP; sustained/15m entries are HOLDs.
-    trade_type="SCALP" if tf==5 and "SNIPE CONFIRMED" in str(snipe).upper() else "HOLD"
     target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
     stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
     max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
@@ -1639,6 +1660,52 @@ def all_snipe_stats(c):
             "current_streak":current,"best_streak":best}
 
 
+def entry_confidence(c, asset, tf, trade_type):
+    """Observed recent success rate; require enough settled outcomes to calibrate."""
+    if trade_type == "SCALP":
+        rows=c.execute(
+            "SELECT result AS outcome FROM snipe_journal WHERE asset=? AND timeframe=? "
+            "AND status='RESOLVED' AND result IN ('WIN','LOSS') ORDER BY resolved_at DESC,id DESC LIMIT 30",
+            (asset,int(tf))).fetchall()
+    else:
+        rows=c.execute(
+            "SELECT outcome FROM forecast_journal WHERE asset=? AND timeframe=? "
+            "AND status='RESOLVED' AND outcome IN ('WIN','LOSS') ORDER BY resolved_at DESC,market_id DESC LIMIT 30",
+            (asset,int(tf))).fetchall()
+    sample=len(rows)
+    wins=sum(r["outcome"]=="WIN" for r in rows)
+    rate=100.0*wins/sample if sample else 0.0
+    if sample < MIN_CONFIDENCE_SAMPLE:
+        return {"ready":False,"sample":sample,"rate":rate,
+                "reason":"LEARNING CALIBRATION "+str(sample)+"/"+str(MIN_CONFIDENCE_SAMPLE)+" settled "+trade_type+" results · WAIT"}
+    return {"ready":True,"sample":sample,"rate":rate,
+            "reason":"LEARNED "+trade_type+" success rate "+str(round(rate,1))+"% from "+str(sample)+" settled results"}
+
+
+def paper_trade_stats(c, asset=None, mode=None):
+    """Settled paper-entry win/loss and streak, optionally by asset or trade mode."""
+    rows=c.execute(
+        "SELECT asset,pnl,features,resolved_at,id FROM calls WHERE status='RESOLVED' "
+        "ORDER BY resolved_at ASC,id ASC").fetchall()
+    outcomes=[]
+    for row in rows:
+        if asset and row["asset"]!=asset: continue
+        try: features=json.loads(row["features"] or "{}")
+        except Exception: features={}
+        trade_mode=str(features.get("trade_mode","HOLD")).upper()
+        if mode and trade_mode!=str(mode).upper(): continue
+        outcomes.append("WIN" if float(row["pnl"] or 0)>0 else "LOSS")
+    wins=outcomes.count("WIN"); losses=outcomes.count("LOSS")
+    current=0; best=0
+    for outcome in outcomes:
+        if outcome=="WIN":
+            current+=1; best=max(best,current)
+        else: current=0
+    return {"wins":wins,"losses":losses,"sample":len(outcomes),
+            "win_rate":100*wins/len(outcomes) if outcomes else None,
+            "current_streak":current,"best_streak":best}
+
+
 def asset_paper_stats(c, asset, snipe=False):
     """Per-asset settled forecast outcomes: WIN, FLIP, LOSS, independent streak."""
     if snipe:
@@ -1800,6 +1867,9 @@ def dashboard(c, lines):
     wins=sum(float(x['pnl'])>0 for x in wins_rows); n=len(wins_rows); pnl=sum(float(x['pnl']) for x in wins_rows)
     opens=c.execute('SELECT COUNT(*) n FROM calls WHERE status=\'OPEN\'').fetchone()['n']
     snipe_stats=all_snipe_stats(c)
+    paper_all=paper_trade_stats(c)
+    paper_scalp=paper_trade_stats(c,mode="SCALP")
+    paper_hold=paper_trade_stats(c,mode="HOLD")
     top_assets=select_top_assets(lines)
     display_lines=[raw for raw in lines if line_asset(raw) in top_assets]
     desc='\n'.join(display_lines)[:2500] or 'No matching active markets found.'
@@ -1832,7 +1902,16 @@ def dashboard(c, lines):
         ast=asset_paper_stats(c,asset_name,True)
         asset_snipe_lines.append(f"{asset_name}: {ast['wins']}W/{ast['losses']}L · streak {ast['current_streak']} · best {ast['best_streak']}")
     c.commit()
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 ALL-CURRENCY SNIPE W/L','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES** · {snipe_stats["win_rate"]:.1f}% win rate' if snipe_stats['sample'] else 'No settled snipes yet','inline':True},{'name':'🔥 GLOBAL SNIPE STREAK','value':f'**{snipe_stats["current_streak"]}** current · **{snipe_stats["best_streak"]}** best','inline':True},{'name':'🪙 PER-CURRENCY SNIPE RECORD','value':'\n'.join(asset_snipe_lines)[:1024],'inline':False},{'name':'📈 FORECAST RECORD','value':f'**{fw} W · {ff} corrected · {fl} L** · streak {current_streak} · best {best_streak}','inline':False},{'name':'OPEN PAPER POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
+    streak_lines=[]
+    for asset_name in TOP_ASSETS:
+        forecast_asset=asset_paper_stats(c,asset_name,False)
+        trade_asset=paper_trade_stats(c,asset=asset_name)
+        streak_lines.append(f"{asset_name}: forecast {forecast_asset['wins']}W/{forecast_asset['flips']}F/{forecast_asset['losses']}L · paper {trade_asset['wins']}W/{trade_asset['losses']}L · streak {trade_asset['current_streak']}/{trade_asset['best_streak']}")
+    streak_field={"name":"🔥 STREAK-FIRST · CROSS-CURRENCY","value":(
+        f"ALL PAPER {paper_all['wins']}W/{paper_all['losses']}L · current {paper_all['current_streak']} / best {paper_all['best_streak']}\n"
+        f"SCALP {paper_scalp['wins']}W/{paper_scalp['losses']}L · streak {paper_scalp['current_streak']} / {paper_scalp['best_streak']} · HOLD {paper_hold['wins']}W/{paper_hold['losses']}L · streak {paper_hold['current_streak']} / {paper_hold['best_streak']}\n"
+        + "\n".join(streak_lines))[:1024],"inline":False}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[streak_field,{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 ALL-CURRENCY SNIPE W/L','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES** · {snipe_stats["win_rate"]:.1f}% win rate' if snipe_stats['sample'] else 'No settled snipes yet','inline':True},{'name':'🔥 GLOBAL SNIPE STREAK','value':f'**{snipe_stats["current_streak"]}** current · **{snipe_stats["best_streak"]}** best','inline':True},{'name':'🪙 PER-CURRENCY SNIPE RECORD','value':'\n'.join(asset_snipe_lines)[:1024],'inline':False},{'name':'📈 FORECAST RECORD','value':f'**{fw} W · {ff} corrected · {fl} L** · streak {current_streak} · best {best_streak}','inline':False},{'name':'OPEN PAPER POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     # Five concise coin cards, refreshed with the latest scan values.
@@ -1988,6 +2067,7 @@ def cycle(c):
     # The service remains paper-only; API latency may make a cycle exceed 5 seconds.
     selected=list(TOP_ASSETS)
     _ASSET_CYCLE+=1
+    candidate_pool=[]
     for asset in selected:
         tfs=TIMEFRAMES[asset]
         try: tech=indicators(reference_candles(asset))
@@ -2015,7 +2095,12 @@ def cycle(c):
                     decision_tech["score"]=-int(tech.get("score",0))
                     decision_tech["up_votes"],decision_tech["down_votes"]=tech.get("down_votes",0),tech.get("up_votes",0)
                     decision_tech["adaptive_flip"]=forecast_note
-                action=maybe_enter(c,asset,tf,m,decision_tech)
+                action=maybe_enter(c,asset,tf,m,decision_tech,defer_entry=True)
+                if action.startswith("QUALIFIED CANDIDATE · PRIORITY "):
+                    try: rank=float(action.split("PRIORITY ",1)[1].split(" ",1)[0])
+                    except Exception: rank=0.0
+                    candidate_pool.append({"rank":rank,"asset":asset,"tf":tf,"market":m,"tech":decision_tech})
+                    action="WAIT · qualified setup ranked across all currencies/timeframes"
                 lr=learning_adjustment(c,asset,tf)
                 wr=(f" · recent {lr['win_rate']:.0f}%/{lr['sample']} · flips {lr['flip_rate']*100:.0f}%"
                     if lr["win_rate"] is not None else
@@ -2048,6 +2133,12 @@ def cycle(c):
                 lines.append(f"**{asset} {tf}m** · **{side}** ({decision_tech['score']:+d}/5 net) · {vote_line}{flip_display} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action_display}{wr}\n⚡ SCALP: {scalp_display}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
+    if candidate_pool:
+        best=max(candidate_pool,key=lambda x:(x["rank"],-x["tf"]))
+        entry_result=maybe_enter(c,best["asset"],best["tf"],best["market"],best["tech"],defer_entry=False)
+        lines.append("🏆 CROSS-CURRENCY BEST QUALIFIED SETUP · "+best["asset"]+" "+str(best["tf"])+"m · priority "+str(round(best["rank"],1))+" · "+entry_result)
+    else:
+        lines.append("🛡️ STREAK-FIRST FILTER · no setup passed learned 60% confidence, Second Brain, and market checks · WAIT")
     # Keep the most recent scan for every supported coin so the site shows the full radar.
     import re
     for raw in lines:
