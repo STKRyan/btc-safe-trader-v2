@@ -22,10 +22,16 @@ WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 # Faster risk-aware refresh: configurable 2-second pause between cycles; network/API latency can make a full cycle longer.
 SCAN_SECONDS = max(2.0, float(os.getenv("SCAN_INTERVAL_SECONDS", "2")))
 SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
-# RISK-FIRST MODE: stricter entry quality, smaller paper exposure, earlier stop.
-STAKE = min(1.00, float(os.getenv("PAPER_STAKE_USD", "1")))
-DAILY_LOSS_LIMIT = min(4.00, float(os.getenv("DAILY_LOSS_LIMIT_USD", "4")))
-MAX_OPEN = min(2, int(os.getenv("MAX_OPEN_PAPER_TRADES", "2")))
+# Realistic paper portfolio only. These settings never place real orders.
+PAPER_STARTING_BANKROLL = max(1000.0, float(os.getenv("PAPER_STARTING_BANKROLL_USD", "100000")))
+PAPER_GOAL_USD = max(PAPER_STARTING_BANKROLL, float(os.getenv("PAPER_GOAL_USD", "1000000")))
+PAPER_POSITION_FRACTION = min(0.05, max(0.001, float(os.getenv("PAPER_POSITION_FRACTION", "0.01"))))
+DAILY_LOSS_LIMIT = max(1.0, float(os.getenv("DAILY_LOSS_LIMIT_USD", str(PAPER_STARTING_BANKROLL * 0.01))))
+MAX_OPEN = min(10, max(1, int(os.getenv("MAX_OPEN_PAPER_TRADES", "5"))))
+STOP_ROI = -0.05
+PARTIAL_PROFIT_ROI = 0.04
+TARGET_PROFIT_ROI = 0.10
+TRAILING_GIVEBACK = 0.04
 MIN_DEPTH = max(1000.00, float(os.getenv("MIN_BOOK_DEPTH_USD", "1000")))
 MAX_SPREAD = min(0.025, float(os.getenv("MAX_SPREAD", "0.025")))
 MIN_ASK, MAX_ASK = 0.25, 0.75
@@ -85,12 +91,19 @@ def db():
       features TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
       remaining_qty REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0,
       partial_taken INTEGER NOT NULL DEFAULT 0, last_action TEXT NOT NULL DEFAULT '',
+      last_mark REAL NOT NULL DEFAULT 0, peak_mark REAL NOT NULL DEFAULT 0,
       result TEXT, pnl REAL, resolved_at TEXT, UNIQUE(market_id,side));
     CREATE TABLE IF NOT EXISTS observations(
       id INTEGER PRIMARY KEY, asset TEXT NOT NULL, timeframe INTEGER NOT NULL,
       market_id TEXT NOT NULL, side TEXT NOT NULL, score INTEGER NOT NULL,
       features TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS bot_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS paper_ledger(
+      id INTEGER PRIMARY KEY, call_id INTEGER, event TEXT NOT NULL, asset TEXT NOT NULL,
+      side TEXT NOT NULL, amount REAL NOT NULL, price REAL NOT NULL DEFAULT 0,
+      qty REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0,
+      balance_after REAL NOT NULL, details TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS signal_alerts(
       alert_key TEXT PRIMARY KEY, sent_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS snipe_ticks(
@@ -125,11 +138,75 @@ def db():
     cols={r[1] for r in c.execute("PRAGMA table_info(calls)")}
     for name,decl in {
         "remaining_qty":"REAL NOT NULL DEFAULT 0", "realized_pnl":"REAL NOT NULL DEFAULT 0",
-        "partial_taken":"INTEGER NOT NULL DEFAULT 0", "last_action":"TEXT NOT NULL DEFAULT ''"
+        "partial_taken":"INTEGER NOT NULL DEFAULT 0", "last_action":"TEXT NOT NULL DEFAULT ''",
+        "last_mark":"REAL NOT NULL DEFAULT 0", "peak_mark":"REAL NOT NULL DEFAULT 0"
     }.items():
         if name not in cols: c.execute(f"ALTER TABLE calls ADD COLUMN {name} {decl}")
     c.execute("UPDATE calls SET remaining_qty=qty WHERE status='OPEN' AND remaining_qty=0 AND qty>0")
-    c.commit(); return c
+    c.commit()
+    portfolio_init(c)
+    return c
+
+
+def bot_state_value(c, key, default="0"):
+    row=c.execute("SELECT value FROM bot_state WHERE key=?",(key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_bot_state(c, key, value):
+    c.execute("INSERT INTO bot_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+              (key,str(value)))
+
+
+def add_ledger(c, call_id, event, asset, side, amount, price, qty, realized_pnl, balance, details=""):
+    c.execute("INSERT INTO paper_ledger(call_id,event,asset,side,amount,price,qty,realized_pnl,balance_after,details,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+              (call_id,event,asset,side,float(amount),float(price or 0),float(qty or 0),
+               float(realized_pnl or 0),float(balance),str(details)[:300],iso()))
+
+
+def portfolio_init(c):
+    """Create the persistent paper account once; never reset it on service restarts."""
+    row=c.execute("SELECT value FROM bot_state WHERE key='paper_starting_bankroll'").fetchone()
+    if row: return
+    starting=float(PAPER_STARTING_BANKROLL)
+    open_rows=c.execute("SELECT * FROM calls WHERE status='OPEN' ORDER BY id").fetchall()
+    reserved=sum(float(x["stake"] or 0) for x in open_rows)
+    cash=max(0.0,starting-reserved)
+    set_bot_state(c,"paper_starting_bankroll",starting)
+    set_bot_state(c,"paper_goal_usd",PAPER_GOAL_USD)
+    set_bot_state(c,"paper_cash",cash)
+    set_bot_state(c,"paper_account_created_at",iso())
+    for x in open_rows:
+        add_ledger(c,x["id"],"LEGACY_OPEN",x["asset"],x["side"],-float(x["stake"] or 0),
+                   x["entry"],x["qty"],0,cash,"Existing paper position carried into account")
+    c.commit()
+    print(f"Paper account initialized: ${starting:,.2f} start · ${cash:,.2f} cash · ${PAPER_GOAL_USD:,.2f} goal",flush=True)
+
+
+def portfolio_metrics(c):
+    starting=float(bot_state_value(c,"paper_starting_bankroll",str(PAPER_STARTING_BANKROLL)))
+    goal=float(bot_state_value(c,"paper_goal_usd",str(PAPER_GOAL_USD)))
+    cash=float(bot_state_value(c,"paper_cash",str(starting)))
+    rows=c.execute("SELECT entry,stake,remaining_qty,realized_pnl,last_mark,status FROM calls WHERE status='OPEN'").fetchall()
+    invested=sum(float(x["entry"] or 0)*float(x["remaining_qty"] or 0) for x in rows)
+    market_value=sum(float(x["last_mark"] or x["entry"] or 0)*float(x["remaining_qty"] or 0) for x in rows)
+    unrealized=sum((float(x["last_mark"] or x["entry"] or 0)-float(x["entry"] or 0))*float(x["remaining_qty"] or 0) for x in rows)
+    realized_closed=float(c.execute("SELECT COALESCE(SUM(pnl),0) n FROM calls WHERE status='RESOLVED'").fetchone()["n"])
+    realized_open=sum(float(x["realized_pnl"] or 0) for x in c.execute("SELECT realized_pnl FROM calls WHERE status='OPEN'").fetchall())
+    equity=cash+market_value
+    total_pnl=equity-starting
+    progress=max(0.0,min(100.0,(equity-starting)/max(1.0,goal-starting)*100))
+    return {"starting":starting,"goal":goal,"cash":cash,"invested":invested,"market_value":market_value,
+            "equity":equity,"realized_pnl":realized_closed+realized_open,"unrealized_pnl":unrealized,
+            "total_pnl":total_pnl,"goal_progress":progress,"open_positions":len(rows)}
+
+
+def daily_paper_pnl(c):
+    today=now().date().isoformat()
+    closed=float(c.execute("SELECT COALESCE(SUM(pnl),0) n FROM calls WHERE status='RESOLVED' AND substr(resolved_at,1,10)=?",(today,)).fetchone()["n"])
+    open_rows=c.execute("SELECT entry,remaining_qty,realized_pnl,last_mark FROM calls WHERE status='OPEN' AND substr(created_at,1,10)=?",(today,)).fetchall()
+    open_pnl=sum(float(x["realized_pnl"] or 0)+(float(x["last_mark"] or x["entry"])-float(x["entry"]))*float(x["remaining_qty"] or 0) for x in open_rows)
+    return closed+open_pnl
 
 
 def discover(asset, tf):
@@ -790,18 +867,26 @@ def maybe_enter(c, asset, tf, m, tech):
     if stats["depth"]<MIN_DEPTH:reasons.append("book too thin")
     if not MIN_ASK<=stats["ask"]<=MAX_ASK:reasons.append("contract price outside entry band")
     if learn["pause"]:reasons.append("learning safety pause after weak recent results")
-    pnl=c.execute("SELECT COALESCE(SUM(pnl),0) n FROM calls WHERE status='RESOLVED' AND substr(resolved_at,1,10)=?",(now().date().isoformat(),)).fetchone()["n"]
-    if pnl<=-DAILY_LOSS_LIMIT:reasons.append("daily paper loss limit reached")
+    day_pnl=daily_paper_pnl(c)
+    if day_pnl<=-DAILY_LOSS_LIMIT:reasons.append(f"daily paper loss limit reached ({day_pnl:+.2f}/{-DAILY_LOSS_LIMIT:.2f} USD)")
     open_n=c.execute("SELECT COUNT(*) n FROM calls WHERE status='OPEN'").fetchone()["n"]
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
     if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
-    qty=STAKE/stats["ask"]
+    portfolio=portfolio_metrics(c)
+    stake=min(portfolio["equity"]*PAPER_POSITION_FRACTION,portfolio["cash"])
+    if stake<10.0: return f"WAIT · paper cash too low for minimum $10 simulated entry (${portfolio['cash']:.2f} available)"
+    qty=stake/stats["ask"]
     try:
-        c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
+        c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at,last_mark,peak_mark) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],stake,qty,qty,tech["score"],json.dumps(tech),iso(),float(stats["bid"]),float(stats["ask"])))
+        call_id=c.execute("SELECT last_insert_rowid() n").fetchone()["n"]
+        cash=portfolio["cash"]-stake
+        set_bot_state(c,"paper_cash",cash)
+        add_ledger(c,call_id,"ENTRY",asset,side,-stake,stats["ask"],qty,0,cash,
+                   f"Bought {qty:.4f} contracts at ask; position sizing {PAPER_POSITION_FRACTION*100:.2f}% of paper equity")
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · {chr(36)}{STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
+    return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
     resolve_forecasts(c)
     # Resolve saved snipe-direction calls separately from ordinary paper entries.
@@ -837,7 +922,12 @@ def resolve_calls(c):
             won=(winning==r["side"]); rem=float(r["remaining_qty"] or 0.0)
             payout=rem if won else 0.0
             pnl=float(r["realized_pnl"] or 0.0)+payout-(rem*float(r["entry"]))
-            c.execute("UPDATE calls SET status='RESOLVED',result=?,pnl=?,remaining_qty=0,resolved_at=? WHERE id=?",("WIN" if pnl>0 else "LOSS",pnl,iso(),r["id"]))
+            cash=float(bot_state_value(c,"paper_cash",str(PAPER_STARTING_BANKROLL)))+payout
+            set_bot_state(c,"paper_cash",cash)
+            add_ledger(c,r["id"],"SETTLEMENT",r["asset"],r["side"],payout,1.0 if won else 0.0,rem,
+                       payout-rem*float(r["entry"]),cash,"Market settlement payout; remaining shares marked to $1 or $0")
+            c.execute("UPDATE calls SET status='RESOLVED',result=?,pnl=?,remaining_qty=0,resolved_at=?,last_mark=? WHERE id=?",
+                      ("WIN" if pnl>0 else "LOSS",pnl,iso(),1.0 if won else 0.0,r["id"]))
             c.commit()
             # Result is reflected in the single dashboard; no separate Discord alert.
         except Exception as e:print(f"Resolve check {r['market_id']}: {type(e).__name__}: {e}")
@@ -855,23 +945,34 @@ def manage_open_calls(c, asset, tech):
             roi=bid/entry-1.0; rem=float(r["remaining_qty"] or 0.0)
             realized=float(r["realized_pnl"] or 0.0); partial=int(r["partial_taken"] or 0)
             aligned=int(tech["score"])*(1 if r["side"]=="UP" else -1)
+            peak=max(float(r["peak_mark"] or entry),bid)
+            opposing=stats["imbalance"]*(1 if r["side"]=="UP" else -1)
             exit_qty=0.0; action="HOLD"
-            if roi<=-0.08: action="PROTECTIVE EXIT"; exit_qty=rem
-            elif roi>=0.10: action="TARGET EXIT"; exit_qty=rem
-            elif aligned<=-3 and stats["imbalance"]*(1 if r["side"]=="UP" else -1)<-0.10:
-                action="FLIP CONFIRMATION EXIT"; exit_qty=rem
-            elif roi>=0.05 and not partial and rem>0:
+            if roi<=STOP_ROI: action="FAST PROTECTIVE EXIT"; exit_qty=rem
+            elif roi>=TARGET_PROFIT_ROI: action="TARGET EXIT"; exit_qty=rem
+            elif partial and bid<=peak*(1.0-TRAILING_GIVEBACK): action="TRAILING PROFIT EXIT"; exit_qty=rem
+            elif aligned<=-2 and opposing<-0.08: action="EARLY SIGNAL BREAK EXIT"; exit_qty=rem
+            elif roi>=PARTIAL_PROFIT_ROI and not partial and rem>0:
                 action="PARTIAL PROFIT · SELL 50%"; exit_qty=rem/2
+            cash=float(bot_state_value(c,"paper_cash",str(PAPER_STARTING_BANKROLL)))
             if exit_qty>0:
-                realized+=(bid-entry)*exit_qty; rem-=exit_qty
+                proceeds=bid*exit_qty
+                realized+=(bid-entry)*exit_qty; rem-=exit_qty; cash+=proceeds
+                set_bot_state(c,"paper_cash",cash)
                 closed=rem<=0.000001
-                c.execute("UPDATE calls SET remaining_qty=?,realized_pnl=?,partial_taken=?,last_action=?,status=?,pnl=?,result=?,resolved_at=? WHERE id=?",
+                result=("WIN" if realized>0 else "LOSS" if realized<0 else "BREAKEVEN") if closed else None
+                c.execute("UPDATE calls SET remaining_qty=?,realized_pnl=?,partial_taken=?,last_action=?,status=?,pnl=?,result=?,resolved_at=?,last_mark=?,peak_mark=? WHERE id=?",
                   (max(0,rem),realized,1 if "PARTIAL" in action else partial,action,
                    "RESOLVED" if closed else "OPEN",realized if closed else None,
-                   "EXIT" if closed else None,iso() if closed else None,r["id"]))
+                   result,iso() if closed else None,bid,peak,r["id"]))
+                add_ledger(c,r["id"],"PARTIAL_EXIT" if not closed else "EXIT",r["asset"],r["side"],
+                           proceeds,bid,exit_qty,(bid-entry)*exit_qty,cash,
+                           f"{action}; sold {exit_qty:.4f} contracts at executable bid")
+                c.commit()
+            else:
+                c.execute("UPDATE calls SET last_mark=?,peak_mark=? WHERE id=?",(bid,peak,r["id"]))
                 c.commit()
             if action!=r["last_action"]:
-                # Position changes appear on the dashboard, not as separate alerts.
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
@@ -1050,10 +1151,11 @@ def position_embeds(c):
             aligned=int(feat.get('score',0))*(1 if r['side']=='UP' else -1)
             risk=flip_risk(feat,r['side'],float(b.get('imbalance',0)) if b else 0)
             hold=max(0,min(100,100-risk))
-            if roi is not None and roi<=-8: action='EXIT / PROTECT'; reason='Protection threshold reached'
-            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Profit target reached'
-            elif roi is not None and roi>=5 and not r['partial_taken']: action='SELL 50%'; reason='Partial profit level reached'
-            elif risk>=70 or aligned<=-3: action='EXIT RISK'; reason='Signal turning against position'
+            if roi is not None and roi<=-5: action='FAST EXIT / PROTECT'; reason='5% contract-price stop threshold reached'
+            elif roi is not None and roi>=10: action='TAKE PROFIT'; reason='Full profit target reached'
+            elif int(r['partial_taken'] or 0) and bid is not None and bid<=float(r['peak_mark'] or entry)*0.96: action='TRAILING EXIT'; reason='Protecting gains after a 4% peak giveback'
+            elif roi is not None and roi>=4 and not r['partial_taken']: action='SELL 50%'; reason='Partial-profit threshold reached'
+            elif risk>=70 or aligned<=-2: action='EXIT RISK'; reason='Signal is turning against the position'
             else: action='HOLD'; reason='No exit trigger detected'
             if 'EXIT' in action: color,emoji=0xEF4444,'🔴'
             elif 'SELL' in action or 'PROFIT' in action: color,emoji=0xF59E0B,'🟠'
@@ -1069,7 +1171,9 @@ def position_embeds(c):
                     {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,'🟦')}','inline':True},
                     {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,'🩵')}','inline':True},
                     {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
-                    {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True}
+                    {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True},
+                    {'name':'PAPER POSITION','value':f'Invested ${float(r["entry"])*float(r["remaining_qty"] or 0):,.2f} · {float(r["remaining_qty"] or 0):,.2f} contracts','inline':False},
+                    {'name':'IF SOLD NOW','value':f'Value ${float(bid or 0)*float(r["remaining_qty"] or 0):,.2f} · P/L {(float(bid or entry)-entry)*float(r["remaining_qty"] or 0)+float(r["realized_pnl"] or 0):+,.2f}' if bid is not None else 'Waiting for a fresh bid','inline':False}
                 ],
                 'footer':{'text':'Paper position · meters are live indicators, not guarantees'}
             })
@@ -1224,7 +1328,9 @@ def dashboard(c, lines):
     best_streak=max(best_streak,int(saved["value"]) if saved else 0)
     c.execute("INSERT INTO bot_state(key,value) VALUES('forecast_win_streak_record',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(str(best_streak),))
     c.commit()
-    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 SNIPE SCORE','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES**\nWin rate {snipe_stats["win_rate"]:.1f}%' if snipe_stats['sample'] else 'Waiting for first confirmed snipe to settle','inline':True},{'name':'SNIPE STREAK','value':f'🔥 **{snipe_stats["current_streak"]}** current\n🏆 **{snipe_stats["best_streak"]}** all-time','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True}],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
+    portfolio=portfolio_metrics(c)
+    portfolio_field={'name':'💵 PAPER ACCOUNT · $100K → $1M GOAL','value':f"Start ${portfolio['starting']:,.0f} · Goal ${portfolio['goal']:,.0f}\nCash ${portfolio['cash']:,.2f} · Invested ${portfolio['invested']:,.2f}\nEquity ${portfolio['equity']:,.2f} · Total P/L {portfolio['total_pnl']:+,.2f}\nRealized {portfolio['realized_pnl']:+,.2f} · Unrealized {portfolio['unrealized_pnl']:+,.2f}\nGoal progress {portfolio['goal_progress']:.2f}%",'inline':False}
+    summary={'title':'SIGNALFORGE · PAPER TRADING DESK','description':'**MARKET SCAN COMPLETE**\nMulti-crypto · courtroom review · 5m / 15m\nNo real orders are placed.','color':0x4bd9ff,'fields':[{'name':'SIGNAL TREND','value':f'`-5` {spark} `+5`','inline':False},{'name':'PAPER WIN / LOSS','value':f'**{wins} WINS · {n-wins} LOSSES**\nWin rate {100*wins/n:.1f}% · Loss rate {100*(n-wins)/n:.1f}%' if n else 'Collecting resolved calls','inline':True},{'name':'🎯 SNIPE SCORE','value':f'**{snipe_stats["wins"]} WINS · {snipe_stats["losses"]} LOSSES**\nWin rate {snipe_stats["win_rate"]:.1f}%' if snipe_stats['sample'] else 'Waiting for first confirmed snipe to settle','inline':True},{'name':'SNIPE STREAK','value':f'🔥 **{snipe_stats["current_streak"]}** current\n🏆 **{snipe_stats["best_streak"]}** all-time','inline':True},{'name':'FORECAST WINS','value':f'**{fw}**','inline':True},{'name':'FORECAST FLIPS','value':f'**{ff}** · correct after changing direction','inline':True},{'name':'FORECAST LOSSES','value':f'**{fl}**','inline':True},{'name':'WIN STREAK','value':f'🔥 **{current_streak}** current\n🏆 **{best_streak}** all-time record','inline':False},{'name':'RESOLVED FORECASTS','value':str(len(frows)),'inline':True},{'name':'RESOLVED PAPER CALLS','value':str(n),'inline':True},{'name':'OPEN POSITIONS','value':str(opens),'inline':True},portfolio_field],'footer':{'text':'UP/DOWN forecast scored at market settlement · FLIP = correct after direction changed · PAPER ONLY'},'timestamp':iso()}
     cards=market_embeds(display_lines); positions=position_embeds(c)
     # One editable message per multi-bot channel: summary, organized crypto radar, and positions.
     # Five concise coin cards, refreshed with the latest scan values.
