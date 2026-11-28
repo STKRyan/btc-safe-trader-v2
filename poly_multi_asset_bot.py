@@ -70,6 +70,43 @@ def send(text, embed=None):
         r=S.post(WEBHOOK, json=payload, timeout=12); r.raise_for_status(); return True
     except Exception as e: print(f"Discord send failed: {type(e).__name__}: {e}"); return False
 
+
+def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
+                      roi, tech, imbalance=0.0, detail="", target=None, stop=None):
+    """Premium multi-asset paper-trade event card; percentages are heuristic strength, not odds."""
+    side=str(side).upper()
+    down=side=="DOWN"
+    direction="🔴 DOWN" if down else "🟢 UP"
+    color=0xEF4444 if down else 0x22C55E
+    event=str(event).upper()
+    if "FLIP" in event:
+        title=f"🟠 FLIP / REASSESS · {asset} {timeframe}m"
+        color=0xF59E0B
+    elif "EXIT" in event or "SELL" in event or "STOP" in event:
+        title=f"🔴 SELL / EXIT · {asset} {timeframe}m"
+        color=0xEF4444
+    elif "ENTRY" in event:
+        title=f"{'⚡ SCALP' if trade_type=='SCALP' else '📍 HOLD'} ENTRY · {asset} {timeframe}m"
+    else:
+        title=f"{'🔴' if down else '🟢'} {event} · {asset} {timeframe}m"
+    score=max(0,min(100,abs(int((tech or {}).get("score",0)))*20))
+    risk=flip_risk(tech or {},side,imbalance) if side in ("UP","DOWN") else 50
+    hold=max(0,min(100,100-risk))
+    bar=color_pct_bar(hold,'🟥' if down else '🟩',12)
+    flipbar=color_pct_bar(risk,'🟧',10)
+    def px(v): return f"${float(v):.3f}" if v is not None else "—"
+    fields=[
+        {"name":"SIGNAL / TYPE","value":f"**{direction} · {trade_type}**","inline":True},
+        {"name":"HOLD PRESSURE","value":f"**{hold}%**\n{bar}","inline":True},
+        {"name":"FLIP RISK","value":f"**{risk}%**\n{flipbar}","inline":True},
+        {"name":"ENTRY / CURRENT BID","value":f"{px(entry)} / {px(bid)}","inline":True},
+        {"name":"PAPER P&L","value":f"**{roi*100:+.2f}%**","inline":True},
+        {"name":"TARGET / STOP","value":f"{px(target)} / {px(stop)}","inline":True},
+        {"name":"UPDATE","value":str(detail or event)[:850],"inline":False}
+    ]
+    return {"title":title,"description":"Multi-asset paper trading · pressure/strength are heuristic, not win probabilities.","color":color,"fields":fields,"footer":{"text":"BTC · ETH · SOL · XRP · BNB · paper trades only"},"timestamp":iso()}
+
+
 def send_signal_once(c, key, message):
     """Repeat a current paper signal only after its cooldown; avoid scan-loop spam."""
     row=c.execute("SELECT sent_at FROM signal_alerts WHERE alert_key=?",(key,)).fetchone()
@@ -961,6 +998,11 @@ def maybe_enter(c, asset, tf, m, tech):
         add_ledger(c,call_id,"ENTRY",asset,side,-stake,stats["ask"],qty,0,cash,
                    f"Bought {qty:.4f} contracts at ask; position sizing {PAPER_POSITION_FRACTION*100:.2f}% of paper equity")
         c.commit()
+        send("",
+             embed=trade_event_embed(asset,tf,side,"ENTRY","SCALP" if "SCALP" in str(snipe).upper() else "HOLD",
+                 float(stats["ask"]),float(stats["bid"]),0.0,tech,float(stats.get("imbalance",0)),
+                 f"Paper entry accepted by existing filters. Watch the pressure bar; manage target, stop, and reversal risk.",
+                 float(stats["ask"])*(1+TARGET_PROFIT_ROI),float(stats["ask"])*(1+STOP_ROI)))
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
     return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
@@ -1052,6 +1094,15 @@ def manage_open_calls(c, asset, tech):
                 c.commit()
             if action!=r["last_action"]:
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
+                event="FLIP" if ("SIGNAL BREAK" in action or "MARKET TURNING" in action) else ("SELL / EXIT" if exit_qty>0 else "HOLD")
+                target=float(entry)*(1+TARGET_PROFIT_ROI)
+                stop=float(entry)*(1+STOP_ROI)
+                send("",embed=trade_event_embed(
+                    r["asset"],int(r["timeframe"]),r["side"],event,
+                    "SCALP" if "SCALP" in str(r["features"]).upper() else "HOLD",
+                    entry,bid,roi,tech,float(stats.get("imbalance",0)),
+                    f"{action}. {'Position exited/trimmed at executable bid.' if exit_qty>0 else 'Remain in position only while the original direction stays valid.'}",
+                    target,stop))
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
 
