@@ -405,8 +405,6 @@ def exchange_snapshot(asset, seconds=10):
         book_history=[x for x in st.get("book_history",[]) if now-x[0]<=5]
         last_price=st["last_price"]; last_price_ts=st["last_price_ts"]
     large=large_print_summary(all_trades,seconds,minimum_notional=5000.0)
-    stack_side="UP" if imbalance>=0.04 else "DOWN" if imbalance<=-0.04 else "NEUTRAL"
-    stack_persistence=100*sum(1 for _,hist_imb,_ in book_history if (hist_imb>=0.04 if stack_side=="UP" else hist_imb<=-0.04 if stack_side=="DOWN" else False))/max(1,len(book_history))
     buy=sum(p*q for _,side,p,q in trades if side=="BUY")
     sell=sum(p*q for _,side,p,q in trades if side=="SELL")
     total=buy+sell; prices=[x[2] for x in trades]
@@ -415,6 +413,8 @@ def exchange_snapshot(asset, seconds=10):
     bd=sum(p*q for p,q in bids[:10]); ad=sum(p*q for p,q in asks[:10])
     imbalance=(bd-ad)/max(1.0,bd+ad) if bids and asks else 0.0
     depth=min(bd,ad) if bids and asks else 0.0
+    stack_side="UP" if imbalance>=0.04 else "DOWN" if imbalance<=-0.04 else "NEUTRAL"
+    stack_persistence=100*sum(1 for _,hist_imb,_ in book_history if (hist_imb>=0.04 if stack_side=="UP" else hist_imb<=-0.04 if stack_side=="DOWN" else False))/max(1,len(book_history))
     spread_pct=((ask-bid)/((ask+bid)/2)*100) if bid and ask and ask>=bid else None
     closed=[x for x in candles if x["closed"]]
     c1=c5=None; bias="UNKNOWN"; hi=lo=None
