@@ -276,10 +276,10 @@ def settle_pending_calls():
                 continue
             core.record_settlement(DB_PATH, ticker, result)
             with sqlite3.connect(DB_PATH) as db:
-                pos = db.execute("SELECT side,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
+                pos = db.execute("SELECT side,entry,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                                  (ticker,)).fetchone()
             if pos:
-                payout = Decimal("1") if pos[0] == result else Decimal("0")
+                payout = core.decimal(pos[1], Decimal("0")) if result == "VOID" else (Decimal("1") if pos[0] == result else Decimal("0"))
                 core.close_paper_trade(DB_PATH, ticker, payout, "official settlement")
     except Exception as exc:
         print(f"Settlement batch failed: {type(exc).__name__}: {exc}")
