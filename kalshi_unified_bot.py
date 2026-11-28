@@ -97,7 +97,16 @@ def evaluate(m):
     if q is None:
         return {"action": "WAIT", "reason": "quote fields incomplete or invalid", "quote": q}
     momentum, age = core.record_sample(DB_PATH, m["ticker"], q["yes_mid"])
-    signal = core.signal_gate(quote=q, momentum_pct=momentum, sample_age=age)
+    performance = core.stats(DB_PATH)
+    asset_stats = performance.get("by_asset", {}).get(m["_asset"], {})
+    min_momentum, max_spread = 0.45, Decimal("0.04")
+    # Protect an active winning run; tighten further after a weak settled run.
+    if performance.get("current_initial_streak", 0) > 0 or asset_stats.get("current_initial_streak", 0) > 0:
+        min_momentum, max_spread = 0.55, Decimal("0.03")
+    if performance.get("current_initial_streak", 0) <= -2 or asset_stats.get("current_initial_streak", 0) <= -2:
+        min_momentum, max_spread = 0.75, Decimal("0.025")
+    signal = core.signal_gate(quote=q, momentum_pct=momentum, sample_age=age,
+                              minimum_momentum=min_momentum, max_spread=max_spread)
     signal["quote"] = q
     signal["asset"] = m["_asset"]
     signal["ticker"] = m["ticker"]
@@ -148,6 +157,9 @@ def manage_position(m, signal):
     elif age >= max_hold:
         reason = "maximum paper hold time reached"
     if reason:
+        if opposite:
+            core.record_flip(DB_PATH, ticker, m["_asset"], side, signal["side"],
+                             signal.get("entry", bid), reason)
         core.close_paper_trade(DB_PATH, ticker, bid, reason)
         if signal.get("side") and signal.get("side") != side:
             core.open_paper_trade(DB_PATH, ticker, m["_asset"], signal)
@@ -174,7 +186,9 @@ def render_card(m, s, stats):
         {"name": "Contract momentum", "value": f"{s.get('momentum_pct',0):+.2f}%" if s.get("momentum_pct") is not None else "Building history", "inline": True},
         {"name": "Paper position", "value": position_text, "inline": False},
         {"name": "Plan", "value": f"Target +{s.get('target_pct',0)*100:.1f}% · Stop -{s.get('stop_pct',0)*100:.1f}% · max {s.get('max_hold_seconds',0)}s" if side else "No entry until all gates pass", "inline": False},
-        {"name": "Settled initial calls", "value": f"{stats['wins']}W / {stats['losses']}L · {stats['win_rate_pct'] if stats['win_rate_pct'] is not None else '—'}% · current streak {stats['current_initial_streak']} · best {stats['best_initial_win_streak']}", "inline": False},
+        {"name": "Initial call · overall", "value": f"{stats['wins']}W / {stats['losses']}L · {stats['win_rate_pct'] if stats['win_rate_pct'] is not None else '—'}% · streak {stats['current_initial_streak']} · best {stats['best_initial_win_streak']}", "inline": False},
+        {"name": f"{m['_asset']} record", "value": f"{stats['by_asset'][m['_asset']]['wins']}W / {stats['by_asset'][m['_asset']]['losses']}L · streak {stats['by_asset'][m['_asset']]['current_initial_streak']} · best {stats['by_asset'][m['_asset']]['best_initial_win_streak']}", "inline": True},
+        {"name": "Managed paper", "value": f"{stats['managed_wins']}W / {stats['managed_losses']}L · avg {stats['managed_avg_pnl_pct'] if stats['managed_avg_pnl_pct'] is not None else '—'}% · streak {stats['current_managed_streak']} · flips {stats['flip_events']}", "inline": False},
     ]
     rules = str(m.get("rules_primary") or "Settlement rules unavailable")[:650]
     embed = {
