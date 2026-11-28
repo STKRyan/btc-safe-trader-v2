@@ -301,10 +301,10 @@ def _bx_rest_poll_symbol(symbol):
         asks=sorted([(float(x[0]),float(x[1])) for x in depth.get("asks",[]) if float(x[1])>0],key=lambda x:x[0])
         if bids and asks:
             bd=sum(p*q for p,q in bids[:10]); ad=sum(p*q for p,q in asks[:10])
-        imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
-        st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
+            imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
+            st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
                        "imbalance":imb,"book_ts":receipt,"quote_ts":receipt})
-        st["book_history"].append((receipt,imb,depth))
+            st["book_history"].append((receipt,imb,depth))
         rows=st["candles"]
         for k in klines:
             try:
