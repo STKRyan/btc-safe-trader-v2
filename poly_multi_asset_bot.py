@@ -989,24 +989,28 @@ def maybe_enter(c, asset, tf, m, tech):
                 f"cap ${exposure_cap:,.2f} · currently invested ${portfolio['invested']:,.2f} · "
                 f"remaining budget ${exposure_remaining:,.2f}")
     qty=stake/stats["ask"]
+    trade_type="HOLD" if "SNIPE CONFIRMED" in str(snipe).upper() else "SCALP"
+    target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
+    stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
+    max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
+    trade_features=dict(tech)
+    trade_features.update({"trade_mode":trade_type,"trade_target_roi":target_roi,
+                           "trade_stop_roi":stop_roi,"max_hold_minutes":max_hold_minutes})
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at,last_mark,peak_mark) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],stake,qty,qty,tech["score"],json.dumps(tech),iso(),float(stats["bid"]),float(stats["ask"])))
+          (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],stake,qty,qty,tech["score"],json.dumps(trade_features),iso(),float(stats["bid"]),float(stats["ask"])))
         call_id=c.execute("SELECT last_insert_rowid() n").fetchone()["n"]
         cash=portfolio["cash"]-stake
         set_bot_state(c,"paper_cash",cash)
         add_ledger(c,call_id,"ENTRY",asset,side,-stake,stats["ask"],qty,0,cash,
                    f"Bought {qty:.4f} contracts at ask; position sizing {PAPER_POSITION_FRACTION*100:.2f}% of paper equity")
         c.commit()
-        trade_type="HOLD" if "SNIPE CONFIRMED" in str(snipe).upper() else "SCALP"
-        target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
-        stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
-        max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
         send("",
              embed=trade_event_embed(asset,tf,side,"ENTRY",trade_type,
                  float(stats["ask"]),float(stats["bid"]),0.0,tech,float(stats.get("imbalance",0)),
                  f"{trade_type} {side} · take profit {target_roi*100:+.1f}% · stop {stop_roi*100:+.1f}% · exit on signal invalidation or after {max_hold_minutes} minutes.",
-                 float(stats["ask"])*(1+target_roi),float(stats["ask"])*(1+stop_roi)))
+                 float(stats["ask"])*(1+target_roi),float(stats["ask"])*(1+stop_roi),
+                 target_roi,stop_roi,max_hold_minutes))
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
     return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
@@ -1065,18 +1069,27 @@ def manage_open_calls(c, asset, tech):
             entry=float(r["entry"]); bid=float(stats["bid"])
             if entry<=0: continue
             roi=bid/entry-1.0; rem=float(r["remaining_qty"] or 0.0)
+            try: call_features=json.loads(r["features"] or "{}")
+            except Exception: call_features={}
+            trade_type="SCALP" if str(call_features.get("trade_mode","HOLD")).upper()=="SCALP" else "HOLD"
+            target_roi=float(call_features.get("trade_target_roi",0.04 if trade_type=="SCALP" else TARGET_PROFIT_ROI))
+            stop_roi=float(call_features.get("trade_stop_roi",-0.03 if trade_type=="SCALP" else STOP_ROI))
+            max_hold_minutes=int(call_features.get("max_hold_minutes",int(r["timeframe"])*(1 if trade_type=="SCALP" else 2)))
+            try: elapsed_minutes=max(0.0,(now()-datetime.fromisoformat(str(r["created_at"]).replace("Z","+00:00"))).total_seconds()/60.0)
+            except Exception: elapsed_minutes=0.0
             realized=float(r["realized_pnl"] or 0.0); partial=int(r["partial_taken"] or 0)
             aligned=int(tech["score"])*(1 if r["side"]=="UP" else -1)
             peak=max(float(r["peak_mark"] or entry),bid)
             opposing=stats["imbalance"]*(1 if r["side"]=="UP" else -1)
             exit_qty=0.0; action="HOLD"
-            if roi<=STOP_ROI: action="FAST PROTECTIVE EXIT"; exit_qty=rem
-            elif roi>=TARGET_PROFIT_ROI: action="TARGET EXIT"; exit_qty=rem
+            if roi<=stop_roi: action="FAST PROTECTIVE EXIT"; exit_qty=rem
+            elif roi>=target_roi: action="TARGET EXIT"; exit_qty=rem
+            elif elapsed_minutes>=max_hold_minutes: action="TIME LIMIT EXIT"; exit_qty=rem
             elif partial and bid<=peak*(1.0-TRAILING_GIVEBACK): action="TRAILING PROFIT EXIT"; exit_qty=rem
             elif roi>=0.02 and (flip_risk(tech,r["side"],float(stats.get("imbalance",0)))>=70 or opposing<-0.12 or aligned<=-2):
                 action="PROTECT OPEN PROFIT · MARKET TURNING"; exit_qty=rem
             elif aligned<=-2 and opposing<-0.08: action="EARLY SIGNAL BREAK EXIT"; exit_qty=rem
-            elif roi>=PARTIAL_PROFIT_ROI and not partial and rem>0:
+            elif roi>=min(PARTIAL_PROFIT_ROI,target_roi*0.5) and not partial and rem>0:
                 action="PARTIAL PROFIT · SELL 50%"; exit_qty=rem/2
             cash=float(bot_state_value(c,"paper_cash",str(PAPER_STARTING_BANKROLL)))
             if exit_qty>0:
@@ -1099,14 +1112,13 @@ def manage_open_calls(c, asset, tech):
             if action!=r["last_action"]:
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
                 event="FLIP" if ("SIGNAL BREAK" in action or "MARKET TURNING" in action) else ("SELL / EXIT" if exit_qty>0 else "HOLD")
-                target=float(entry)*(1+TARGET_PROFIT_ROI)
-                stop=float(entry)*(1+STOP_ROI)
+                target=float(entry)*(1+target_roi)
+                stop=float(entry)*(1+stop_roi)
                 send("",embed=trade_event_embed(
-                    r["asset"],int(r["timeframe"]),r["side"],event,
-                    "SCALP" if "SCALP" in str(r["features"]).upper() else "HOLD",
+                    r["asset"],int(r["timeframe"]),r["side"],event,trade_type,
                     entry,bid,roi,tech,float(stats.get("imbalance",0)),
-                    f"{action}. {'Position exited/trimmed at executable bid.' if exit_qty>0 else 'Remain in position only while the original direction stays valid.'}",
-                    target,stop))
+                    f"{trade_type} {r['side']} · {action}. {'Position exited/trimmed at executable bid.' if exit_qty>0 else 'Hold only while direction remains valid.'} · elapsed {elapsed_minutes:.1f}/{max_hold_minutes}m.",
+                    target,stop,target_roi,stop_roi,max_hold_minutes))
         except Exception as e: print(f"Position manager {r['id']}: {type(e).__name__}: {e}")
 
 
