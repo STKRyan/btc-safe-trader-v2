@@ -647,8 +647,7 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, f
         support.append(f"live trade tape buy pressure +{flow_net:.0f}%")
     elif flow_n>=3 and flow_net<=-15:
         objections.append(f"live trade tape sell pressure {flow_net:.0f}%")
-    if flow_n>=3 and flow_move is not None and float(flow_move)<=-0.50:
-        objections.append("recent selected-token trades are falling")
+    if flow_n>=3 and flow_move is not None and float(flow_move)<=-0.50:        objections.append("recent selected-token trades are falling")
     # Independent Binance spot evidence: aggressor trades, top-of-book depth and completed candles.
     exchange=exchange or {}
     ex_n=int(exchange.get("trade_count",0) or 0)
@@ -779,7 +778,7 @@ def scalp_call(c, asset, tf, market, tech):
     ex_c1=exchange.get("candle_1m_pct"); ex_c5=exchange.get("candle_5m_pct")
     exchange_note=f" · Binance {exchange.get('symbol',asset)} flow {ex_net:+.0f}% / book {ex_imb:+.2f} / 1m {float(ex_c1):+.3f}% / 5m {float(ex_c5):+.3f}%" if ex_c1 is not None and ex_c5 is not None else " · Binance live chart data warming up"
     return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}{exchange_note}"
-def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=None, asset="BTC"):
+def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=None, asset="BTC", tf=5):
     """Confirm a snipe only when fresh selected-token buying, movement and liquidity align."""
     ask=float(stats["ask"]); stamp=time.time()
     row=c.execute("SELECT ask,ts FROM snipe_ticks WHERE market_id=? AND side=?",
@@ -924,7 +923,7 @@ def maybe_enter(c, asset, tf, m, tech):
     flow=live_flow_snapshot(tid,seconds=10)
     exchange=exchange_snapshot(asset,seconds=10)
     brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'),flow=flow,exchange=exchange)
-    snipe=snipe_update(c,m.get("id"),side,stats,tech,brain,token=tid,exchange=exchange,asset=asset)
+    snipe=snipe_update(c,m.get("id"),side,stats,tech,brain,token=tid,exchange=exchange,asset=asset,tf=tf)
     if "SNIPE CONFIRMED" in snipe:
         record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]),features=tech)
     current_risk=int(brain.get("flip_risk",95))
@@ -1297,8 +1296,7 @@ def live_position_embed(c):
             quote_text=f"**LAST MARK:** {mark:.3f} · current quote unavailable"
             freshness="🟠 STALE / WAITING FOR QUOTE"
         roi=(mark/entry-1)*100 if entry>0 else 0.0
-        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))
-        lines.append({
+        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))        lines.append({
             "name":f"{r['asset']} {r['timeframe']}m · {r['side']} · {freshness}"[:256],
             "value":(
                 f"**Market:** {market[:220]}\n{quote_text}\n"
