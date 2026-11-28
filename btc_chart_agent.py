@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone BTC 15-second sampled candlestick chart. Read-only; never trades."""
+"""Standalone fast-refresh BTC sampled candlestick chart. Read-only; never trades."""
 from __future__ import annotations
 import json, os, time, urllib.parse
 from datetime import datetime, timezone
@@ -8,11 +8,11 @@ import requests
 
 TICKER = "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
 HTTP_TIMEOUT = 15
-UPDATE_SECONDS = max(15, int(os.getenv("BTC_CHART_UPDATE_SECONDS", "15")))
-SAMPLE_SECONDS = max(5, int(os.getenv("BTC_CHART_SAMPLE_SECONDS", "5")))
-CANDLE_SECONDS = 15
-MAX_SAMPLES = 720  # approximately one hour at 5-second sampling
-MAX_CANDLES = 240  # approximately one hour of 15-second candles
+UPDATE_SECONDS = max(5, int(os.getenv("BTC_CHART_UPDATE_SECONDS", "5")))
+SAMPLE_SECONDS = max(2, int(os.getenv("BTC_CHART_SAMPLE_SECONDS", "3")))
+CANDLE_SECONDS = 10
+MAX_SAMPLES = 1200  # approximately one hour at 3-second sampling
+MAX_CANDLES = 360  # approximately one hour of 10-second sampled candles
 STATE_PATH = Path(os.getenv("BTC_CHART_STATE_PATH", "data/btc_chart_state.json"))
 WEBHOOK_ENV = "DISCORD_BTC_CHART_WEBHOOK_URL"
 SESSION = requests.Session()
@@ -59,7 +59,7 @@ def save_state(state):
     temp_path.replace(STATE_PATH)
 
 def make_candles(samples):
-    """Aggregate 5-second price snapshots into sampled 15-second OHLC candles."""
+    """Aggregate frequent Coinbase ticker snapshots into sampled 10-second OHLC candles."""
     candles = []
     for sample in samples:
         try:
@@ -97,7 +97,7 @@ def make_embed(samples):
     config = {
         "type": "candlestick",
         "data": {"datasets": [{
-            "label": "BTC/USD · 15-second sampled candles",
+            "label": "BTC/USD · 10-second sampled candles",
             "data": candle_data,
             "color": {"up": "#22c55e", "down": "#ef4444", "unchanged": "#9ca3af"},
             "borderColor": {"up": "#22c55e", "down": "#ef4444", "unchanged": "#9ca3af"},
@@ -105,7 +105,7 @@ def make_embed(samples):
         }]},
         "options": {
             "plugins": {"legend": {"display": False}},
-            "title": {"display": True, "text": "BTC / USD · 15 SECOND SAMPLED CANDLES", "color": "#f1f5f9",
+            "title": {"display": True, "text": "BTC / USD  |  LIVE 10-SECOND SAMPLED CANDLES", "color": "#f1f5f9",
                       "font": {"size": 22, "weight": "bold"}, "padding": 16},
             "scales": {
                 "x": {"type": "time", "time": {"unit": "minute"},
@@ -119,7 +119,7 @@ def make_embed(samples):
         },
     }
     return {
-        "title": "₿ BTC LIVE · 15-SECOND CANDLESTICKS",
+        "title": "◈ BTC LIVE MARKET TAPE  |  10s CANDLES",
         "description": (
             f"💰 **BTC/USD: ${latest:,.2f}**\n"
             f"📊 Window change: **{change:+.2f}%**\n"
@@ -127,18 +127,18 @@ def make_embed(samples):
             f"🔺 1-hour high: **${range_high:,.2f}**\n"
             f"🔻 1-hour low: **${range_low:,.2f}**\n"
             f"📍 Price is **{range_position:.0f}%** from the low toward the high.\n"
-            f"🕯️ Candles: **{len(candles)}** · chart refresh: **{UPDATE_SECONDS}s**\n\n"
+            f"🕯️ Candles: **{len(candles)}** · sample: **{SAMPLE_SECONDS}s** · chart refresh: **{UPDATE_SECONDS}s**\n\n"
             "EASY GUIDE: green candle = price went up in that candle; red = price went down. "
             "High = highest sampled price in this chart. Low = lowest sampled price. "
             "Near the high can mean price is stretched; near the low can mean price is weak. "
             "Neither guarantees the next move.\n"
             "Candles are built from Coinbase last-trade snapshots collected every "
             f"{SAMPLE_SECONDS}s and grouped into {CANDLE_SECONDS}s OHLC bars; "
-            "they are sampled candles, not exchange-native 15-second candles."
+            "they are sampled candles, not exchange-native 10-second candles."
         ),
         "color": 0x19C37D if change >= 0 else 0xEF4444,
         "image": {"url": "attachment://btc_15s_chart.png"},
-        "footer": {"text": "Coinbase BTC-USD · read-only chart · paper trading only"},
+        "footer": {"text": "COINBASE BTC/USD  •  LIVE SAMPLE TAPE  •  READ-ONLY"},
         "timestamp": utc_now().isoformat()
     }, config
 
@@ -190,7 +190,7 @@ def update_discord(webhook, state, embed, chart_config):
     print("BTC candlestick chart message created; ID saved.", flush=True)
 
 def main():
-    print("BTC 15-second sampled candlestick chart started; read-only.", flush=True)
+    print(f"BTC fast chart started: {SAMPLE_SECONDS}s sampling / {UPDATE_SECONDS}s Discord refresh / {CANDLE_SECONDS}s sampled candles; read-only.", flush=True)
     retry_delay, last_missing_notice = 5, 0.0
     state = load_state()
     while True:
