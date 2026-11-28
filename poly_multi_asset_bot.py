@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 import requests
+from live_market_tape import register_live_tokens, live_flow_snapshot, streamed_book_stats
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -297,13 +298,18 @@ def indicators(candles):
 
 
 def book_stats(token):
-    b=get(f"{CLOB}/book",{"token_id":token}); bids=sorted(b.get("bids",[]),key=lambda x:float(x["price"]),reverse=True); asks=sorted(b.get("asks",[]),key=lambda x:float(x["price"]))
+    """Prefer fresh WebSocket quotes/books, with REST snapshot fallback."""
+    live=streamed_book_stats(token)
+    if live: return live
+    b=get(f"{CLOB}/book",{"token_id":token})
+    bids=sorted(b.get("bids",[]),key=lambda x:float(x["price"]),reverse=True)
+    asks=sorted(b.get("asks",[]),key=lambda x:float(x["price"]))
     if not bids or not asks:return None
     bid=float(bids[0]["price"]); ask=float(asks[0]["price"])
-    bd=sum(float(x["price"])*float(x["size"]) for x in bids[:10]); ad=sum(float(x["price"])*float(x["size"]) for x in asks[:10])
-    return {"bid":bid,"ask":ask,"spread":ask-bid,"depth":min(bd,ad),"imbalance":(bd-ad)/max(1,bd+ad)}
-
-
+    bd=sum(float(x["price"])*float(x["size"]) for x in bids[:10])
+    ad=sum(float(x["price"])*float(x["size"]) for x in asks[:10])
+    return {"bid":bid,"ask":ask,"spread":ask-bid,"depth":min(bd,ad),
+            "imbalance":(bd-ad)/max(1,bd+ad),"source":"REST snapshot"}
 def shared_learning_data():
     try: return json.loads(Path("data/shared_learning.json").read_text(encoding="utf-8"))
     except Exception: return {}
@@ -456,7 +462,7 @@ def snipe_learning_adjustment(c, asset, tf):
             "loss_streak":loss_streak,"caution":caution,"pause":pause,"patterns":patterns}
 
 
-def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
+def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, flow=None):
     """Challenge a directional call with current evidence and resolved flip memory."""
     if side not in ("UP","DOWN"):
         return {"agrees":False,"label":"NO VERDICT · WAIT","score":0,
@@ -464,7 +470,8 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
     sign=1 if side=="UP" else -1
     m1=float(tech.get("move1",0)); m3=float(tech.get("move3",0)); m10=float(tech.get("move10",0))
     rsi=float(tech.get("rsi",50)); vr=float(tech.get("volume_ratio",0))
-    imbalance=float(stats.get("imbalance",0))*sign
+    # Book stats belong to the selected outcome token; do not invert DOWN.
+    imbalance=float(stats.get("imbalance",0))
     pos=tech.get("range_position"); support=[]; objections=[]
     if m1*sign>0 and m3*sign>0: support.append("1m/3m momentum aligned")
     else: objections.append("short momentum conflicts")
@@ -478,6 +485,16 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
     if imbalance>=0.05: support.append("order-book pressure supports")
     elif imbalance<=-0.10: objections.append("order-book pressure opposes")
     else: objections.append("book pressure weak/neutral")
+    flow=flow or {}
+    flow_n=int(flow.get("trade_count",0) or 0)
+    flow_net=float(flow.get("net_flow_pct",0) or 0)
+    flow_move=flow.get("trade_move_pct")
+    if flow_n>=3 and flow_net>=15:
+        support.append(f"live trade tape buy pressure +{flow_net:.0f}%")
+    elif flow_n>=3 and flow_net<=-15:
+        objections.append(f"live trade tape sell pressure {flow_net:.0f}%")
+    if flow_n>=3 and flow_move is not None and float(flow_move)<=-0.50:
+        objections.append("recent selected-token trades are falling")
     if pos is not None:
         p=float(pos)
         if (side=="UP" and p>=90) or (side=="DOWN" and p<=10): objections.append("price near range exhaustion")
@@ -528,13 +545,14 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None):
             f"AGAINST: {', '.join(objections[:3]) or 'no strong objection'} | "
             f"FORECAST MEMORY: {memory['sample']} resolved, {memory['flip_rate']*100:.0f}% flip rate | "
             f"SNIPE MEMORY: {snipe_memory['sample']} settled, {snipe_wr}, loss streak {snipe_memory['loss_streak']} | "
+            f"LIVE TAPE: {flow_n} prints/10s, net {flow_net:+.0f}% | "
             f"CURRENT WINDOW: {current_flips} flips | VERDICT: {verdict}")
     return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT",
             "score":score,"flip_risk":risk,"market_flips":current_flips,
             "memory":memory,"snipe_memory":snipe_memory,"debate":debate}
 
 def scalp_call(c, asset, tf, market, tech):
-    """Readable 5m scalp idea only when momentum and liquidity are aligned."""
+    """Readable 5m scalp idea only when momentum and live liquidity align."""
     if tf!=5: return "SCALP: 5m only · sit out this timeframe"
     seconds_left=int(300-(time.time()%300))
     if not 90<=seconds_left<=240: return "SCALP: SIT OUT · wait for the clean 90–240 second window"
@@ -546,58 +564,74 @@ def scalp_call(c, asset, tf, market, tech):
         return "SCALP: SIT OUT · 1m and 3m momentum disagree"
     mapping=tokens(market); tid=mapping.get(side)
     if not tid: return "SCALP: SIT OUT · outcome token not verified"
+    register_live_tokens(list(tokens(market).values()))
     stats=book_stats(tid)
     if not stats: return "SCALP: SIT OUT · order book unavailable"
     if not (0.20<=stats["ask"]<=0.80 and stats["spread"]<=0.02 and stats["depth"]>=1000):
         return "SCALP: SIT OUT · price, spread, or liquidity is not safe enough"
-    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
+    flow=live_flow_snapshot(tid,seconds=10)
+    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=market.get('id'),flow=flow)
     if not brain["agrees"]: return "SCALP: SIT OUT · second brain does not confirm"
     ask=float(stats["ask"]); target=ask*1.04; stop=ask*0.97
     sm=brain.get("snipe_memory",{})
     wr=f"{sm['win_rate']:.0f}%" if sm.get("win_rate") is not None else "new sample"
     memory_note=f" · snipe memory {wr}/{sm.get('sample',0)} · loss streak {sm.get('loss_streak',0)}"
-    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}"
-
-def snipe_update(c, market_id, side, stats, tech, brain):
-    """Track real Polymarket contract ask movement; meter is strength, not win odds."""
+    flow_note=f" · tape {flow['trade_count']} prints/10s, net {flow['net_flow_pct']:+.0f}%"
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}
+def snipe_update(c, market_id, side, stats, tech, brain, token=None):
+    """Confirm snipes with selected-token movement, real trades and liquidity."""
     ask=float(stats["ask"]); stamp=time.time()
     row=c.execute("SELECT ask,ts FROM snipe_ticks WHERE market_id=? AND side=?",
                   (str(market_id),side)).fetchone()
-    move=None
-    if row and 2<=stamp-float(row["ts"])<=90 and float(row["ask"])>0:
-        move=(ask/float(row["ask"])-1)*100
+    ask_move=None
+    if row and 1<=stamp-float(row["ts"])<=90 and float(row["ask"])>0:
+        ask_move=(ask/float(row["ask"])-1)*100
     c.execute("INSERT INTO snipe_ticks(market_id,side,ask,ts) VALUES(?,?,?,?) "
               "ON CONFLICT(market_id,side) DO UPDATE SET ask=excluded.ask,ts=excluded.ts",
               (str(market_id),side,ask,stamp)); c.commit()
-    abs_move=abs(move or 0)
-    band="NO RECENT BASELINE" if move is None else "MICRO 1–9%" if 1<=abs_move<10 else "FAST 10–30%" if 10<=abs_move<30 else "EXTREME 30%+" if abs_move>=30 else "QUIET <1%"
-    sign=1 if side=="UP" else -1
-    book_ok=float(stats.get("imbalance",0))*sign>=0.05 and float(stats.get("spread",1))<=MAX_SPREAD and float(stats.get("depth",0))>=MIN_DEPTH
-    confirmed=move is not None and abs_move>=1 and (move*sign)>0 and book_ok and brain.get("agrees") and int(brain.get("flip_risk",95))<70
-    strength=max(0,min(100,round(abs_move*3 + (20 if book_ok else 0) + (20 if brain.get("agrees") else 0)))) if move is not None else 0
-    if move is None: status="SNIPE WATCH · building price baseline"
-    elif abs_move<1: status="SNIPE WAIT · move under 1%"
+    flow=live_flow_snapshot(token,seconds=10)
+    tape_move=flow.get("trade_move_pct")
+    # Both selected outcome tokens should rise when that outcome gains demand.
+    move_size=max([abs(x) for x in (ask_move,tape_move) if x is not None] or [0.0])
+    move_support=(ask_move is not None and ask_move>=1.0) or (
+        tape_move is not None and float(tape_move)>=0.60 and flow["trade_count"]>=2)
+    book_ok=float(stats.get("imbalance",0))>=0.05 and float(stats.get("spread",1))<=MAX_SPREAD and float(stats.get("depth",0))>=MIN_DEPTH
+    flow_n=int(flow.get("trade_count",0) or 0); net=float(flow.get("net_flow_pct",0) or 0)
+    flow_confirm=flow_n>=3 and net>=15 and (tape_move is None or float(tape_move)>=-0.20)
+    flow_conflict=flow_n>=3 and net<=-15
+    brain_ok=bool(brain.get("agrees")) and int(brain.get("flip_risk",95))<70
+    confirmed=move_support and book_ok and brain_ok and not flow_conflict and (flow_n<3 or flow_confirm)
+    strength=max(0,min(100,round(move_size*4+(20 if book_ok else 0)+(20 if brain_ok else 0)+
+                    min(20,max(0,net)/5)))) if ask_move is not None or tape_move is not None else 0
+    if ask_move is None and tape_move is None: status="SNIPE WATCH · building live baseline"
+    elif flow_conflict: status="SNIPE BLOCKED · live sells outweigh buys"
     elif int(brain.get("flip_risk",95))>=70: status="SNIPE FLIP RISK · entry blocked"
-    elif confirmed: status="SNIPE CONFIRMED · evidence aligned"
-    else: status="SNIPE WATCH · not confirmed"
-    move_text="—" if move is None else f"{move:+.2f}%"
-    return f"🎯 {status} · contract move {move_text} · {band} · strength {strength}/100 (not win probability)"
-
-
+    elif flow_n>=3 and not flow_confirm: status="SNIPE WATCH · buy flow not confirmed"
+    elif confirmed: status="SNIPE CONFIRMED · selected-token price, tape, book and brains aligned"
+    else: status="SNIPE WATCH · not fully confirmed"
+    ask_text="—" if ask_move is None else f"{ask_move:+.2f}%"
+    tape_text="—" if tape_move is None else f"{float(tape_move):+.2f}%"
+    buy=float(flow.get("buy_notional",0)); sell=float(flow.get("sell_notional",0))
+    flow_text=(f"10s BUY {buy:.0f} / SELL {sell:.0f} contract-notional · net {net:+.0f}% · {flow_n} prints"
+               if flow_n else "10s tape awaiting trade prints")
+    band="NO BASELINE" if move_size==0 else "MICRO <1%" if move_size<1 else "FAST 1–5%" if move_size<5 else "BURST 5%+"
+    return (f"🎯 {status} · ask {ask_text} · trade {tape_text} · {band} · "
+            f"{flow_text} · strength {strength}/100 (heuristic, not win probability)")
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
     mapping=tokens(m); tid=mapping.get(side)
     if not tid:return "WAIT · outcome tokens not mapped safely"
+    register_live_tokens(list(tokens(m).values()))
     stats=book_stats(tid)
     if not stats:return "WAIT · order book unavailable"
     learn=learning_adjustment(c,asset,tf)
     required=learn["threshold"]
-    signed_imb=stats["imbalance"]*(1 if side=="UP" else -1)
+    signed_imb=float(stats["imbalance"])
     confirm=(tech["move1"]>0 and tech["move3"]>0) if side=="UP" else (tech["move1"]<0 and tech["move3"]<0)
-    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'))
-    snipe=snipe_update(c,m.get("id"),side,stats,tech,brain)
-    # Journal every confirmed snipe once per market/direction; resolve at settlement.
+    flow=live_flow_snapshot(tid,seconds=10)
+    brain=second_brain(tech,stats,side,c=c,asset=asset,tf=tf,market_id=m.get('id'),flow=flow)
+    snipe=snipe_update(c,m.get("id"),side,stats,tech,brain,token=tid)
     if "SNIPE CONFIRMED" in snipe:
         record_snipe_signal(c,asset,tf,m,side,float(stats["ask"]),features=tech)
     current_risk=int(brain.get("flip_risk",95))
@@ -607,7 +641,7 @@ def maybe_enter(c, asset, tf, m, tech):
     if not confirm:reasons.append("short momentum not aligned")
     if not brain["agrees"]:reasons.append("SECOND BRAIN: "+brain["label"])
     if current_risk>=70:reasons.append(f"FLIP RISK {current_risk}/100 · no new entry")
-    if signed_imb< -0.10:reasons.append("order book opposes signal")
+    if signed_imb< -0.10:reasons.append("selected-token order book opposes signal")
     if stats["spread"]>MAX_SPREAD:reasons.append("spread too wide")
     if stats["depth"]<MIN_DEPTH:reasons.append("book too thin")
     if not MIN_ASK<=stats["ask"]<=MAX_ASK:reasons.append("contract price outside entry band")
@@ -623,9 +657,7 @@ def maybe_enter(c, asset, tf, m, tech):
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · ${STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
-
-
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · {chr(36)}{STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}
 def resolve_calls(c):
     resolve_forecasts(c)
     # Resolve saved snipe-direction calls separately from ordinary paper entries.
@@ -709,7 +741,8 @@ def flip_risk(tech, side, imbalance=0.0):
     if against: risk+=14
     if strongly_against: risk+=12
     if (side=='UP' and rsi>=72) or (side=='DOWN' and rsi<=28): risk+=12
-    opposing=imbalance*(1 if side=='DOWN' else -1)
+    # Positive imbalance supports the selected outcome token, UP or DOWN.
+    opposing=-float(imbalance)
     if opposing>0.10: risk+=min(18,int((opposing-0.10)*60))
     range_pos=tech.get("range_position")
     if range_pos is not None and ((side=="UP" and float(range_pos)>=90) or (side=="DOWN" and float(range_pos)<=10)): risk+=8
@@ -926,15 +959,18 @@ def publish_board(c, embeds):
         print(f"Multi-bot Discord board update failed: {type(e).__name__}: {e}")
 
 def record_snipe_signal(c, asset, tf, market, side, entry, features=None):
-    """Journal each qualifying snipe with its setup so losses can teach the next call."""
+    """Journal each snipe with technical and live-flow evidence."""
     market_id=str(market.get("id",""))
     if not market_id or side not in ("UP","DOWN"): return
+    captured=dict(features or {})
+    token=tokens(market).get(side)
+    if token:
+        captured["live_flow"]=live_flow_snapshot(token,seconds=10)
+    captured["snipe_recorded_at"]=iso()
     c.execute(
         "INSERT OR IGNORE INTO snipe_journal(market_id,asset,timeframe,side,entry,created_at,features) VALUES(?,?,?,?,?,?,?)",
-        (market_id,asset,int(tf),side,float(entry),iso(),json.dumps(features or {})))
+        (market_id,asset,int(tf),side,float(entry),iso(),json.dumps(captured)))
     c.commit()
-
-
 def all_snipe_stats(c):
     """Global settled snipe scoreboard and persistent all-time win streak."""
     rows=c.execute("SELECT result FROM snipe_journal WHERE status='RESOLVED' "
@@ -1129,6 +1165,7 @@ def cycle(c):
                 m=discover(asset,tf)
                 if not m:
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
+                register_live_tokens(list(tokens(m).values()))
                 save_observation(c,asset,tf,m,tech)
                 record_forecast(c,m,asset,tf,tech.get("side","WAIT"),tech)
                 action=maybe_enter(c,asset,tf,m,tech)
