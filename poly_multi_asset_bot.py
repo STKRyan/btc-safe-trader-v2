@@ -1296,7 +1296,8 @@ def live_position_embed(c):
             quote_text=f"**LAST MARK:** {mark:.3f} · current quote unavailable"
             freshness="🟠 STALE / WAITING FOR QUOTE"
         roi=(mark/entry-1)*100 if entry>0 else 0.0
-        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))        lines.append({
+        market=str(r["slug"] or ("Market ID "+str(r["market_id"])))
+        lines.append({
             "name":f"{r['asset']} {r['timeframe']}m · {r['side']} · {freshness}"[:256],
             "value":(
                 f"**Market:** {market[:220]}\n{quote_text}\n"
