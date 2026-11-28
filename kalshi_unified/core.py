@@ -144,7 +144,7 @@ def signal_gate(*, quote: dict[str, Decimal] | None, momentum_pct: float | None,
     strength = min(90.0, 50.0 + abs(momentum_pct) * 10 - float(spread) * 200)
     kind = "SCALP" if abs(momentum_pct) < 1.0 else "SNIPE"
     return {
-        "action": f"{kind} {side}", "side": side, "entry": entry,
+        "action": f"{kind} {'UP' if side == 'YES' else 'DOWN'} · BUY {side}", "side": side, "entry": entry,
         "exit_quote": exit_quote, "momentum_pct": momentum_pct,
         "signal_strength": round(strength, 1), "hold_strength": round(100-flip_risk, 1),
         "flip_risk": round(flip_risk, 1),
