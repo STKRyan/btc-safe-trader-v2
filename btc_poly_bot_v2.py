@@ -1653,7 +1653,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         fields = [
             {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}**\n{strength_bar}\n{note_compact}"[:430], "inline": False},
             {"name": "₿ PRICE & MOMENTUM", "value": f"**USD {price:,.2f}** · {minutes}m\n{odds}\nRSI **{rsi_now:.0f}** · 1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}%"[:430], "inline": False},
-            {"name": "🛡️ POSITION CONTROL", "value": f"{position_line}\nSNIPE **{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar}\nHOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\nScalp: **{'CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"[:430], "inline": False},
+            {"name": "🛡️ POSITION CONTROL", "value": f"{position_line}\nSNIPE MONITOR (NOT A CALL): **{snipe['status']}** · {snipe['strength']}/100\nHOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\nPAPER EXIT: +4% sell half · +10% exit rest · -5% stop\nScalp: **{'CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"[:430], "inline": False},
             {"name": "📒 PAPER DESK", "value": f"{forecast_record}\n{perf_line}\nStreak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\nSnipe **{scalp_stats['wins']}W/{scalp_stats['losses']}L**"[:430], "inline": False},
             {"name": "🧠 MODEL NOTES", "value": f"{why_compact}\nAll-time forecast: {all_time_forecast}\nSnipe record: {all_time_snipe}\nLoss lessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
         ]
@@ -1662,7 +1662,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         fields = [
             {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}** · strength **{signal_strength}%**\n{strength_bar}\n{why_compact}"[:430], "inline": False},
             {"name": "💹 MARKET TICK", "value": f"**USD {price:,.2f}** · BTC {minutes}m\nUP **{up_odds if up_odds is not None else '—'}%** · DOWN **{down_odds if down_odds is not None else '—'}%**\n1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}% · RSI {rsi_now:.0f}"[:430], "inline": False},
-            {"name": "⚡ SNIPE RADAR", "value": f"**{snipe['status']}** · **{snipe['strength']}/100** {snipe_bar} · move **{snipe_move}**\nHOLD {hold}% {hold_bar} · FLIP {flip}% {flip_bar}\n{position_line}"[:430], "inline": False},
+            {"name": "⚡ SNIPE MONITOR · SECONDARY", "value": f"Monitor only — not a trade call.\n**{snipe['status']}** · {snipe['strength']}/100 · move {snipe_move}\nHOLD {hold}% {hold_bar} · FLIP {flip}% {flip_bar}\n{position_line}\nExit plan: +4% half · +10% rest · -5% stop"[:430], "inline": False},
             {"name": "📈 RADAR TRACK RECORD", "value": f"{forecast_record}\n{perf_line}\nStreak {stats['current_win_streak']} · best {stats['best_win_streak']} · Snipe {scalp_stats['wins']}W/{scalp_stats['losses']}L"[:430], "inline": False},
             {"name": "🔎 RADAR LEARNING", "value": f"All-time: {all_time_forecast}\nSnipe: {all_time_snipe}\nLessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
         ]
