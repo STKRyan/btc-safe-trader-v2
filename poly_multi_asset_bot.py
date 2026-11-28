@@ -1713,7 +1713,7 @@ def dashboard(c, lines):
                 holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,'🩵')}' if h is not None else '🩵 HOLD —'
                 flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,'🟧')}' if f is not None else '🟠 FLIP —'
                 fr=item.get('flip_rate')
-                rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,\'↩️\')} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
+                rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,"↩️")} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
                 sigp=max(0,min(100,50+item['score']*10))
                 value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
             snipe_text=str(item.get('snipe') or '')
