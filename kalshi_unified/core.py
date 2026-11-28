@@ -165,7 +165,7 @@ def init_ledger(db_path: str | Path) -> None:
           ticker TEXT PRIMARY KEY, asset TEXT NOT NULL, side TEXT NOT NULL,
           entry TEXT NOT NULL, created_at REAL NOT NULL, settlement_result TEXT);
         CREATE TABLE IF NOT EXISTS paper_positions(
-          ticker TEXT PRIMARY KEY, asset TEXT NOT NULL, side TEXT NOT NULL,
+          id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, asset TEXT NOT NULL, side TEXT NOT NULL,
           entry TEXT NOT NULL, opened_at REAL NOT NULL, qty INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'OPEN', exit_price TEXT, closed_at REAL,
           pnl_pct REAL, exit_reason TEXT, strategy TEXT, target_pct REAL, stop_pct REAL, max_hold_seconds INTEGER);
@@ -179,10 +179,27 @@ def init_ledger(db_path: str | Path) -> None:
         """)
         # Upgrade prior isolated versions without deleting paper history.
         existing = {row[1] for row in db.execute("PRAGMA table_info(paper_positions)")}
+        if "id" not in existing:
+            db.execute("ALTER TABLE paper_positions RENAME TO paper_positions_legacy")
+            db.execute("""CREATE TABLE paper_positions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, asset TEXT NOT NULL,
+                side TEXT NOT NULL, entry TEXT NOT NULL, opened_at REAL NOT NULL,
+                qty INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'OPEN',
+                exit_price TEXT, closed_at REAL, pnl_pct REAL, exit_reason TEXT,
+                strategy TEXT, target_pct REAL, stop_pct REAL, max_hold_seconds INTEGER)""")
+            oldcols = {row[1] for row in db.execute("PRAGMA table_info(paper_positions_legacy)")}
+            cols = ["ticker","asset","side","entry","opened_at","qty","status","exit_price","closed_at","pnl_pct","exit_reason"]
+            copycols = [col for col in cols if col in oldcols]
+            if copycols:
+                names = ",".join(copycols)
+                db.execute(f"INSERT INTO paper_positions({names}) SELECT {names} FROM paper_positions_legacy")
+            db.execute("DROP TABLE paper_positions_legacy")
+            existing = {row[1] for row in db.execute("PRAGMA table_info(paper_positions)")}
         for name, declaration in (("strategy", "TEXT"), ("target_pct", "REAL"),
                                   ("stop_pct", "REAL"), ("max_hold_seconds", "INTEGER")):
             if name not in existing:
                 db.execute(f"ALTER TABLE paper_positions ADD COLUMN {name} {declaration}")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_position_per_ticker ON paper_positions(ticker) WHERE status='OPEN'")
         db.commit()
 
 
@@ -209,10 +226,10 @@ def open_paper_trade(db_path: str | Path, ticker: str, asset: str,
     now = now or time.time()
     entry = decimal(signal["entry"])
     with sqlite3.connect(db_path) as db:
-        existing = db.execute("SELECT status FROM paper_positions WHERE ticker=?", (ticker,)).fetchone()
+        existing = db.execute("SELECT status FROM paper_positions WHERE ticker=? ORDER BY opened_at DESC LIMIT 1", (ticker,)).fetchone()
         if existing and existing[0] == "OPEN":
             return False
-        db.execute("""INSERT OR REPLACE INTO paper_positions
+        db.execute("""INSERT INTO paper_positions
                    (ticker,asset,side,entry,opened_at,qty,status,strategy,target_pct,stop_pct,max_hold_seconds)
                    VALUES(?,?,?,?,?,1,'OPEN',?,?,?,?)""",
                    (ticker, asset, signal["side"], str(entry), now,
@@ -232,14 +249,14 @@ def close_paper_trade(db_path: str | Path, ticker: str, exit_price: Decimal,
                       reason: str, now: float | None = None) -> dict[str, Any] | None:
     now = now or time.time()
     with sqlite3.connect(db_path) as db:
-        row = db.execute("SELECT asset,side,entry,opened_at,status FROM paper_positions WHERE ticker=?",
+        row = db.execute("SELECT asset,side,entry,opened_at,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                          (ticker,)).fetchone()
         if not row or row[4] != "OPEN":
             return None
         entry = decimal(row[2])
         # One contract: percentage return on paid premium, sell at executable bid.
         pnl = float((exit_price-entry)/entry*100) if entry and entry > 0 else 0.0
-        db.execute("UPDATE paper_positions SET status='CLOSED',exit_price=?,closed_at=?,pnl_pct=?,exit_reason=? WHERE ticker=?",
+        db.execute("UPDATE paper_positions SET status='CLOSED',exit_price=?,closed_at=?,pnl_pct=?,exit_reason=? WHERE ticker=? AND status='OPEN'",
                    (str(exit_price), now, pnl, reason, ticker))
         db.execute("INSERT INTO paper_events(ticker,asset,event_type,side,price,pnl_pct,ts,detail) VALUES(?,?,?,?,?,?,?,?)",
                    (ticker,row[0],"EXIT",row[1],str(exit_price),pnl,now,reason))
