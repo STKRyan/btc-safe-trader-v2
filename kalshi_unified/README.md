@@ -1,39 +1,39 @@
-# Unified Kalshi Gold / ETH / BTC Bot
+# Unified Kalshi BTC / ETH / Gold paper bot
 
-This is a separate paper-trading bot. It does not modify or reuse the running entrypoints for BTC Live, Crypto Radar, or the Polymarket multi-asset scanner.
+This bot is isolated on branch `kalshi-gold-eth-btc-unified`. It does not edit, import, or deploy the BTC Live bot, Crypto Radar, or the existing Polymarket bot.
 
-## Scope
+## Current implementation
 
-- Kalshi markets for BTC, ETH, and gold, discovered from verified market metadata and settlement rules.
-- One active state/card per market contract and signal; edit/update the existing Discord message where supported, otherwise send only on state transitions or throttled meaningful updates.
-- Fast market-data polling with bounded concurrency, connection reuse, API rate-limit handling, and configurable polling intervals.
-- Signal types: SCALP UP/DOWN, SNIPE UP/DOWN, HOLD UP/DOWN, WAIT, SELL/EXIT, and FLIP/REASSESS.
-- Independent Second Brain veto/check, entry quality, hold strength, flip risk, contract-price/spread/liquidity checks, and cross-market ranking.
-- Paper ledger with append-only initial calls, managed entries/exits, flips, settlement, and audit trail.
-- Statistics overall and by asset, contract, trade type, timeframe, and initial/managed outcome; current/best streaks.
-- Persistent SQLite state on a dedicated Render disk.
+- Reads public Kalshi market metadata and binary quotes from the official Trade API host.
+- Requires an unambiguous BTC, ETH, or Gold title, explicit above/below threshold language, primary settlement rules, ticker, and close metadata. Ambiguous contracts are skipped.
+- Uses YES/NO contract-price momentum, executable bid/ask, spread, price-band, stale-data and independent confirmation gates. **UP/DOWN on the card refers to the Kalshi contract's traded price/YES-vs-NO side, not an independently verified spot-price forecast for BTC/ETH/gold.**
+- Paper-only entries, scalp/snipe targets, stops, max hold, signal flip exits, and official settlement reconciliation. No authenticated account, order placement, or real trading endpoint exists in this bot.
+- SQLite ledger separates the first initial call's official settlement result from every managed paper trade. A later flip cannot rewrite the original call.
+- Append-only managed trade rows; per-market Discord cards are edited in place where possible. Cards for open paper positions continue updating even when a new signal becomes WAIT.
+- Overall settled initial-call win/loss counts and streak metrics. Heuristic strength/flip-risk values are not win probabilities.
 
-## Result accounting (separate, never blended)
+## Safety / limitations
 
-1. **Initial-call settlement result:** WIN or LOSS based on the original direction and official settlement. A changed direction does not erase the original-call result.
-2. **Managed paper result:** realized paper P&L from simulated entry and exit prices, including flip saves and losses.
-3. **Streak policy:** streaks are computed from explicitly selected result streams (initial-call and managed-trade). A flip save may extend the managed streak but cannot turn a wrong initial call into a correct initial call.
-4. **No artificial loss suppression:** if the original call is wrong at settlement, record it as an initial-call loss. If a trade exits before settlement, record its managed outcome and still settle the initial call later.
+- Paper results are simulations and do not include all fees, queue position, partial fills, latency or market impact. Treat them as optimistic research estimates.
+- The “Second Brain” currently means a separate deterministic confirmation gate (momentum threshold plus quote/spread check), **not** a separate AI model or independent external prediction.
+- This initial strategy is a contract-price momentum prototype. It does not yet validate underlying spot-price feeds or produce evidence-based 60% predictive accuracy. It must not be described as proven or high-confidence.
+- Market discovery is intentionally conservative and may miss some listings. Verify each market's official rules before relying on its signal.
+- Do not add real trading credentials or enable live orders.
 
-## Safety and honest reporting
+## Isolated validation
 
-- Paper-only: no order placement or private trading credentials.
-- Do not fabricate confidence or claim a guaranteed win rate. Show heuristic strength separately from empirical, sample-qualified historical success.
-- If Second Brain disagrees, spread/price/liquidity is poor, flip risk is high, market data is stale, or settlement rules cannot be verified: WAIT / NO ENTRY.
-- Do not chase a streak or force an entry. A streak objective is subordinate to capital preservation and valid data.
-- Self-correction means updating the active paper signal/exit plan when conditions change, then learning from outcomes; it does not rewrite past calls or settled records.
+GitHub Actions runs syntax checks and unit tests for this branch. After CI is green, run locally or in a new, separate Render worker:
 
-## Build and deployment sequence
+```bash
+pip install -r requirements-kalshi.txt
+python -m unittest discover -s tests -p 'test_kalshi_unified.py'
+python kalshi_unified_bot.py
+```
 
-1. Verify current official Kalshi market-data endpoints and contract/settlement fields.
-2. Implement isolated modules for market discovery, data feed, signal engine, Second Brain, paper ledger, message updater, and stats.
-3. Add deterministic unit tests for contract mapping, flip/settlement accounting, duplicate-message suppression, and streak calculations.
-4. Add a separate Render worker and separate persistent disk only after local validation.
-5. Deploy paper-only, verify logs and message updates, then observe enough settled samples before enabling any empirical performance gate.
+Set `KALSHI_UNIFIED_DISCORD_WEBHOOK_URL` only to a **new dedicated Discord webhook**. Optional:
+- `KALSHI_UNIFIED_DB`: SQLite path (default `kalshi_unified.sqlite3`)
+- `KALSHI_SCAN_SECONDS`: scan interval (default 5 seconds)
+- `KALSHI_CARD_UPDATE_SECONDS`: minimum same-state card update interval (default 30 seconds)
+- `KALSHI_MAX_CARDS`: maximum qualified cards (default 4)
 
-The bot is not ready for deployment until tests and live paper runtime checks pass.
+For Render, create a completely new Background Worker with start command `python kalshi_unified_bot.py` and a separate persistent disk mounted where the SQLite file lives. Do not modify existing Render services, environment variables, or the existing `render.yaml`. Deployment is not performed by this branch.
