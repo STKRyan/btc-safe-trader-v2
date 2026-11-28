@@ -1790,10 +1790,10 @@ def dashboard(c, lines):
             if call_match or (direction_match and "CONFIRMED" in snipe_status):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
                 entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
-                snipe_label=f'🎯 **SNIPE SIDE: {snipe_side}** · **{snipe_status}**{entry_text} · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
+                snipe_label=f'🎯 **SNIPE CALL: {snipe_side}** · **{snipe_status}**{entry_text} · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
             else:
                 bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **SNIPE SIDE: {bias}** · **{snipe_status}** · enter only when status is CONFIRMED{move_text}'
+                snipe_label=f'🎯 **SNIPE DIRECTIONAL BIAS: {bias}** · **{snipe_status}** · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text} · WAIT until confirmed'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
