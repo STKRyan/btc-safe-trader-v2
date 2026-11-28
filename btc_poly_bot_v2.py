@@ -907,30 +907,24 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
             sell_line = f"<b>Current sell bid:</b> ${bid:.3f}"
             action_label = action
         else:
-            partial_target = entry * 1.05
+            # Standard directional calls prioritize the call and percentage exits.
+            # Snipe/flip-watch readings are informational; they do not close a position
+            # by themselves. A strong confirmed reversal remains a protective exit.
+            partial_target = entry * 1.04
             full_target = entry * 1.10
-            protective_stop = entry * 0.92
+            protective_stop = entry * 0.95
             next_target = full_target if partial_taken else partial_target
-            action = "HOLD"
+            action = "HOLD TO TARGET"
             close_qty = 0.0
-            if roi <= -0.08:
-                action, close_qty = "🛑 STOP / EXIT 100%", qty
+            if roi <= -0.05:
+                action, close_qty = "🛑 STOP LOSS -5% / EXIT 100%", qty
             elif roi >= 0.10:
-                action, close_qty = "🎯 TAKE PROFIT / EXIT 100%", qty
+                action, close_qty = "🎯 PROFIT TARGET +10% / EXIT 100%", qty
             elif (market_side != position_side and abs(int(tech["score"])) >= 4
                   and stats["imbalance"] * (1 if market_side == "UP" else -1) >= 0.10):
-                action, close_qty = "🔄 CONFIRMED REVERSAL / EXIT 100%", qty
-            elif flip >= 75 or hold < 40:
-                action, close_qty = "🔴 HIGH FLIP RISK / EXIT 100%", qty
-            elif roi >= 0.05 and not partial_taken:
-                action, close_qty = "🟠 TAKE PROFIT / SELL 50%", qty / 2.0
-            elif flip >= 60:
-                if not partial_taken:
-                    action, close_qty = "🟠 FLIP RISK / SELL 50%", qty / 2.0
-                else:
-                    action = "🟡 FLIP RISK / WATCH"
-            elif hold < 55:
-                action = "🟡 WATCH CLOSELY"
+                action, close_qty = "🔄 STRONG CONFIRMED REVERSAL / EXIT 100%", qty
+            elif roi >= 0.04 and not partial_taken:
+                action, close_qty = "🟠 PROFIT +4% / SELL 50% · HOLD REST TO +10%", qty / 2.0
             sell_line = f"<b>Next sell target:</b> ${full_target if partial_taken else partial_target:.3f}"
             action_label = action
 
