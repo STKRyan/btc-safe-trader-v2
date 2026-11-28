@@ -694,8 +694,12 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, f
     ex_n=int(exchange.get("trade_count",0) or 0)
     ex_net=float(exchange.get("net_flow_pct",0) or 0)
     large_buy_n=int(exchange.get("large_buy_count",0) or 0)
-    large_net=float(exchange.get("large_net_flow_pct",0) or 0)*sign
+    large_sell_n=int(exchange.get("large_sell_count",0) or 0)
+    large_net_raw=float(exchange.get("large_net_flow_pct",0) or 0)
     large_buy_value=float(exchange.get("large_buy_notional",0) or 0)
+    large_sell_value=float(exchange.get("large_sell_notional",0) or 0)
+    large_direction_value=large_buy_value if side=="UP" else large_sell_value
+    large_net=large_net_raw*sign
     stack_side=str(exchange.get("stack_side","NEUTRAL"))
     stack_persistence=float(exchange.get("stack_persistence_pct",0) or 0)
     stack_observations=int(exchange.get("stack_observations",0) or 0)
@@ -869,7 +873,7 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_flow_confirm=ex_fresh and ex_n>=4 and ex_net_aligned>=15
     ex_book_confirm=ex_fresh and ex_book_aligned>=0.04 and float(exchange.get("depth_usd",0) or 0)>=10000
     # Large executed buyers + a stack that persists help reject spoofed/one-tick walls.
-    large_buyer_confirm=ex_fresh and large_buy_n>=1 and large_net>=20 and large_buy_value>=float(exchange.get("large_trade_threshold",5000) or 5000) and ex_net_aligned>=15
+    large_buyer_confirm=ex_fresh and (large_buy_n if side=="UP" else large_sell_n)>=1 and large_net>=20 and large_direction_value>=float(exchange.get("large_trade_threshold",5000) or 5000) and ex_net_aligned>=15
     stack_confirm=ex_fresh and stack_side==side and stack_persistence>=60 and stack_observations>=3 and ex_book_aligned>=0.04
     possible_spoof=ex_fresh and ex_book_aligned>=0.08 and stack_persistence<45 and not large_buyer_confirm
     ex_move_confirm=ex_move is not None and float(ex_move)*sign>=0.02
