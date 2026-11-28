@@ -1487,7 +1487,7 @@ def btc_snipe_meter(conn: sqlite3.Connection, minutes: int, side: str,
 
 
 def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
-                     minutes: int = 5) -> dict:
+                     minutes: int = 5, dashboard_name: str = "CRYPTO RADAR") -> dict:
     """Build Crypto Radar's bright, simple, phone-first live paper card."""
     minutes = 15 if int(minutes) == 15 else 5
     timeframe = minutes
@@ -1688,8 +1688,8 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         "*Paper signals · compact live dashboard*"
     )
     return {
-        "author":{"name":f"₿ BTC LIVE · {minutes}M PAPER","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
-        "title":f"BTC LIVE SIGNALS · {minutes} MIN",
+        "author":{"name":f"₿ {dashboard_name} · {minutes}M PAPER","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "title":f"{dashboard_name} · BTC {minutes} MIN",
         "description":description,
         "color":call_color,
         "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
@@ -1885,14 +1885,14 @@ def update_btc_channel_message(conn: sqlite3.Connection, webhook_env: str, state
 
 def update_btc_live_channel(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Mirror the existing 5-minute BTC terminal into its Discord message."""
-    embed = _dashboard_embed(conn, tech, opinions, minutes=5)
+    embed = _dashboard_embed(conn, tech, opinions, minutes=5, dashboard_name="BTC LIVE")
     update_btc_channel_message(conn, "DISCORD_BTC_LIVE_WEBHOOK_URL",
                                "btc_live_dashboard", embed, DISCORD_DASHBOARD_UPDATE_SECONDS)
 
 
 def update_btc_15m_live_channel(conn: sqlite3.Connection, tech: dict, opinions: dict) -> None:
     """Create and refresh a separate 15-minute Polymarket BTC dashboard message."""
-    embed = _dashboard_embed(conn, tech, opinions, minutes=15)
+    embed = _dashboard_embed(conn, tech, opinions, minutes=15, dashboard_name="BTC LIVE")
     update_btc_channel_message(conn, "DISCORD_BTC_LIVE_WEBHOOK_URL",
                                "btc_live_15m_dashboard", embed, DISCORD_DASHBOARD_UPDATE_SECONDS)
 
