@@ -572,7 +572,7 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, f
             f"SNIPE MEMORY: {snipe_memory['sample']} settled, {snipe_wr}, loss streak {snipe_memory['loss_streak']} | "
             f"POLYMARKET TAPE: {flow_n} prints/10s, net {flow_net:+.0f}% | "
             f"BINANCE SPOT: {ex_n} prints/10s, net {ex_net:+.0f}%, book {ex_imb:+.2f} | "
-            f"CURRENT WINDOW: {current_flips} flips | VERDICT: {verdict")
+            f"CURRENT WINDOW: {current_flips} flips | VERDICT: {verdict}")
     return {"agrees":agrees,"label":"CONFIRMS" if agrees else "DISAGREES · SIT OUT",
             "score":score,"flip_risk":risk,"market_flips":current_flips,
             "memory":memory,"snipe_memory":snipe_memory,"exchange":exchange,"debate":debate}
