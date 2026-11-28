@@ -1784,11 +1784,16 @@ def dashboard(c, lines):
             strength=int(strength_match.group(1)) if strength_match else 0
             move_match=re.search(r'CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%',snipe_text,re.I)
             move_text=f' · contract {float(move_match.group(1)):+.2f}%' if move_match else ''
-            if call_match:
-                snipe_label=f'🎯 **SNIPE CALL: {call_match.group(1).upper()}** · strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
+            status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED)|FLIP RISK',snipe_text,re.I)
+            snipe_status=status_match.group(0).upper() if status_match else "WATCH"
+            entry_match=re.search(r'\\bask\\s+([0-9]+(?:\\.[0-9]+)?)',snipe_text,re.I)
+            if call_match or (direction_match and "CONFIRMED" in snipe_status):
+                snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
+                entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
+                snipe_label=f'🎯 **SNIPE CALL: {snipe_side}** · **{snipe_status}**{entry_text} · strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
             else:
                 bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **SNIPE BIAS: {bias}** · entry not confirmed{move_text}'
+                snipe_label=f'🎯 **SNIPE BIAS: {bias}** · **{snipe_status}** · enter only when status is CONFIRMED{move_text}'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
