@@ -1590,9 +1590,9 @@ def asset_snipe_meter(windows):
             continue
         raw=str(item.get("snipe") or "")
         call_match=re.search(r"\bSCALP CALL\s+(UP|DOWN)\b",raw,re.I)
-        strength_match=re.search(r"(?:SCALP|SNIPE) STRENGTH\s*(\d+)(?:/100|%)",raw,re.I)
+        strength_match=re.search(r"(?:SCALP|SNIPE )?STRENGTH\s*(\d+)(?:/100|%)|\bstrength\s*(\d+)/100",raw,re.I)
         move_match=re.search(r"CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%",raw,re.I)
-        strength=max(0,min(100,int(strength_match.group(1)))) if strength_match else 0
+        strength=max(0,min(100,int(strength_match.group(1) or strength_match.group(2)))) if strength_match else 0
         bar=color_pct_bar(strength,"🎯")
         move=f" · contract {float(move_match.group(1)):+.2f}%" if move_match else ""
         if call_match:
