@@ -1470,7 +1470,7 @@ def compact_discord_board(embeds):
             name=clip(field.get("name",""),80 if kind=="summary" else 45)
             if kind=="asset":
                 label=str(field.get("name",""))
-                value_limit=480 if "⏱" in label else 120 if "MARKET-BY-MARKET" in label else 160
+                value_limit=360 if "⏱" in label else 120 if "MARKET-BY-MARKET" in label else 160
             elif kind=="live":
                 value_limit=220
             elif kind=="summary":
@@ -1863,11 +1863,12 @@ def dashboard(c, lines):
             entry_match=re.search(r'\bask\s+([0-9]+(?:\.[0-9]+)?)',snipe_text,re.I)
             if call_match or (direction_match and "CONFIRMED" in snipe_status):
                 snipe_side=(call_match.group(1).upper() if call_match else direction_match.group(1).upper())
-                entry_text=f' · entry ask {float(entry_match.group(1)):.3f}' if entry_match else ''
-                snipe_label=f'🎯 **SNIPE CALL: {snipe_side}** · **{snipe_status}**{entry_text} · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
+                entry_text=f' · ask {float(entry_match.group(1)):.3f}' if entry_match else ''
+                call_kind="SCALP" if call_match else "HOLD"
+                snipe_label=f'🎯 **{call_kind} {snipe_side}** · {snipe_status}{entry_text} · strength {strength}%'
             else:
                 bias=(direction_match.group(1).upper() if direction_match else item.get("side","UP"))
-                snipe_label=f'🎯 **SNIPE DIRECTIONAL BIAS: {bias}** · **{snipe_status}** · evidence strength {strength}% {color_pct_bar(strength,"🎯")}{move_text} · WAIT until confirmed'
+                snipe_label=f'🎯 **{item.get("side","WAIT")} · SNIPE WATCH {bias}** · strength {strength}% · wait for confirmation'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
                 total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
@@ -1901,9 +1902,15 @@ def dashboard(c, lines):
                 sn=asset_paper_stats(c,asset,True)
                 sn_rate=f"{sn['win_rate']:.1f}%" if sn['win_rate'] is not None else '—'
                 snipe_record=(f"📊 SNIPE {sn['wins']}W/{sn['losses']}L · {sn_rate} · streak {sn['current_streak']} (best {sn['best_streak']})")
-                value=f'**BOT FORECAST: {item["side"]}** · separate from snipe\n{snipe_label}\n{snipe_record}\n{value}\n{plan_text}'
+                # Keep each timeframe column scannable: forecast, call, meters,
+                # paper sizing and a concise contract-based risk plan.
+                value=(f'**FORECAST {item["side"]}** · MKT {odds if odds is not None else "—"}%\n'
+                       f'HOLD {h if h is not None else "—"}% · FLIP {f if f is not None else "—"}% · SIG {sigp}%\n'
+                       f'{snipe_label}\n{snipe_text[:150]}\n{snipe_record}\n{amount_line}\n'
+                       f'PLAN +4% / +10% / -5% · +${partial_usd:,.0f} / +${target_usd:,.0f} / -${risk_usd:,.0f}\n'
+                       f'{tf}m · exit at target, stop or reversal')
             else:
-                value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
+                value=f'{value}\n{snipe_label}\n🧾 No paper entry · wait for verified market and confirmed setup'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:700],'inline':True})
         # Paper P/L remains in the ledger/history; it is not featured on the snipe board.
         asset_embeds.append({
