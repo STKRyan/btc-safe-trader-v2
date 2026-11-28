@@ -1789,9 +1789,13 @@ def dashboard(c, lines):
     by_asset={}
     for card in cards:
         title=card.get('title','')
-        mt=re.match(r'([A-Z0-9]{2,12}) · (5|15) MIN · (.+)$',title)
+        # Accept both the original card title and the newer premium title.
+        # PR #7 decorates titles as: 🟢 ✦ BTC / 5M / UP; the old parser
+        # silently rejected every card, leaving only the WAITING fallback.
+        clean_title=re.sub(r'^[🟢🔴⚪🟠]\s*✦\s*','',title).strip()
+        mt=re.match(r'([A-Z0-9]{2,12})\s*(?:·\s*(5|15)\s*MIN\s*·\s*|/\s*(5|15)M\s*/\s*)(.+)$',clean_title)
         if not mt: continue
-        asset,tf,side_text=mt.groups()
+        asset=mt.group(1); tf=mt.group(2) or mt.group(3); side_text=mt.group(4).strip()
         side=side_text if side_text in ('UP','DOWN','WAIT') else 'WAIT'
         missing='NO VERIFIED MARKET' in side_text
         fields=card.get('fields',[])
