@@ -1257,7 +1257,7 @@ def market_embeds(lines):
             odds_match=re.search(r'buy-side implied ([0-9.]+)%',pm_value)
             if odds_match:
                 odds=max(0,min(100,round(float(odds_match.group(1)))))
-                pm_value=f'{pm_value} {color_pct_bar(odds,'🟩')} **{odds}%**'
+                pm_value=f'{pm_value} {color_pct_bar(odds,"🟩")} **{odds}%**'
         else:
             pm_value='Live Polymarket bid/ask unavailable this scan'
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
@@ -1304,7 +1304,7 @@ def market_embeds(lines):
             scalp_value=(f'🎯 **SNIPE SIDE: {scalp_direction}**\n**STATUS: WATCH**\n{scalp_line[:700]}\nWait for a verified side and confirmed setup.')
         if scalp_active:
             scalp_value += f'\nSCALP INDICATOR STRENGTH: {pct_bar(scalp_score)} **{scalp_score}/100** · not win odds'
-        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH · INDICATOR SCORE','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,'🩵')} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,'🟧')} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
+        result.append({'title':f'{asset} · {tf} MIN · {side}','description':f'**BOT FORECAST CALL: {side}**\n{body[:850]}','color':color,'fields':[{'name':'🧠 WHY THIS CALL? · SIMPLE WORDS','value':plain_reason[:1024],'inline':False},{'name':'🎯 SNIPE SETUP · ENTRY / TARGET / STOP','value':scalp_value[:1024],'inline':False},{'name':'SIGNAL STRENGTH · INDICATOR SCORE','value':f'**{signal_strength_pct}%** · {majority_line}\n{score_bar(int(score))}\nNet score {int(score):+d} · 5 indicators\n*Strength score, not win probability*','inline':False},{'name':'🩵 HOLD STRENGTH','value':f'{color_pct_bar(hold,"🩵")} **{hold}%**\nHold outlook · heuristic, not odds','inline':False},{'name':'🟠 FLIP RISK','value':f'{color_pct_bar(risk,"🟧")} **{risk}%**\n{level}','inline':False},{'name':'FLIP RATE','value':f'**{flip_rate}%** · {flip_sample} resolved' if flip_rate is not None else 'No resolved flip history yet','inline':True},{'name':'POLYMARKET LIVE ODDS','value':pm_value[:220],'inline':False},{'name':'🎯 SNIPE DIRECTION · LIVE CONTRACT MOVE','value':snipe_display[:900],'inline':False},{'name':'MOMENTUM','value':f'1m **{float(m1):+.3f}%**\n3m **{float(m3):+.3f}%**\n20m range **{float(range_position):.0f}% from low**','inline':True},{'name':'RSI','value':f'**{rsi}** / 100','inline':True}],'footer':{'text':'BOT CALL = forecast direction · SNIPE DIRECTION = contract side · strength is a heuristic, not win probability · paper only'}})
     return result
 
 def position_embeds(c):
@@ -1336,8 +1336,8 @@ def position_embeds(c):
                 'description':f'**{reason}** · PAPER',
                 'color':color,
                 'fields':[
-                    {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,'🟦')}','inline':True},
-                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,'🩵')}','inline':True},
+                    {'name':'RETURN','value':f'**{roi_text}**\n{color_pct_bar(roi_meter,"🟦")}','inline':True},
+                    {'name':'🩵 HOLD','value':f'**{hold}%**\n{color_pct_bar(hold,"🩵")}','inline':True},
                     {'name':'FLIP / EXIT RISK','value':f'**{risk}%**\n{pct_bar(risk)}','inline':False},
                     {'name':'ENTRY → BID','value':f'{entry:.3f} → {bid:.3f}' if bid is not None else f'{entry:.3f} → —','inline':True},
                     {'name':'PAPER POSITION','value':f'Invested ${float(r["entry"])*float(r["remaining_qty"] or 0):,.2f} · {float(r["remaining_qty"] or 0):,.2f} contracts','inline':False},
@@ -1845,12 +1845,12 @@ def dashboard(c, lines):
             else:
                 odds=item['odds']; h=item['hold']; f=item['flip']
                 oddsline=f'**{odds}%** {pct_bar(odds)}' if odds is not None else '—'
-                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,'🩵')}' if h is not None else '🩵 HOLD —'
-                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,'🟧')}' if f is not None else '🟠 FLIP —'
+                holdline=f'🩵 HOLD **{h}%** {color_pct_bar(h,"🩵")}' if h is not None else '🩵 HOLD —'
+                flipline=f'🟠 FLIP RISK **{f}%** {color_pct_bar(f,"🟧")}' if f is not None else '🟠 FLIP —'
                 fr=item.get('flip_rate')
                 rateline=f'↩️ FLIP RATE **{fr}%** {color_pct_bar(fr,"↩️")} · historical' if fr is not None else '↩️ FLIP RATE — · no settled history'
                 sigp=max(0,min(100,50+item['score']*10))
-                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,'🟦')}'
+                value=f'{sig} **{item["side"]}**\nMARKET {oddsline}\n{holdline}\n{flipline}\n{rateline}\nSIGNAL **{sigp}%** {color_pct_bar(sigp,"🟦")}'
             snipe_text=str(item.get('snipe') or '')
             call_match=re.search(r'\bSCALP CALL\s+(UP|DOWN)\b',snipe_text,re.I)
             direction_match=re.search(r'SNIPE DIRECTION:\s*(UP|DOWN)',snipe_text,re.I)
