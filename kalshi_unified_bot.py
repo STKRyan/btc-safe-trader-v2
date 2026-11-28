@@ -223,19 +223,25 @@ def main():
         try:
             settle_pending_calls()
             markets = discover_markets()
-            evaluated = []
+            qualified, all_signals = [], []
+            with sqlite3.connect(DB_PATH) as db:
+                open_tickers = {row[0] for row in db.execute("SELECT ticker FROM paper_positions WHERE status='OPEN'")}
             for market in markets:
                 signal = evaluate(market)
                 manage_position(market, signal)
+                all_signals.append((market, signal))
                 if signal.get("side"):
                     rank = (signal.get("hold_strength",0), signal.get("signal_strength",0),
                             -signal.get("flip_risk",100))
-                    evaluated.append((rank, market, signal))
-            evaluated.sort(key=lambda item: item[0], reverse=True)
+                    qualified.append((rank, market, signal))
+            qualified.sort(key=lambda item: item[0], reverse=True)
+            selected = {m["ticker"] for _,m,_ in qualified[:MAX_CARDS]}
+            selected.update(open_tickers)
             overall = core.stats(DB_PATH)
-            for _, market, signal in evaluated[:MAX_CARDS]:
-                send_or_edit(market, signal, overall)
-            if not evaluated:
+            for market, signal in all_signals:
+                if market["ticker"] in selected:
+                    send_or_edit(market, signal, overall)
+            if not qualified:
                 print(f"{utc_iso()} · no qualified contract · {len(markets)} verified contracts scanned")
         except Exception as exc:
             print(f"Scan failure: {type(exc).__name__}: {exc}")
