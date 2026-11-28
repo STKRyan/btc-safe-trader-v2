@@ -26,6 +26,8 @@ SIGNAL_REPEAT_SECONDS = int(os.getenv("SIGNAL_REPEAT_SECONDS", "30"))
 PAPER_STARTING_BANKROLL = max(1000.0, float(os.getenv("PAPER_STARTING_BANKROLL_USD", "100000")))
 PAPER_GOAL_USD = max(PAPER_STARTING_BANKROLL, float(os.getenv("PAPER_GOAL_USD", "1000000")))
 PAPER_POSITION_FRACTION = min(0.05, max(0.001, float(os.getenv("PAPER_POSITION_FRACTION", "0.01"))))
+# Hard account-wide exposure ceiling: 5% of the original bankroll, not 5% per trade.
+PAPER_TOTAL_EXPOSURE_FRACTION = 0.05
 DAILY_LOSS_LIMIT = max(1.0, float(os.getenv("DAILY_LOSS_LIMIT_USD", str(PAPER_STARTING_BANKROLL * 0.01))))
 MAX_OPEN = min(10, max(1, int(os.getenv("MAX_OPEN_PAPER_TRADES", "5"))))
 STOP_ROI = -0.05
@@ -943,8 +945,13 @@ def maybe_enter(c, asset, tf, m, tech):
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
     if reasons:return "WAIT · "+"; ".join(reasons)+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
     portfolio=portfolio_metrics(c)
-    stake=min(portfolio["equity"]*PAPER_POSITION_FRACTION,portfolio["cash"])
-    if stake<10.0: return f"WAIT · paper cash too low for minimum $10 simulated entry (${portfolio['cash']:.2f} available)"
+    exposure_cap=portfolio["starting"]*PAPER_TOTAL_EXPOSURE_FRACTION
+    exposure_remaining=max(0.0,exposure_cap-portfolio["invested"])
+    stake=min(portfolio["equity"]*PAPER_POSITION_FRACTION,portfolio["cash"],exposure_remaining)
+    if stake<10.0:
+        return (f"WAIT · 5% total paper exposure cap reached or too little room · "
+                f"cap ${exposure_cap:,.2f} · currently invested ${portfolio['invested']:,.2f} · "
+                f"remaining budget ${exposure_remaining:,.2f}")
     qty=stake/stats["ask"]
     try:
         c.execute("INSERT INTO calls(market_id,slug,asset,timeframe,side,token_id,entry,stake,qty,remaining_qty,score,features,created_at,last_mark,peak_mark) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1021,6 +1028,8 @@ def manage_open_calls(c, asset, tech):
             if roi<=STOP_ROI: action="FAST PROTECTIVE EXIT"; exit_qty=rem
             elif roi>=TARGET_PROFIT_ROI: action="TARGET EXIT"; exit_qty=rem
             elif partial and bid<=peak*(1.0-TRAILING_GIVEBACK): action="TRAILING PROFIT EXIT"; exit_qty=rem
+            elif roi>=0.02 and (flip_risk(tech,r["side"],float(stats.get("imbalance",0)))>=70 or opposing<-0.12 or aligned<=-2):
+                action="PROTECT OPEN PROFIT · MARKET TURNING"; exit_qty=rem
             elif aligned<=-2 and opposing<-0.08: action="EARLY SIGNAL BREAK EXIT"; exit_qty=rem
             elif roi>=PARTIAL_PROFIT_ROI and not partial and rem>0:
                 action="PARTIAL PROFIT · SELL 50%"; exit_qty=rem/2
@@ -1764,7 +1773,9 @@ def dashboard(c, lines):
                 snipe_label=f'👀 **SNIPE WATCH** · no entry approved{move_text}'
             if not item.get('missing') and item.get('side') in ('UP','DOWN'):
                 # Show actual paper entry when open; otherwise clearly label the sizing idea.
-                paper_size=max(0.0,min(float(portfolio["equity"])*PAPER_POSITION_FRACTION,float(portfolio["cash"])))
+                total_cap=float(portfolio["starting"])*PAPER_TOTAL_EXPOSURE_FRACTION
+                exposure_left=max(0.0,total_cap-float(portfolio["invested"]))
+                paper_size=max(0.0,min(float(portfolio["equity"])*PAPER_POSITION_FRACTION,float(portfolio["cash"]),exposure_left))
                 open_call=c.execute(
                     "SELECT stake,entry,remaining_qty FROM calls "
                     "WHERE asset=? AND timeframe=? AND side=? AND status='OPEN' "
@@ -1779,7 +1790,9 @@ def dashboard(c, lines):
                                  f"${remaining_cost:,.2f} remaining cost")
                 else:
                     plan_base=paper_size
-                    amount_line=f"🧾 PAPER SIZE IDEA: ${paper_size:,.2f} · not invested unless entry is approved"
+                    amount_line=(f"🧾 PAPER SIZE IDEA: ${paper_size:,.2f} · not invested unless entry is approved\n"
+                                 f"🛡️ TOTAL EXPOSURE LIMIT: ${total_cap:,.2f} · open exposure ${float(portfolio['invested']):,.2f} · "
+                                 f"budget left ${exposure_left:,.2f}")
                 evidence=max(0,min(100,50+item['score']*10))
                 risk_usd=plan_base*0.05
                 target_usd=plan_base*0.10
@@ -1787,7 +1800,7 @@ def dashboard(c, lines):
                 plan_text=(
                     f"{amount_line}\n"
                     f"🧠 BOT TRUST / EVIDENCE: {evidence}/100 · signal evidence, NOT profit odds\n"
-                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · "
+                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · 
                     f"+10% target ≈ +${target_usd:,.2f} · -5% stop ≈ -${risk_usd:,.2f}\n"
                     f"⏳ HOLD GUIDE: {tf}m market window · recheck each scan; exit sooner on stop, "
                     f"profit target, or reversal. No fixed hold guarantee."
