@@ -90,7 +90,7 @@ def manage_position(m, signal):
     if not q:
         return
     with sqlite3.connect(DB_PATH) as db:
-        row = db.execute("SELECT side,entry,opened_at,status,target_pct,stop_pct,max_hold_seconds FROM paper_positions WHERE ticker=?",
+        row = db.execute("SELECT side,entry,opened_at,status,target_pct,stop_pct,max_hold_seconds FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                          (ticker,)).fetchone()
     if not row or row[3] != "OPEN":
         if signal.get("side"):
@@ -129,7 +129,7 @@ def render_card(m, s, stats):
     side = s.get("side")
     entry = s.get("entry")
     with sqlite3.connect(DB_PATH) as db:
-        pos = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=?",
+        pos = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
                          (m["ticker"],)).fetchone()
     position_text = "NO OPEN PAPER POSITION"
     if pos and pos[3] == "OPEN":
