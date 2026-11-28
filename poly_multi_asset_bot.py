@@ -857,28 +857,35 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     required_strength=min(85,required_strength)
     learning_pause=bool(learn.get("pause"))
     streak_note=(f" · streak {global_current}/{global_best} global, {asset_current}/{asset_best} {asset}"
-                 f" · next record win {global_best+1}" if global_best or asset_best else
-                 " · first snipe record target: 1 win")
-    if learning_pause:
-        confirmed=False
-        status=f"SNIPE PAUSED · recent snipe learning safety stop (loss streak {learn.get('loss_streak',0)})"
-    elif streak_protect or record_chase:
+                 f" · next global record win {global_best+1}" if global_best else
+                 " · first global snipe record target: 1 win")
+    if streak_protect or record_chase:
         review_level=f"🏆 STREAK PROTECTION · evidence threshold {required_strength}/100"
     confirmed=confirmed and strength>=required_strength and evidence_count>=7 and not flip_chance and not learning_pause
-    if confirmed and record_chase:
+    if learning_pause:
+        status=f"SNIPE PAUSED · recent snipe learning safety stop (loss streak {learn.get('loss_streak',0)})"
+    elif not tape_live or not quote_fresh:
+        status="SNIPE WATCH · waiting for fresh Polymarket trades/quote"
+    elif not ex_fresh:
+        status="SNIPE WATCH · waiting for fresh Binance spot trades/order book"
+    elif flow_conflict or ex_flow_conflict:
+        status="SNIPE BLOCKED · live selling pressure outweighs buying"
+    elif flip_chance:
+        status=f"SNIPE FLIP CHANCE · {('DOWN' if side=='UP' else 'UP')} reversal watch · entry blocked"
+    elif not flow_confirm:
+        status="SNIPE WATCH · Polymarket contract buying not confirmed"
+    elif not (ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm):
+        status="SNIPE WATCH · exchange flow, order book or candle chart not aligned"
+    elif ex_book_conflict or ex_chart_conflict:
+        status="SNIPE BLOCKED · Binance book/candle structure opposes entry"
+    elif confirmed and record_chase:
         status="SNIPE CONFIRMED · record-chase setup passed stricter evidence"
     elif confirmed and streak_protect:
         status="SNIPE CONFIRMED · protecting active winning streak"
-        if not tape_live or not quote_fresh:
-        status="SNIPE WATCH · waiting for fresh Polymarket trades/quote"
-    elif not ex_fresh: status="SNIPE WATCH · waiting for fresh Binance spot trades/order book"
-    elif flow_conflict or ex_flow_conflict: status="SNIPE BLOCKED · live selling pressure outweighs buying"
-    elif flip_chance: status=f"SNIPE FLIP CHANCE · {('DOWN' if side=='UP' else 'UP')} reversal watch · entry blocked"
-    elif not flow_confirm: status="SNIPE WATCH · Polymarket contract buying not confirmed"
-    elif not (ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm): status="SNIPE WATCH · exchange flow, order book or candle chart not aligned"
-    elif ex_book_conflict or ex_chart_conflict: status="SNIPE BLOCKED · Binance book/candle structure opposes entry"
-    elif confirmed: status="SNIPE CONFIRMED · 7+ fresh evidence checks aligned · 60+ evidence strength"
-    else: status="SNIPE WATCH · price move or liquidity not fully confirmed"
+    elif confirmed:
+        status=f"SNIPE CONFIRMED · {evidence_count} evidence checks · {required_strength}+ strength"
+    else:
+        status=f"SNIPE WATCH · evidence below {required_strength} streak-aware threshold"
     ask_text="—" if ask_move is None else f"{ask_move:+.2f}%"
     tape_text="—" if tape_move is None else f"{float(tape_move):+.2f}%"
     buy=float(flow.get("buy_notional",0)); sell=float(flow.get("sell_notional",0))
@@ -899,7 +906,7 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     reason_text=" · REASONS: "+"; ".join(reason_bits)
     return (f"🎯 SNIPE DIRECTION: {side} · {status} · {review_level} · ask {ask_text} · contract trade {tape_text} · {band} · "
             f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 evidence (not win probability) · "
-            f"flip risk {flip_risk_value}/100{reason_text}")
+            f"flip risk {flip_risk_value}/100{streak_note}{reason_text}")
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
