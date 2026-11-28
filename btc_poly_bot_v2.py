@@ -1660,29 +1660,44 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             {"name": "🧠 MODEL NOTES", "value": f"{why_compact}\nAll-time forecast: {all_time_forecast}\nSnipe record: {all_time_snipe}\nLoss lessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
         ]
     else:
-        # Crypto Radar uses a compact market-pulse layout with quick scan rows.
+        # Crypto Radar premium brief: bold signal hierarchy, quiet secondary
+        # metrics, matched 5m/15m cards, and concise mobile-first sections.
+        call_badge = "🟢  UP CALL" if direct_signal == "UP" else "🔴  DOWN CALL" if direct_signal == "DOWN" else "⚪  WAIT"
         fields = [
-            {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}** · strength **{signal_strength}%**\n{strength_bar}\n{why_compact}"[:430], "inline": False},
-            {"name": "💹 MARKET TICK", "value": f"**USD {price:,.2f}** · BTC {minutes}m\nUP **{up_odds if up_odds is not None else '—'}%** · DOWN **{down_odds if down_odds is not None else '—'}%**\n1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}% · RSI {rsi_now:.0f}"[:430], "inline": False},
-            {"name": "⚡ SNIPE MONITOR · SECONDARY", "value": f"Monitor only — not a trade call.\n**{snipe['status']}** · {snipe['strength']}/100 · move {snipe_move}\nHOLD {hold}% {hold_bar} · FLIP {flip}% {flip_bar}\n{position_line}\nExit plan: +4% half · +10% rest · -5% stop"[:430], "inline": False},
-            {"name": "📈 RADAR TRACK RECORD", "value": f"{forecast_record}\n{perf_line}\nStreak {stats['current_win_streak']} · best {stats['best_win_streak']} · Snipe {scalp_stats['wins']}W/{scalp_stats['losses']}L"[:430], "inline": False},
-            {"name": "🔎 RADAR LEARNING", "value": f"All-time: {all_time_forecast}\nSnipe: {all_time_snipe}\nLessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
+            {"name": "01  /  MARKET ODDS", "value": f"🟢 **UP  {up_odds if up_odds is not None else '—'}%**\\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%**\\n\\n**BTC/USD**  ${price:,.2f}", "inline": True},
+            {"name": "02  /  MOMENTUM", "value": f"**1m** {move1:+.2f}%\\n**3m** {move3:+.2f}%\\n**10m** {move10:+.2f}%  ·  **RSI** {rsi_now:.0f}", "inline": True},
+            {"name": "03  /  PAPER DESK", "value": f"**{paper_action}**\\n{position_line}\\n\\n**EXIT RULES**  +4% half  ·  +10% rest  ·  −5% stop", "inline": False},
+            {"name": "04  /  PERFORMANCE", "value": f"{perf_line}\\n\\n**FORECAST**  {fw}W  ·  {ff}F  ·  {fl}L  ·  {ftotal} resolved\\n**STREAK**  {stats['current_win_streak']} current  /  {stats['best_win_streak']} best", "inline": False},
+            {"name": "05  /  SIGNAL NOTES", "value": f"{abs(score)}/5 checks lean **{side if side in ('UP','DOWN') else 'NEUTRAL'}**  ·  second check **{'CONFIRMS' if confirmed else 'CAUTION'}**\\nSnipe monitor: **{snipe['status']} · {snipe['strength']}/100** (secondary only)", "inline": False},
         ]
-    description = (
-        f"📣 **BTC {minutes}m SIGNAL: {direct_signal}** · {call_icon} **{call_words}**\n"
-        f"🧾 **PAPER ACTION: {paper_action}**\n"
-        f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\n"
-        f"{progress_bar} **{progress}%**\n"
-        "*Paper signals · live market pulse*"
-    )
+    if dashboard_name == "CRYPTO RADAR":
+        description = (
+            f"**{call_badge}**  ·  **BTC {minutes} MIN**\\n"
+            f"\\n"
+            f"### {direct_signal}\\n"
+            f"**CALL STRENGTH  {signal_strength} / 100**\\n"
+            f"{strength_bar}\\n"
+            f"\\n**PAPER STATUS**  ·  {paper_action}\\n"
+            f"**BTC/USD**  ${price:,.2f}  ·  **CLOSES IN**  {countdown}\\n"
+            f"{progress_bar}  {progress}% of window\\n"
+            f"\\n*Private Market Desk  /  Live paper signal brief*"
+        )
+    else:
+        description = (
+            f"📣 **BTC {minutes}m SIGNAL: {direct_signal}** · {call_icon} **{call_words}**\\n"
+            f"🧾 **PAPER ACTION: {paper_action}**\\n"
+            f"₿ BTC **USD {price:,.2f}** · **{minutes} MIN** · closes **{countdown}**\\n"
+            f"{progress_bar} **{progress}%**\\n"
+            "*Paper signals · live market pulse*"
+        )
     return {
-        "author":{"name":f"₿ {dashboard_name} · {minutes}M PAPER","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
-        "title":f"{dashboard_name} · BTC {minutes} MIN",
+        "author":{"name":f"◈  {dashboard_name}  /  {'PRIVATE MARKET DESK' if dashboard_name == 'CRYPTO RADAR' else f'{minutes}M PAPER TERMINAL'}","icon_url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
+        "title":f"{'SIGNAL BRIEF' if dashboard_name == 'CRYPTO RADAR' else dashboard_name}  ·  BTC {minutes} MIN",
         "description":description,
-        "color":call_color,
+        "color":call_color if dashboard_name != "CRYPTO RADAR" else (0x16A34A if direct_signal == "UP" else 0xDC2626 if direct_signal == "DOWN" else 0x64748B),
         "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "fields":fields,
-        "footer":{"text":"PAPER SIGNALS · NO LIVE ORDERS · DASHBOARD REFRESH ~5s"},
+        "footer":{"text":("CRYPTO RADAR  •  MEMBER BRIEF  •  PAPER ONLY  •  AUTO-REFRESH ~5s" if dashboard_name == "CRYPTO RADAR" else "PAPER SIGNALS · NO LIVE ORDERS · DASHBOARD REFRESH ~5s")},
         "timestamp":utc_now().isoformat(),
     }
 
