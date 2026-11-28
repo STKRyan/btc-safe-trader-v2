@@ -168,7 +168,7 @@ def init_ledger(db_path: str | Path) -> None:
           ticker TEXT PRIMARY KEY, asset TEXT NOT NULL, side TEXT NOT NULL,
           entry TEXT NOT NULL, opened_at REAL NOT NULL, qty INTEGER NOT NULL DEFAULT 1,
           status TEXT NOT NULL DEFAULT 'OPEN', exit_price TEXT, closed_at REAL,
-          pnl_pct REAL, exit_reason TEXT);
+          pnl_pct REAL, exit_reason TEXT, strategy TEXT, target_pct REAL, stop_pct REAL, max_hold_seconds INTEGER);
         CREATE TABLE IF NOT EXISTS paper_events(
           id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, asset TEXT NOT NULL,
           event_type TEXT NOT NULL, side TEXT, price TEXT, pnl_pct REAL,
@@ -177,6 +177,12 @@ def init_ledger(db_path: str | Path) -> None:
           ticker TEXT PRIMARY KEY, message_id TEXT, payload_hash TEXT,
           updated_at REAL NOT NULL, last_action TEXT);
         """)
+        # Upgrade prior isolated versions without deleting paper history.
+        existing = {row[1] for row in db.execute("PRAGMA table_info(paper_positions)")}
+        for name, declaration in (("strategy", "TEXT"), ("target_pct", "REAL"),
+                                  ("stop_pct", "REAL"), ("max_hold_seconds", "INTEGER")):
+            if name not in existing:
+                db.execute(f"ALTER TABLE paper_positions ADD COLUMN {name} {declaration}")
         db.commit()
 
 
@@ -206,8 +212,14 @@ def open_paper_trade(db_path: str | Path, ticker: str, asset: str,
         existing = db.execute("SELECT status FROM paper_positions WHERE ticker=?", (ticker,)).fetchone()
         if existing and existing[0] == "OPEN":
             return False
-        db.execute("INSERT OR REPLACE INTO paper_positions(ticker,asset,side,entry,opened_at,qty,status) VALUES(?,?,?,?,?,1,'OPEN')",
-                   (ticker, asset, signal["side"], str(entry), now))
+        db.execute("""INSERT OR REPLACE INTO paper_positions
+                   (ticker,asset,side,entry,opened_at,qty,status,strategy,target_pct,stop_pct,max_hold_seconds)
+                   VALUES(?,?,?,?,?,1,'OPEN',?,?,?,?)""",
+                   (ticker, asset, signal["side"], str(entry), now,
+                    signal.get("action", "SCALP").split()[0],
+                    float(signal.get("target_pct", 0.03))*100,
+                    float(signal.get("stop_pct", 0.025))*100,
+                    int(signal.get("max_hold_seconds", 90))))
         db.execute("INSERT OR IGNORE INTO initial_calls(ticker,asset,side,entry,created_at) VALUES(?,?,?,?,?)",
                    (ticker, asset, signal["side"], str(entry), now))
         db.execute("INSERT INTO paper_events(ticker,asset,event_type,side,price,ts,detail) VALUES(?,?,?,?,?,?,?)",
