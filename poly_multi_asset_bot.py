@@ -1362,7 +1362,7 @@ def dashboard(c, lines):
             'hold':int(hm.group(1)) if hm else None,
             'flip':int(fm.group(1)) if fm else None,
             'flip_rate':int(frm.group(1)) if frm else None,
-            'snipe':get_field('SNIPE · LIVE CONTRACT MOVE') or 'SNIPE WATCH · no confirmed contract move yet',
+            'snipe':get_field('SNIPE DIRECTION · LIVE CONTRACT MOVE') or 'SNIPE WATCH · no confirmed contract move yet',
             'score':int(sm.group(1)) if sm else 0
         }
     asset_embeds=[]
