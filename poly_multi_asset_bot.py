@@ -100,9 +100,9 @@ def trade_event_embed(asset, timeframe, side, event, trade_type, entry, bid,
     stop_label=(f"{float(stop_roi)*100:+.1f}% contract ROI" if stop_roi is not None else "contract stop")
     hold_label=f"Max hold: {int(max_hold_minutes)}m" if max_hold_minutes is not None else "Exit at target/stop or signal invalidation"
     fields=[
-        {"name":"TRADE CALL","value":f"**{trade_type} {side}**\\n{target_label} · {stop_label}\\n{hold_label}","inline":False},
-        {"name":"HOLD PRESSURE","value":f"**{hold}%**\\n{bar}","inline":True},
-        {"name":"FLIP RISK","value":f"**{risk}%**\\n{flipbar}","inline":True},
+        {"name":"TRADE CALL","value":f"**{trade_type} {side}**\n{target_label} · {stop_label}\n{hold_label}","inline":False},
+        {"name":"HOLD PRESSURE","value":f"**{hold}%**\n{bar}","inline":True},
+        {"name":"FLIP RISK","value":f"**{risk}%**\n{flipbar}","inline":True},
         {"name":"CONTRACT ENTRY / LIVE BID","value":f"{px(entry)} / {px(bid)}","inline":True},
         {"name":"CONTRACT P&L","value":f"**{roi*100:+.2f}%** (ask entry → current bid)","inline":True},
         {"name":"TARGET / STOP CONTRACT PRICE","value":f"{px(target)} / {px(stop)}","inline":True},
@@ -1013,7 +1013,7 @@ def maybe_enter(c, asset, tf, m, tech):
              embed=trade_event_embed(asset,tf,side,"ENTRY",trade_type,
                  float(stats["ask"]),float(stats["bid"]),0.0,tech,float(stats.get("imbalance",0)),
                  f"{trade_type} {side} · take profit {target_roi*100:+.1f}% · stop {stop_roi*100:+.1f}% · exit on signal invalidation or after {max_hold_minutes} minutes.",
-                 float(stats["ask"])*(1+target_roi),float(stats["ask"])*(1+stop_roi),
+                 min(0.99,float(stats["ask"])*(1+target_roi)),max(0.01,float(stats["ask"])*(1+stop_roi)),
                  target_roi,stop_roi,max_hold_minutes))
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
     return f"PAPER ENTRY {side} @ ask {stats['ask']:.3f} · ${stake:,.2f} invested · {qty:.2f} contracts · cash ${cash:,.2f} · spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
@@ -1116,8 +1116,8 @@ def manage_open_calls(c, asset, tech):
             if action!=r["last_action"]:
                 c.execute("UPDATE calls SET last_action=? WHERE id=?",(action,r["id"])); c.commit()
                 event="FLIP" if ("SIGNAL BREAK" in action or "MARKET TURNING" in action) else ("SELL / EXIT" if exit_qty>0 else "HOLD")
-                target=float(entry)*(1+target_roi)
-                stop=float(entry)*(1+stop_roi)
+                target=min(0.99,float(entry)*(1+target_roi))
+                stop=max(0.01,float(entry)*(1+stop_roi))
                 send("",embed=trade_event_embed(
                     r["asset"],int(r["timeframe"]),r["side"],event,trade_type,
                     entry,bid,roi,tech,float(stats.get("imbalance",0)),
