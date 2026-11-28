@@ -2,6 +2,8 @@
 import json
 import threading
 import time
+import urllib.request
+import urllib.parse
 from collections import deque
 
 # Polymarket outcome-token stream
@@ -19,6 +21,7 @@ _BX_STATE = {}
 _BX_SYMBOLS = set()
 _BX_STARTED = False
 _BX_CONNECTED = False
+_BX_REST_MODE = False
 _ASSET_SYMBOLS = {
     "BTC":"btcusdt", "ETH":"ethusdt", "SOL":"solusdt",
     "XRP":"xrpusdt", "DOGE":"dogeusdt", "BNB":"bnbusdt"
@@ -180,7 +183,7 @@ def live_flow_snapshot(token, seconds=10):
 def _bx_state(symbol):
     return _BX_STATE.setdefault(symbol,{"trades":deque(maxlen=3000),"bids":[],"asks":[],
         "bid":None,"ask":None,"book_ts":0.0,"quote_ts":0.0,
-        "candles":deque(maxlen=240),"last_price":None,"last_price_ts":0.0})
+        "candles":deque(maxlen=240),"last_price":None,"last_price_ts":0.0,"last_agg_id":None})
 
 
 def register_exchange_assets(assets):
@@ -240,12 +243,83 @@ def _bx_handle(raw):
             except (TypeError,ValueError): pass
 
 
-def _bx_loop():
+def _bx_rest_poll_symbol(symbol):
+    """Poll Binance's market-data-only REST API when the public WebSocket is region-blocked."""
+    base="https://data-api.binance.vision/api/v3/"
+    def fetch(path, params):
+        query=urllib.parse.urlencode(params)
+        req=urllib.request.Request(base+path+"?"+query,headers={"User-Agent":"SignalForge-Paper-Scanner/1.0"})
+        with urllib.request.urlopen(req,timeout=7) as response:
+            return json.loads(response.read().decode("utf-8"))
+    with _BX_LOCK:
+        st=_bx_state(symbol); last_id=st.get("last_agg_id")
+    trade_params={"symbol":symbol.upper(),"limit":100}
+    if last_id is not None: trade_params["fromId"]=int(last_id)+1
+    trades=fetch("aggTrades",trade_params)
+    depth=fetch("depth",{"symbol":symbol.upper(),"limit":20})
+    klines=fetch("klines",{"symbol":symbol.upper(),"interval":"1m","limit":8})
+    receipt=time.time(); now_ms=int(receipt*1000)
+    with _BX_LOCK:
+        st=_bx_state(symbol)
+        for row in trades:
+            try:
+                trade_id=int(row["a"])
+                if st["last_agg_id"] is not None and trade_id<=st["last_agg_id"]: continue
+                price=float(row["p"]); qty=float(row["q"])
+                side="SELL" if bool(row["m"]) else "BUY"
+                if price>0 and qty>0:
+                    st["trades"].append((float(row.get("T",now_ms))/1000.0,side,price,qty))
+                    st["last_price"]=price; st["last_price_ts"]=float(row.get("T",now_ms))/1000.0
+                st["last_agg_id"]=trade_id
+            except (TypeError,ValueError,KeyError): continue
+        bids=sorted([(float(x[0]),float(x[1])) for x in depth.get("bids",[]) if float(x[1])>0],key=lambda x:x[0],reverse=True)
+        asks=sorted([(float(x[0]),float(x[1])) for x in depth.get("asks",[]) if float(x[1])>0],key=lambda x:x[0])
+        if bids and asks:
+            st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
+                       "book_ts":receipt,"quote_ts":receipt})
+        rows=st["candles"]
+        for k in klines:
+            try:
+                candle={"open_time":int(k[0]),"open":float(k[1]),"high":float(k[2]),"low":float(k[3]),
+                        "close":float(k[4]),"volume":float(k[5]),"closed":int(k[6])<now_ms,
+                        "received_at":receipt}
+                if candle["open"]<=0 or candle["close"]<=0: continue
+                if rows and rows[-1]["open_time"]==candle["open_time"]: rows[-1]=candle
+                elif not rows or candle["open_time"]>rows[-1]["open_time"]: rows.append(candle)
+            except (TypeError,ValueError,IndexError): continue
+        st["last_price_ts"]=max(st.get("last_price_ts",0.0),receipt if not trades else st.get("last_price_ts",receipt))
+
+
+def _bx_rest_poll_cycle():
     global _BX_CONNECTED
+    with _BX_LOCK: symbols=sorted(_BX_SYMBOLS)
+    successes=0
+    for symbol in symbols:
+        try:
+            _bx_rest_poll_symbol(symbol); successes+=1
+        except Exception as exc:
+            if time.time()-getattr(_bx_rest_poll_cycle,"last_error_log",0)>30:
+                print(f"Binance REST fallback temporarily unavailable ({symbol}): {type(exc).__name__}: {str(exc)[:120]}",flush=True)
+                _bx_rest_poll_cycle.last_error_log=time.time()
+    _BX_CONNECTED=successes>0
+    if successes: 
+        if not getattr(_bx_rest_poll_cycle,"announced",False):
+            print(f"Binance REST market-data fallback active: {successes}/{len(symbols)} assets; trades + depth + 1m candles",flush=True)
+            _bx_rest_poll_cycle.announced=True
+    return successes
+
+
+def _bx_loop():
+    global _BX_CONNECTED, _BX_REST_MODE
     try: import websocket
     except Exception:
-        print("Binance exchange feed unavailable: websocket-client dependency missing",flush=True); return
+        print("Binance WebSocket dependency missing; using REST market-data fallback",flush=True)
+        _BX_REST_MODE=True
     while True:
+        if _BX_REST_MODE:
+            _bx_rest_poll_cycle()
+            time.sleep(2)
+            continue
         ws=None
         try:
             with _BX_LOCK: symbols=sorted(_BX_SYMBOLS)
@@ -265,7 +339,12 @@ def _bx_loop():
                 if message: _bx_handle(message)
         except Exception as exc:
             _BX_CONNECTED=False
-            print(f"Binance exchange feed reconnect: {type(exc).__name__}: {str(exc)[:140]}",flush=True)
+            status=getattr(exc,"status_code",None)
+            if status==451 or "Handshake status 451" in str(exc):
+                _BX_REST_MODE=True
+                print("Binance WebSocket rejected with HTTP 451; switching to data-api.binance.vision REST polling instead of reconnecting endlessly.",flush=True)
+            else:
+                print(f"Binance exchange feed reconnect: {type(exc).__name__}: {str(exc)[:140]}",flush=True)
             time.sleep(2)
         finally:
             _BX_CONNECTED=False
