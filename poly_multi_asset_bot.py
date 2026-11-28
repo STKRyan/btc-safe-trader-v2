@@ -2020,7 +2020,7 @@ def main():
     finally:c.close()
     return 0
 
-if __name__=="__main__":sys.exit(main()),clean_title)\n        if not mt: continue\n        asset=mt.group(1); tf=mt.group(2) or mt.group(3); side_text=mt.group(4).strip()
+if __name__=="__main__":sys.exit(main())
         side=side_text if side_text in ('UP','DOWN','WAIT') else 'WAIT'
         missing='NO VERIFIED MARKET' in side_text
         fields=card.get('fields',[])
