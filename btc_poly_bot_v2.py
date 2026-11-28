@@ -1516,6 +1516,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
     live_odds = _live_market_odds(minutes)
     up_odds, down_odds = live_odds.get("up"), live_odds.get("down")
     snipe = btc_snipe_meter(conn, minutes, side, live_odds, confirmed, flip)
+    snipe_direction = side if side in ("UP", "DOWN") else "WAIT"
     snipe_move = "—" if snipe["move"] is None else f"{snipe['move']:+.2f}%"
 
     momentum_aligned = move1 * move3 > 0
