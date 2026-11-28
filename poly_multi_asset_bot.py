@@ -507,7 +507,7 @@ def adaptive_forecast_side(c, market_id, tf, tech, exchange):
     net=float(ex.get("net_flow_pct",0) or 0)
     imbalance=float(ex.get("imbalance",0) or 0)
     age=ex.get("trade_age"); book_age=ex.get("book_age"); quote_age=ex.get("quote_age")
-    fresh=bool(ex.get("stream_connected")) and n>=6 and age is not None and float(age)<=3 and book_age is not None and float(book_age)<=3 and quote_age is not None and float(quote_age)<=3
+    fresh=bool(ex.get("stream_connected")) and n>=4 and age is not None and float(age)<=2.5 and book_age is not None and float(book_age)<=2.5 and quote_age is not None and float(quote_age)<=2.5
     move=ex.get("trade_move_pct"); c1=ex.get("candle_1m_pct"); c5=ex.get("candle_5m_pct")
     sign=1 if base=="UP" else -1
     aligned_flow=fresh and net*sign>=15
@@ -1025,7 +1025,8 @@ def maybe_enter(c, asset, tf, m, tech):
                 f"cap ${exposure_cap:,.2f} · currently invested ${portfolio['invested']:,.2f} · "
                 f"remaining budget ${exposure_remaining:,.2f}")
     qty=stake/stats["ask"]
-    trade_type="HOLD" if "SNIPE CONFIRMED" in str(snipe).upper() else "SCALP"
+    # A confirmed 5m snipe is the quick in/out SCALP; sustained/15m entries are HOLDs.
+    trade_type="SCALP" if tf==5 and "SNIPE CONFIRMED" in str(snipe).upper() else "HOLD"
     target_roi=TARGET_PROFIT_ROI if trade_type=="HOLD" else 0.04
     stop_roi=STOP_ROI if trade_type=="HOLD" else -0.03
     max_hold_minutes=int(tf)*(2 if trade_type=="HOLD" else 1)
@@ -1984,7 +1985,7 @@ def cycle(c):
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
                 register_live_tokens(list(tokens(m).values()))
                 save_observation(c,asset,tf,m,tech)
-                exchange=exchange_snapshot(asset,seconds=10)
+                exchange=exchange_snapshot(asset,seconds=5)
                 candidate_side,flip_reason,flip_immediate=adaptive_forecast_side(c,m.get("id"),tf,tech,exchange)
                 forecast_features=dict(tech)
                 forecast_features["exchange_flow"]=exchange
