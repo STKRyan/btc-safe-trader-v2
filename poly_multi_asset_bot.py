@@ -693,6 +693,12 @@ def second_brain(tech, stats, side, c=None, asset="BTC", tf=5, market_id=None, f
     exchange=exchange or {}
     ex_n=int(exchange.get("trade_count",0) or 0)
     ex_net=float(exchange.get("net_flow_pct",0) or 0)
+    large_buy_n=int(exchange.get("large_buy_count",0) or 0)
+    large_net=float(exchange.get("large_net_flow_pct",0) or 0)*sign
+    large_buy_value=float(exchange.get("large_buy_notional",0) or 0)
+    stack_side=str(exchange.get("stack_side","NEUTRAL"))
+    stack_persistence=float(exchange.get("stack_persistence_pct",0) or 0)
+    stack_observations=int(exchange.get("stack_observations",0) or 0)
     ex_move=exchange.get("trade_move_pct")
     ex_imb=float(exchange.get("imbalance",0) or 0)
     ex_age=exchange.get("trade_age"); ex_book_age=exchange.get("book_age"); ex_quote_age=exchange.get("quote_age")
@@ -830,8 +836,9 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     c.execute("INSERT INTO snipe_ticks(market_id,side,ask,ts) VALUES(?,?,?,?) "
               "ON CONFLICT(market_id,side) DO UPDATE SET ask=excluded.ask,ts=excluded.ts",
               (str(market_id),side,ask,stamp)); c.commit()
-    flow=live_flow_snapshot(token,seconds=10)
-    exchange=exchange or exchange_snapshot(asset,seconds=10)
+    # Short-window detection; multi-source persistence remains the anti-fake filter.
+    flow=live_flow_snapshot(token,seconds=5)
+    exchange=exchange_snapshot(asset,seconds=5)
     tape_move=flow.get("trade_move_pct" )
     flow_n=int(flow.get("trade_count",0) or 0)
     net=float(flow.get("net_flow_pct",0) or 0)
@@ -861,6 +868,10 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_book_aligned=ex_imb*sign
     ex_flow_confirm=ex_fresh and ex_n>=4 and ex_net_aligned>=15
     ex_book_confirm=ex_fresh and ex_book_aligned>=0.04 and float(exchange.get("depth_usd",0) or 0)>=10000
+    # Large executed buyers + a stack that persists help reject spoofed/one-tick walls.
+    large_buyer_confirm=ex_fresh and large_buy_n>=1 and large_net>=20 and large_buy_value>=float(exchange.get("large_trade_threshold",5000) or 5000) and ex_net_aligned>=15
+    stack_confirm=ex_fresh and stack_side==side and stack_persistence>=60 and stack_observations>=3 and ex_book_aligned>=0.04
+    possible_spoof=ex_fresh and ex_book_aligned>=0.08 and stack_persistence<45 and not large_buyer_confirm
     ex_move_confirm=ex_move is not None and float(ex_move)*sign>=0.02
     ex_c1=exchange.get("candle_1m_pct"); ex_c5=exchange.get("candle_5m_pct")
     chart_confirm=ex_c1 is not None and ex_c5 is not None and float(ex_c1)*sign>0 and float(ex_c5)*sign>0
@@ -869,11 +880,12 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_chart_conflict=ex_c1 is not None and ex_c5 is not None and float(ex_c1)*sign<0 and float(ex_c5)*sign<0
     brain_ok=bool(brain.get("agrees")) and int(brain.get("flip_risk",95))<65
     # A confirmed snipe requires several independent, fresh sources and a minimum evidence score.
-    evidence_count=sum((move_support,book_ok,brain_ok,flow_confirm,ex_flow_confirm,ex_book_confirm,ex_move_confirm,chart_confirm))
-    confirmed=move_support and book_ok and brain_ok and flow_confirm and not flow_conflict and ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm and not ex_flow_conflict and not ex_book_conflict and not ex_chart_conflict
+    evidence_count=sum((move_support,book_ok,brain_ok,flow_confirm,ex_flow_confirm,ex_book_confirm,ex_move_confirm,chart_confirm,large_buyer_confirm,stack_confirm))
+    confirmed=move_support and book_ok and brain_ok and flow_confirm and not flow_conflict and ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm and large_buyer_confirm and stack_confirm and not ex_flow_conflict and not ex_book_conflict and not ex_chart_conflict and not possible_spoof
     strength=max(0,min(100,round(move_size*4+(15 if book_ok else 0)+(15 if brain_ok else 0)+
                     min(12,max(0,net)/5)+(8 if tape_live and quote_fresh else 0)+
-                    (15 if ex_flow_confirm else 0)+(10 if ex_book_confirm else 0)+(10 if chart_confirm else 0))))
+                    (15 if ex_flow_confirm else 0)+(10 if ex_book_confirm else 0)+(10 if chart_confirm else 0)+
+                    (8 if large_buyer_confirm else 0)+(8 if stack_confirm else 0))))
     # Strength is an evidence meter, never a calibrated probability of winning.
     flip_risk_value=int(brain.get("flip_risk",95))
     flip_chance=flip_risk_value>=60
@@ -893,6 +905,9 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     record_chase=(global_best>0 and global_current>=max(0,global_best-2)) or (
         asset_best>0 and asset_current>=max(0,asset_best-2))
     required_strength=60
+    # 60% is a rolling paper-performance target, never a reason to force an entry.
+    target_guard=learn.get("sample",0)>=20 and learn.get("win_rate") is not None and float(learn.get("win_rate"))<60
+    if target_guard: required_strength+=5
     if streak_protect: required_strength+=8
     if record_chase: required_strength+=7
     if learn.get("caution"): required_strength+=5
@@ -916,6 +931,12 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
         status=f"SNIPE FLIP CHANCE · {('DOWN' if side=='UP' else 'UP')} reversal watch · entry blocked"
     elif not flow_confirm:
         status="SNIPE WATCH · Polymarket contract buying not confirmed"
+    elif possible_spoof:
+        status="SNIPE WATCH · possible spoof/fake stack · no persistent buyer prints"
+    elif not large_buyer_confirm:
+        status="SNIPE WATCH · waiting for large executed buyer flow"
+    elif not stack_confirm:
+        status="SNIPE WATCH · buyer stack not persistent yet"
     elif not (ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm):
         status="SNIPE WATCH · exchange flow, order book or candle chart not aligned"
     elif ex_book_conflict or ex_chart_conflict:
@@ -931,8 +952,8 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ask_text="—" if ask_move is None else f"{ask_move:+.2f}%"
     tape_text="—" if tape_move is None else f"{float(tape_move):+.2f}%"
     buy=float(flow.get("buy_notional",0)); sell=float(flow.get("sell_notional",0))
-    flow_text=(f"10s BUY {buy:.0f} / SELL {sell:.0f} contract-notional · net {net:+.0f}% · {flow_n} prints"
-               if flow_n else "10s tape awaiting trade prints")
+    flow_text=(f"5s BUY {buy:.0f} / SELL {sell:.0f} contract-notional · net {net:+.0f}% · {flow_n} prints"
+               if flow_n else "5s tape awaiting trade prints")
     band="NO FAVORABLE MOVE" if move_size==0 else "MICRO <1%" if move_size<1 else "FAST 1–5%" if move_size<5 else "BURST 5%+"
     ex_buy=float(exchange.get("buy_notional",0) or 0); ex_sell=float(exchange.get("sell_notional",0) or 0)
     ex_price=exchange.get("last_price"); ex_spread=exchange.get("spread_pct")
@@ -946,9 +967,10 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     reason_bits.append("Binance flow/book/candles aligned" if ex_flow_confirm and ex_book_confirm and chart_confirm else "Binance flow/book/candle confirmation incomplete")
     reason_bits.append("second brain agrees" if brain_ok else "second brain does not fully agree")
     reason_text=" · REASONS: "+"; ".join(reason_bits)
+    snipe_hold=max(0,min(100,round(0.55*strength+0.45*(100-flip_risk_value))))
     return (f"🎯 SNIPE DIRECTION: {side} · {status} · {review_level} · ask {ask_text} · contract trade {tape_text} · {band} · "
             f"{flow_text} · {ex_summary} · CHART {chart} · strength {strength}/100 evidence (not win probability) · "
-            f"flip risk {flip_risk_value}/100{streak_note}{reason_text}")
+            f"SNIPE HOLD METER {snipe_hold}/100 (separate evidence blend, not odds) · flip risk {flip_risk_value}/100{streak_note}{reason_text}")
 def maybe_enter(c, asset, tf, m, tech):
     side=tech["side"]
     if side not in ("UP","DOWN"):return "WAIT · mixed indicators"
