@@ -828,7 +828,12 @@ def scalp_call(c, asset, tf, market, tech):
     ex_net=float(exchange.get("net_flow_pct",0) or 0); ex_imb=float(exchange.get("imbalance",0) or 0)
     ex_c1=exchange.get("candle_1m_pct"); ex_c5=exchange.get("candle_5m_pct")
     exchange_note=f" · Binance {exchange.get('symbol',asset)} flow {ex_net:+.0f}% / book {ex_imb:+.2f} / 1m {float(ex_c1):+.3f}% / 5m {float(ex_c5):+.3f}%" if ex_c1 is not None and ex_c5 is not None else " · Binance live chart data warming up"
-    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}{exchange_note}"
+    confidence=entry_confidence(c,asset,tf,"SCALP")
+    if not confidence["ready"]:
+        return "SCALP: SIT OUT · "+confidence["reason"]
+    if confidence["rate"]<MIN_ENTRY_CONFIDENCE:
+        return "SCALP: SIT OUT · learned snipe success rate "+str(round(confidence["rate"],1))+"% is below 60%"
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree · learned {confidence['rate']:.1f}%/{confidence['sample']}{memory_note}{flow_note}{exchange_note}"
 def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=None, asset="BTC", tf=5):
     """Confirm a snipe only when fresh selected-token buying, movement and liquidity align."""
     ask=float(stats["ask"]); stamp=time.time()
@@ -1030,9 +1035,13 @@ def maybe_enter(c, asset, tf, m, tech, defer_entry=False):
     if open_n>=MAX_OPEN:reasons.append("maximum open paper calls reached")
     if reasons:return "WAIT · "+"; ".join(dict.fromkeys(reasons))+" · "+pm_quote+" · "+snipe+" · COURT: "+brain["debate"]
     asset_stats=paper_trade_stats(c,asset=asset,mode=trade_type)
+    forecast_stats=asset_paper_stats(c,asset,False)
+    snipe_stats=asset_paper_stats(c,asset,True)
     rank=(abs(int(tech.get("score",0)))*10 + max(0,int(brain.get("score",0)))*5 +
           (100-current_risk)*0.5 + float(confidence["rate"])*0.25 +
-          min(10,int(asset_stats["current_streak"]))*2)
+          min(10,int(asset_stats["current_streak"]))*2 +
+          min(10,int(forecast_stats["current_streak"]))*1.0 +
+          min(10,int(snipe_stats["current_streak"]))*1.5)
     if defer_entry:
         return "QUALIFIED CANDIDATE · PRIORITY "+str(round(rank,1))+" · learned "+str(round(confidence["rate"],1))+"%/"+str(confidence["sample"])+" · streak "+str(asset_stats["current_streak"])
     portfolio=portfolio_metrics(c)
