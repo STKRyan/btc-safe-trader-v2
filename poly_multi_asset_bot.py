@@ -1294,13 +1294,13 @@ def compact_discord_board(embeds):
         embed=dict(original)
         title=str(embed.get("title",""))
         if title.startswith("SIGNALFORGE"):
-            kind="summary"; budget=1250
+            kind="summary"; budget=1000
         elif "LIVE PAPER POSITIONS" in title:
-            kind="live"; budget=1000
+            kind="live"; budget=850
         elif "MARKET RESULT" in title:
-            kind="result"; budget=400
+            kind="result"; budget=250
         elif "LIVE RADAR" in title:
-            kind="asset"; budget=650
+            kind="asset"; budget=760
         else:
             kind="other"; budget=300
 
@@ -1328,14 +1328,19 @@ def compact_discord_board(embeds):
             field_limit=6
         elif kind=="live":
             field_limit=3
+        elif kind=="asset":
+            asset_priorities=("SNIPE METER","MARKET-BY-MARKET","PAPER W/L + STREAK")
+            fields.sort(key=lambda f: next((i for i,p in enumerate(asset_priorities) if p in str(f.get("name",""))),len(asset_priorities)))
+            field_limit=3
         else:
-            field_limit=3 if kind=="asset" else 1 if kind=="result" else 2
+            field_limit=1 if kind=="result" else 2
 
         fitted=[]
         for index,field in enumerate(fields[:field_limit]):
             name=clip(field.get("name",""),80 if kind=="summary" else 45)
             if kind=="asset":
-                value_limit=(150,150,170)[min(index,2)]
+                label=str(field.get("name",""))
+                value_limit=160 if "SNIPE METER" in label else 200 if "MARKET-BY-MARKET" in label else 150
             elif kind=="live":
                 value_limit=220
             elif kind=="summary":
@@ -1518,6 +1523,29 @@ def per_asset_tracker_field(c, asset):
 
 
 
+
+def asset_snipe_meter(windows):
+    """Compact, always-visible snipe evidence meter for 5m and 15m."""
+    lines=[]
+    for tf in ("5","15"):
+        item=windows.get(tf)
+        if not item:
+            lines.append(f"{tf}m · WAIT · data unavailable")
+            continue
+        raw=str(item.get("snipe") or "")
+        direction_match=re.search(r"SNIPE DIRECTION:\\s*(UP|DOWN|NONE)",raw,re.I)
+        status_match=re.search(r"\\bSNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)\\b",raw,re.I)
+        strength_match=re.search(r"SNIPE STRENGTH\\s*(\\d+)%",raw,re.I)
+        move_match=re.search(r"CONTRACT MOVE\\s*([+-]?\\d+(?:\\.\\d+)?)%",raw,re.I)
+        direction=direction_match.group(1).upper() if direction_match else "WAIT"
+        status=status_match.group(1).upper() if status_match else "WATCH"
+        strength=int(strength_match.group(1)) if strength_match else 0
+        bar=color_pct_bar(strength,"🎯")
+        move=f" · {float(move_match.group(1)):+.2f}%" if move_match else ""
+        lines.append(f"{tf}m {direction} · {status} · {strength}/100 {bar}{move}")
+    return "\\n".join(lines)[:1024]
+
+
 def per_asset_market_results(c, asset, limit=5):
     """Show gross paper winnings and losses for each settled market on this asset card."""
     rows=c.execute(
@@ -1679,6 +1707,7 @@ def dashboard(c, lines):
             snipe_text=str(item.get('snipe') or 'SNIPE WATCH · no confirmed contract move yet')
             value=f'{value}\n🎯 SNIPE: {snipe_text}'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
+        card_fields.append({'name':'🎯 SNIPE METER · 5M / 15M','value':asset_snipe_meter(windows),'inline':False})
         card_fields.append({'name':'📈 PAPER W/L + STREAK TRACKER','value':per_asset_tracker_field(c,asset)[:1024],'inline':False})
         card_fields.append({'name':'💰 MARKET-BY-MARKET WINS / LOSSES · USD','value':per_asset_market_results(c,asset,5),'inline':False})
         asset_embeds.append({
