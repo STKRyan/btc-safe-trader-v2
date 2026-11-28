@@ -1292,13 +1292,23 @@ def per_asset_tracker_field(c, asset):
     loss_rate=f"{stats['loss_rate']:.1f}%" if stats["loss_rate"] is not None else "—"
     srate=f"{sn['win_rate']:.1f}%" if sn["win_rate"] is not None else "—"
     sloss=f"{sn['loss_rate']:.1f}%" if sn["loss_rate"] is not None else "—"
+    paper=c.execute("SELECT COUNT(*) n,COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) wins,COALESCE(SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END),0) losses,COALESCE(SUM(pnl),0) net FROM calls WHERE asset=? AND status='RESOLVED'",(asset,)).fetchone()
+    market_rollup=c.execute("SELECT market_id,slug,COALESCE(SUM(pnl),0) net FROM calls WHERE asset=? AND status='RESOLVED' GROUP BY market_id,slug ORDER BY net DESC",(asset,)).fetchall()
+    best=market_rollup[0] if market_rollup else None
+    worst=market_rollup[-1] if market_rollup else None
+    best_label=(best["slug"] or best["market_id"])[:35] if best else "—"
+    worst_label=(worst["slug"] or worst["market_id"])[:35] if worst else "—"
     return (
         f"📊 **{asset} FORECAST RECORD (5m + 15m)**\n"
         f"WIN **{stats['wins']}** · FLIP **{stats['flips']}** · LOSS **{stats['losses']}** · Resolved **{stats['sample']}**\n"
         f"Correct incl. flips **{rate}** · Loss rate **{loss_rate}**\n"
         f"🔥 Current streak **{stats['current_streak']}** · 🏆 Best **{stats['best_streak']}**\n"
         f"🎯 **SNIPE** W/L **{sn['wins']}/{sn['losses']}** · Win {srate} / Loss {sloss} "
-        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}"
+        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}\n"
+        f"💵 **PAPER W/L:** {int(paper['wins'])}/{int(paper['losses'])} · {int(paper['n'])} settled · NET **{float(paper['net']):+,.2f} USD**\n"
+        f"🏆 Best market: {best_label} · {float(best['net']):+,.2f} USD\n" if best else
+        f"(n={sn['sample']}) · Current {sn['current_streak']} / Best {sn['best_streak']}\n"
+        f"💵 **PAPER W/L:** {int(paper['wins'])}/{int(paper['losses'])} · {int(paper['n'])} settled · NET **{float(paper['net']):+,.2f} USD**"
     )
 
 
