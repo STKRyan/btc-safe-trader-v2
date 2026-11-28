@@ -834,10 +834,14 @@ def send_btc_trade_event(conn: sqlite3.Connection, event: str, side: str,
                          stop: Optional[float] = None,
                          max_hold: Optional[int] = None) -> None:
     """Post a compact, premium BTC paper-trade event to the BTC Live Discord."""
-    webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
+    # Match the BTC bot's normal Discord destination first; use its configured
+    # BTC Live fallback only when the primary bot webhook is not set.
+    webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    if not webhook:
+        webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
     if not webhook or not webhook.startswith(("https://discord.com/api/webhooks/",
                                                "https://discordapp.com/api/webhooks/")):
-        print("BTC trade event skipped: DISCORD_BTC_LIVE_WEBHOOK_URL missing or invalid.")
+        print("BTC trade event skipped: BTC bot Discord webhook missing or invalid.")
         return
     side = str(side).upper()
     trade_type = str(trade_type or "STANDARD").upper()
