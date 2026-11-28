@@ -303,7 +303,7 @@ def _streaks(results: list[str]) -> tuple[int, int]:
 def stats(db_path: str | Path) -> dict[str, Any]:
     with sqlite3.connect(db_path) as db:
         calls = db.execute("SELECT asset,settlement_result,created_at,ticker FROM initial_calls WHERE settlement_result IN ('WIN','LOSS') ORDER BY created_at,ticker").fetchall()
-        trades = db.execute("SELECT asset,pnl_pct,closed_at,ticker FROM paper_positions WHERE status='CLOSED' AND pnl_pct IS NOT NULL ORDER BY closed_at,id").fetchall()
+        trades = db.execute("SELECT asset,pnl_pct,closed_at,ticker,strategy FROM paper_positions WHERE status='CLOSED' AND pnl_pct IS NOT NULL ORDER BY closed_at,id").fetchall()
         flips = db.execute("SELECT COUNT(*) FROM paper_events WHERE event_type='FLIP'").fetchone()[0]
     call_results = [r[1] for r in calls]
     wins = call_results.count("WIN")
@@ -312,6 +312,21 @@ def stats(db_path: str | Path) -> dict[str, Any]:
     managed_results = ["WIN" if r[1] > 0 else ("LOSS" if r[1] < 0 else "BE") for r in trades]
     managed_current, managed_best = _streaks(managed_results)
     pnl = [r[1] for r in trades]
+    by_contract = {}
+    for ticker in sorted({r[3] for r in calls}):
+        contract_results = [r[1] for r in calls if r[3] == ticker]
+        contract_wins = contract_results.count("WIN")
+        by_contract[ticker] = {"settled_calls": len(contract_results),
+                               "wins": contract_wins, "losses": contract_results.count("LOSS"),
+                               "win_rate_pct": round(100*contract_wins/len(contract_results),1) if contract_results else None}
+    by_strategy = {}
+    for strategy in sorted({r[4] or "UNKNOWN" for r in trades}):
+        strategy_pnl = [r[1] for r in trades if (r[4] or "UNKNOWN") == strategy]
+        strategy_wins = sum(1 for value in strategy_pnl if value > 0)
+        strategy_losses = sum(1 for value in strategy_pnl if value < 0)
+        by_strategy[strategy] = {"closed_trades": len(strategy_pnl), "wins": strategy_wins,
+                                 "losses": strategy_losses,
+                                 "avg_pnl_pct": round(sum(strategy_pnl)/len(strategy_pnl),2) if strategy_pnl else None}
     by_asset = {}
     for asset in ("BTC", "ETH", "GOLD"):
         asset_calls = [r[1] for r in calls if r[0] == asset]
@@ -335,7 +350,7 @@ def stats(db_path: str | Path) -> dict[str, Any]:
         "managed_losses": sum(1 for value in pnl if value < 0),\n        "managed_break_even": sum(1 for value in pnl if value == 0),
         "managed_win_rate_pct": round(100*sum(1 for value in pnl if value > 0)/sum(1 for value in pnl if value != 0),1) if any(value != 0 for value in pnl) else None,
         "current_managed_streak": managed_current, "best_managed_win_streak": managed_best,
-        "flip_events": flips, "by_asset": by_asset,
+        "flip_events": flips, "by_asset": by_asset, "by_contract": by_contract, "by_strategy": by_strategy,
     }
 
 
