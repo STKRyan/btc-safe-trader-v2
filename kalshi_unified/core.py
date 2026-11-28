@@ -309,7 +309,7 @@ def stats(db_path: str | Path) -> dict[str, Any]:
     wins = call_results.count("WIN")
     losses = call_results.count("LOSS")
     current, best = _streaks(call_results)
-    managed_results = ["WIN" if r[1] > 0 else "LOSS" for r in trades]
+    managed_results = ["WIN" if r[1] > 0 else ("LOSS" if r[1] < 0 else "BE") for r in trades]
     managed_current, managed_best = _streaks(managed_results)
     pnl = [r[1] for r in trades]
     by_asset = {}
@@ -332,8 +332,8 @@ def stats(db_path: str | Path) -> dict[str, Any]:
         "managed_closed_trades": len(pnl),
         "managed_avg_pnl_pct": round(sum(pnl)/len(pnl),2) if pnl else None,
         "managed_wins": sum(1 for value in pnl if value > 0),
-        "managed_losses": sum(1 for value in pnl if value <= 0),
-        "managed_win_rate_pct": round(100*sum(1 for value in pnl if value > 0)/len(pnl),1) if pnl else None,
+        "managed_losses": sum(1 for value in pnl if value < 0),\n        "managed_break_even": sum(1 for value in pnl if value == 0),
+        "managed_win_rate_pct": round(100*sum(1 for value in pnl if value > 0)/sum(1 for value in pnl if value != 0),1) if any(value != 0 for value in pnl) else None,
         "current_managed_streak": managed_current, "best_managed_win_streak": managed_best,
         "flip_events": flips, "by_asset": by_asset,
     }
