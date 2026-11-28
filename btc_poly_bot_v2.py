@@ -1651,13 +1651,15 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         paper_action = "WAIT · ENTRY STATUS NOT CONFIRMED"
     snipe_direction = side if side in ("UP", "DOWN") else "WAIT"
     if dashboard_name == "BTC LIVE":
-        # BTC Live uses a trading-terminal layout, distinct from Crypto Radar.
+        # BTC Live is the higher-tier executive terminal; Crypto Radar remains
+        # the compact brief. Keep the primary call unmistakable on mobile.
+        live_badge = "🟢  LONG BIAS" if direct_signal == "UP" else "🔴  SHORT BIAS" if direct_signal == "DOWN" else "⚪  NO TRADE BIAS"
         fields = [
-            {"name": "📣 DIRECT SIGNAL", "value": f"**BTC {minutes}m · CALL {direct_signal}**\nPAPER ACTION: **{paper_action}**\nSNIPE SIDE: **{snipe_direction}**\n{strength_bar}\n{note_compact}"[:430], "inline": False},
-            {"name": "₿ PRICE & MOMENTUM", "value": f"**USD {price:,.2f}** · {minutes}m\n{odds}\nRSI **{rsi_now:.0f}** · 1m {move1:+.2f}% · 3m {move3:+.2f}% · 10m {move10:+.2f}%"[:430], "inline": False},
-            {"name": "🛡️ POSITION CONTROL", "value": f"{position_line}\nSNIPE MONITOR (NOT A CALL): **{snipe['status']}** · {snipe['strength']}/100\nHOLD **{hold}%** {hold_bar} · FLIP **{flip}%** {flip_bar}\nPAPER EXIT: +4% sell half · +10% exit rest · -5% stop\nScalp: **{'CHECK' if confirmed and abs(score)>=3 else 'WAIT'}**"[:430], "inline": False},
-            {"name": "📒 PAPER DESK", "value": f"{forecast_record}\n{perf_line}\nStreak **{stats['current_win_streak']}** · best **{stats['best_win_streak']}**\nSnipe **{scalp_stats['wins']}W/{scalp_stats['losses']}L**"[:430], "inline": False},
-            {"name": "🧠 MODEL NOTES", "value": f"{why_compact}\nAll-time forecast: {all_time_forecast}\nSnipe record: {all_time_snipe}\nLoss lessons: {btc_loss_report_text(conn)}"[:430], "inline": False},
+            {"name": "◈  EXECUTIVE CALL", "value": f"**BTC {minutes}M  /  {direct_signal}**\n**PAPER DECISION:** {paper_action}\n**SCORE:** {signal_strength}/100\n{strength_bar}\n\n{note_compact}", "inline": False},
+            {"name": "01  /  LIVE MARKET", "value": f"**BTC/USD**  \${price:,.2f}\n\n🟢 **UP  {up_odds if up_odds is not None else '—'}%**\n🔴 **DOWN  {down_odds if down_odds is not None else '—'}%\n\n1m {move1:+.2f}%  ·  3m {move3:+.2f}%\n10m {move10:+.2f}%  ·  RSI {rsi_now:.0f}", "inline": True},
+            {"name": "02  /  POSITION COMMAND", "value": f"**{position_line}**\n\n**EXIT PLAN**\n+4%  →  sell half\n+10%  →  exit remainder\n−5%  →  protective stop\n\nSnipe meter is secondary monitoring only.", "inline": True},
+            {"name": "03  /  DESK PERFORMANCE", "value": f"**PAPER P&L TODAY**  \${pnl:+.2f}\n{perf_line}\n\n**FORECAST RECORD ({minutes}M)**\n{forecast_record}\n\nStreak {stats['current_win_streak']}  ·  best {stats['best_win_streak']}", "inline": False},
+            {"name": "04  /  INTELLIGENCE BRIEF", "value": f"{why_compact}\n\n**MODEL CONTEXT**\n{all_time_forecast}\n\n**LOSS REVIEW**\n{btc_loss_report_text(conn)}", "inline": False},
         ]
     else:
         # Crypto Radar premium brief: bold signal hierarchy, quiet secondary
@@ -1670,7 +1672,19 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             {"name": "04  /  PERFORMANCE", "value": f"{perf_line}\n\n**FORECAST**  {fw}W  ·  {ff}F  ·  {fl}L  ·  {ftotal} resolved\n**STREAK**  {stats['current_win_streak']} current  /  {stats['best_win_streak']} best", "inline": False},
             {"name": "05  /  SIGNAL NOTES", "value": f"{abs(score)}/5 checks lean **{side if side in ('UP','DOWN') else 'NEUTRAL'}**  ·  second check **{'CONFIRMS' if confirmed else 'CAUTION'}**\nSnipe monitor: **{snipe['status']} · {snipe['strength']}/100** (secondary only)", "inline": False},
         ]
-    if dashboard_name == "CRYPTO RADAR":
+    if dashboard_name == "BTC LIVE":
+        description = (
+            f"**{live_badge}**  ·  **BTC {minutes}M EXECUTIVE TERMINAL**\n"
+            f"\n"
+            f"## {direct_signal}\n"
+            f"**PRIMARY CALL  /  {signal_strength} of 100**\n"
+            f"{strength_bar}\n"
+            f"\n**PAPER STATUS**  ·  {paper_action}\n"
+            f"**BTC/USD**  \${price:,.2f}  ·  **CANDLE CLOSE**  {countdown}\n"
+            f"{progress_bar}  {progress}% elapsed\n"
+            f"\n*BTC Live  /  Executive Paper Trading Desk*"
+        )
+    elif dashboard_name == "CRYPTO RADAR":
         description = (
             f"**{call_badge}**  ·  **BTC {minutes} MIN**\n"
             f"\n"
@@ -1678,7 +1692,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
             f"**CALL STRENGTH  {signal_strength} / 100**\n"
             f"{strength_bar}\n"
             f"\n**PAPER STATUS**  ·  {paper_action}\n"
-            f"**BTC/USD**  ${price:,.2f}  ·  **CLOSES IN**  {countdown}\n"
+            f"**BTC/USD**  \${price:,.2f}  ·  **CLOSES IN**  {countdown}\n"
             f"{progress_bar}  {progress}% of window\n"
             f"\n*Private Market Desk  /  Live paper signal brief*"
         )
@@ -1697,7 +1711,7 @@ def _dashboard_embed(conn: sqlite3.Connection, tech: dict, opinions: dict,
         "color":call_color if dashboard_name != "CRYPTO RADAR" else (0x16A34A if direct_signal == "UP" else 0xDC2626 if direct_signal == "DOWN" else 0x64748B),
         "thumbnail":{"url":"https://assets.coingecko.com/coins/images/1/large/bitcoin.png"},
         "fields":fields,
-        "footer":{"text":("CRYPTO RADAR  •  MEMBER BRIEF  •  PAPER ONLY  •  AUTO-REFRESH ~5s" if dashboard_name == "CRYPTO RADAR" else "PAPER SIGNALS · NO LIVE ORDERS · DASHBOARD REFRESH ~5s")},
+        "footer":{"text":("BTC LIVE  •  EXECUTIVE PAPER TERMINAL  •  AUTO-REFRESH ~5s" if dashboard_name == "BTC LIVE" else "CRYPTO RADAR  •  MEMBER BRIEF  •  PAPER ONLY  •  AUTO-REFRESH ~5s" if dashboard_name == "CRYPTO RADAR" else "PAPER SIGNALS · NO LIVE ORDERS · DASHBOARD REFRESH ~5s")},
         "timestamp":utc_now().isoformat(),
     }
 
