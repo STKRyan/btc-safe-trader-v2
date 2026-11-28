@@ -32,7 +32,7 @@ def _state(token):
     return _STATE.setdefault(str(token), {
         "trades": deque(maxlen=600), "bids": [], "asks": [],
         "bid": None, "ask": None, "imbalance": 0.0,
-        "book_ts": 0.0, "quote_ts": 0.0
+        "book_ts": 0.0, "quote_ts": 0.0, "book_history":deque(maxlen=1200)
     })
 
 
@@ -183,7 +183,7 @@ def live_flow_snapshot(token, seconds=10):
 def _bx_state(symbol):
     return _BX_STATE.setdefault(symbol,{"trades":deque(maxlen=3000),"bids":[],"asks":[],
         "bid":None,"ask":None,"book_ts":0.0,"quote_ts":0.0,
-        "candles":deque(maxlen=240),"last_price":None,"last_price_ts":0.0,"last_agg_id":None})
+        "candles":deque(maxlen=240),"book_history":deque(maxlen=1200),"last_price":None,"last_price_ts":0.0,"last_agg_id":None})
 
 
 def register_exchange_assets(assets):
@@ -226,8 +226,11 @@ def _bx_handle(raw):
                 parsed_b=sorted([(float(x[0]),float(x[1])) for x in bids if float(x[1])>0],key=lambda x:x[0],reverse=True)
                 parsed_a=sorted([(float(x[0]),float(x[1])) for x in asks if float(x[1])>0],key=lambda x:x[0])
                 if parsed_b and parsed_a:
+                    bd=sum(p*q for p,q in parsed_b[:10]); ad=sum(p*q for p,q in parsed_a[:10])
+                    imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
                     st.update({"bids":parsed_b[:10],"asks":parsed_a[:10],"bid":parsed_b[0][0],
-                               "ask":parsed_a[0][0],"book_ts":receipt,"quote_ts":receipt})
+                               "ask":parsed_a[0][0],"imbalance":imb,"book_ts":receipt,"quote_ts":receipt})
+                    st["book_history"].append((receipt,imb,depth))
             except (TypeError,ValueError,IndexError): pass
         elif event=="kline":
             k=data.get("k",{})
@@ -275,8 +278,11 @@ def _bx_rest_poll_symbol(symbol):
         bids=sorted([(float(x[0]),float(x[1])) for x in depth.get("bids",[]) if float(x[1])>0],key=lambda x:x[0],reverse=True)
         asks=sorted([(float(x[0]),float(x[1])) for x in depth.get("asks",[]) if float(x[1])>0],key=lambda x:x[0])
         if bids and asks:
-            st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
-                       "book_ts":receipt,"quote_ts":receipt})
+            bd=sum(p*q for p,q in bids[:10]); ad=sum(p*q for p,q in asks[:10])
+        imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
+        st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
+                       "imbalance":imb,"book_ts":receipt,"quote_ts":receipt})
+        st["book_history"].append((receipt,imb,depth))
         rows=st["candles"]
         for k in klines:
             try:
