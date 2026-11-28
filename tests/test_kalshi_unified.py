@@ -3,43 +3,97 @@ import tempfile
 import unittest
 from decimal import Decimal
 
-import kalshi_unified_bot as bot
+from kalshi_unified import core
 
 
-class KalshiUnifiedCoreTests(unittest.TestCase):
-    def test_decimal_parser_handles_fixed_point_api_values(self):
-        self.assertEqual(bot.dec("0.4200"), Decimal("0.4200"))
-        self.assertIsNone(bot.dec("not-a-price"))
+class KalshiCoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "ledger.sqlite3")
+        core.init_ledger(self.db)
 
-    def test_direction_mapping_requires_explicit_contract_language(self):
-        self.assertEqual(bot.yes_direction({"_display": "Bitcoin above $100,000?"}), "UP")
-        self.assertEqual(bot.yes_direction({"_display": "Ethereum below $3,000?"}), "DOWN")
-        self.assertIsNone(bot.yes_direction({"_display": "Bitcoin price tomorrow?"}))
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def test_quote_derives_missing_yes_ask_from_no_bid(self):
-        quote = bot.quote_market({
-            "yes_bid_dollars": "0.40",
-            "yes_ask_dollars": None,
-            "no_bid_dollars": "0.55",
-            "no_ask_dollars": "0.60",
-        })
-        self.assertEqual(quote["yes_ask"], Decimal("0.45"))
-        self.assertEqual(quote["spread"], Decimal("0.05"))
+    def market(self, **kwargs):
+        data = {
+            "ticker": "KXBTC-TEST",
+            "status": "open",
+            "title": "Bitcoin above $100,000 at settlement?",
+            "subtitle": "Test contract",
+            "yes_sub_title": "Yes",
+            "rules_primary": "Settlement based on official BTC reference price published at the specified settlement time.",
+            "close_time": "2027-01-01T00:00:00Z",
+        }
+        data.update(kwargs)
+        return data
 
-    def test_db_initializes_in_isolated_path(self):
-        old = bot.DB_PATH
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                bot.DB_PATH = os.path.join(tmp, "test.sqlite3")
-                bot.init_db()
-                import sqlite3
-                with sqlite3.connect(bot.DB_PATH) as db:
-                    tables = {row[0] for row in db.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'")}
-                self.assertTrue({"market_samples", "active_cards", "paper_events",
-                                "market_outcomes"}.issubset(tables))
-        finally:
-            bot.DB_PATH = old
+    def test_decimal_fixed_point_and_invalid(self):
+        self.assertEqual(core.decimal("0.420000"), Decimal("0.420000"))
+        self.assertIsNone(core.decimal("not-price"))
+        self.assertIsNone(core.decimal("NaN"))
+
+    def test_contract_classifier_fails_closed(self):
+        ok, _ = core.contract_is_eligible(self.market())
+        self.assertTrue(ok)
+        ok, _ = core.contract_is_eligible(self.market(title="Bitcoin price tomorrow?"))
+        self.assertFalse(ok)
+        ok, _ = core.contract_is_eligible(self.market(rules_primary=""))
+        self.assertFalse(ok)
+        ok, _ = core.contract_is_eligible(self.market(title="Bitcoin and Ethereum above $100?"))
+        self.assertFalse(ok)
+
+    def test_quote_derives_complement_and_rejects_crossed(self):
+        q = core.make_quote({
+            "yes_bid_dollars": "0.40", "yes_ask_dollars": None,
+            "no_bid_dollars": "0.55", "no_ask_dollars": "0.60"})
+        self.assertEqual(q["yes_ask"], Decimal("0.45"))
+        self.assertEqual(q["yes_spread"], Decimal("0.05"))
+        self.assertIsNone(core.make_quote({
+            "yes_bid_dollars": "0.70", "yes_ask_dollars": "0.60",
+            "no_bid_dollars": "0.30", "no_ask_dollars": "0.40"}))
+
+    def test_signal_requires_second_confirmation_and_quote_quality(self):
+        q = core.make_quote({
+            "yes_bid_dollars": "0.40", "yes_ask_dollars": "0.42",
+            "no_bid_dollars": "0.58", "no_ask_dollars": "0.60"})
+        good = core.signal_gate(quote=q, momentum_pct=0.9, sample_age=30)
+        self.assertEqual(good["side"], "YES")
+        weak = core.signal_gate(quote=q, momentum_pct=0.48, sample_age=30)
+        self.assertEqual(weak["action"], "WAIT")
+        stale = core.signal_gate(quote=q, momentum_pct=1.5, sample_age=120)
+        self.assertEqual(stale["action"], "WAIT")
+
+    def test_sample_momentum_and_age(self):
+        m1, _ = core.record_sample(self.db, "T", Decimal("0.50"), now=100)
+        self.assertIsNone(m1)
+        m2, age = core.record_sample(self.db, "T", Decimal("0.55"), now=140, lookback=30)
+        self.assertAlmostEqual(m2, 10.0)
+        self.assertEqual(age, 40)
+
+    def test_managed_trade_and_initial_settlement_are_separate(self):
+        signal = {"side": "YES", "entry": Decimal("0.40"), "action": "SCALP YES",
+                  "target_pct": 0.03, "stop_pct": 0.025, "max_hold_seconds": 90}
+        self.assertTrue(core.open_paper_trade(self.db, "T", "BTC", signal, now=10))
+        result = core.close_paper_trade(self.db, "T", Decimal("0.50"), "target", now=20)
+        self.assertAlmostEqual(result["pnl_pct"], 25.0)
+        self.assertTrue(core.record_settlement(self.db, "T", "NO"))
+        self.assertFalse(core.record_settlement(self.db, "T", "YES"))
+        s = core.stats(self.db)
+        self.assertEqual(s["wins"], 0)
+        self.assertEqual(s["losses"], 1)
+        self.assertEqual(s["managed_closed_trades"], 1)
+        self.assertAlmostEqual(s["managed_avg_pnl_pct"], 25.0)
+
+    def test_streaks_count_settled_initial_calls_only(self):
+        for ticker, side, result in (("A","YES","YES"),("B","NO","NO"),("C","YES","YES")):
+            core.open_paper_trade(self.db, ticker, "ETH",
+                {"side":side,"entry":Decimal("0.4"),"action":"SCALP YES"}, now=1)
+            core.record_settlement(self.db, ticker, result)
+        s = core.stats(self.db)
+        self.assertEqual(s["current_initial_streak"], 3)
+        self.assertEqual(s["best_initial_win_streak"], 3)
+        self.assertEqual(s["win_rate_pct"], 100.0)
 
 
 if __name__ == "__main__":
