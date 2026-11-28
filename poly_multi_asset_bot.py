@@ -577,7 +577,7 @@ def scalp_call(c, asset, tf, market, tech):
     wr=f"{sm['win_rate']:.0f}%" if sm.get("win_rate") is not None else "new sample"
     memory_note=f" · snipe memory {wr}/{sm.get('sample',0)} · loss streak {sm.get('loss_streak',0)}"
     flow_note=f" · tape {flow['trade_count']} prints/10s, net {flow['net_flow_pct']:+.0f}%"
-    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}
+    return f"SCALP CALL {side} · entry {ask:.3f} · target {target:.3f} (+4%) · stop {stop:.3f} (-3%) · two brains agree{memory_note}{flow_note}"
 def snipe_update(c, market_id, side, stats, tech, brain, token=None):
     """Confirm snipes with selected-token movement, real trades and liquidity."""
     ask=float(stats["ask"]); stamp=time.time()
@@ -657,7 +657,7 @@ def maybe_enter(c, asset, tf, m, tech):
           (str(m.get("id")),str(m.get("slug","")),asset,tf,side,tid,stats["ask"],STAKE,qty,qty,tech["score"],json.dumps(tech),iso()))
         c.commit()
     except sqlite3.IntegrityError:return "Already paper-tracked this market/side"
-    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · {chr(36)}{STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}
+    return f"PAPER ENTRY {side} @ {stats['ask']:.3f} · {chr(36)}{STAKE:.2f} stake · book spread {stats['spread']:.3f} · {pm_quote} · {snipe} · COURT: {brain['debate']}"
 def resolve_calls(c):
     resolve_forecasts(c)
     # Resolve saved snipe-direction calls separately from ordinary paper entries.
