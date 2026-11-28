@@ -826,6 +826,63 @@ def scalp_fit_score(score: int, tech: dict, stats: dict) -> int:
     return max(0, min(95, int(score_value)))
 
 
+
+def send_btc_trade_event(conn: sqlite3.Connection, event: str, side: str,
+                         trade_type: str, timeframe: int, entry: float,
+                         bid: float, roi: float, hold: int, flip: int,
+                         detail: str, target: Optional[float] = None,
+                         stop: Optional[float] = None,
+                         max_hold: Optional[int] = None) -> None:
+    """Post a compact, premium BTC paper-trade event to the BTC Live Discord."""
+    webhook = os.getenv("DISCORD_BTC_LIVE_WEBHOOK_URL", "").strip()
+    if not webhook or not webhook.startswith(("https://discord.com/api/webhooks/",
+                                               "https://discordapp.com/api/webhooks/")):
+        print("BTC trade event skipped: DISCORD_BTC_LIVE_WEBHOOK_URL missing or invalid.")
+        return
+    side = str(side).upper()
+    trade_type = str(trade_type or "STANDARD").upper()
+    is_down = side == "DOWN"
+    direction = "🔴 DOWN" if is_down else "🟢 UP"
+    fill = "🟥" if is_down else "🟩"
+    event_upper = str(event).upper()
+    if "EXIT" in event_upper or "SELL" in event_upper or "STOP" in event_upper:
+        color, badge = 0xEF4444, "🔴 SELL / EXIT"
+    elif "FLIP" in event_upper:
+        color, badge = 0xF59E0B, "🟠 FLIP / REASSESS"
+    elif "ENTRY" in event_upper:
+        color, badge = (0x19C37D if not is_down else 0xEF4444), ("⚡ SCALP ENTRY" if trade_type == "SCALP" else "📍 HOLD ENTRY")
+    else:
+        color, badge = (0x19C37D if not is_down else 0xEF4444), ("🟢 HOLD" if not is_down else "🔴 HOLD")
+    pressure = max(0, min(100, int(hold)))
+    flip_value = max(0, min(100, int(flip)))
+    pressure_bar = color_meter(pressure, fill, 16)
+    target_text = f"${target:.3f}" if target is not None else "—"
+    stop_text = f"${stop:.3f}" if stop is not None else "—"
+    fields = [
+        {"name": "DIRECTION / TYPE", "value": f"**{direction} · {trade_type}**", "inline": True},
+        {"name": "LIVE HOLD PRESSURE", "value": f"**{pressure}%**\n{pressure_bar}", "inline": True},
+        {"name": "FLIP RISK", "value": f"**{flip_value}%**\n{color_meter(flip_value, '🟧', 12)}", "inline": True},
+        {"name": "ENTRY / CURRENT BID", "value": f"${entry:.3f} / ${bid:.3f}", "inline": True},
+        {"name": "PAPER P&L", "value": f"**{roi*100:+.2f}%**", "inline": True},
+        {"name": "TARGET / STOP", "value": f"{target_text} / {stop_text}", "inline": True},
+    ]
+    if max_hold is not None:
+        fields.append({"name": "SCALP TIME LIMIT", "value": f"{int(max_hold)} sec · scalp only", "inline": True})
+    fields.append({"name": "TRADE UPDATE", "value": str(detail)[:900], "inline": False})
+    payload = {"embeds": [{
+        "title": f"{badge} · BTC {int(timeframe)}m",
+        "description": "Premium BTC paper-trade update · live indicators, not guaranteed outcomes.",
+        "color": color, "fields": fields[:8],
+        "footer": {"text": "BTC bot · simulated trades only · no live orders"},
+        "timestamp": utc_now().isoformat()
+    }], "allowed_mentions": {"parse": []}}
+    try:
+        response = SESSION.post(webhook + "?wait=true", json=payload, timeout=HTTP_TIMEOUT)
+        response.raise_for_status()
+        print(f"BTC trade event posted: {event_upper} {side} {trade_type}.")
+    except Exception as exc:
+        print(f"BTC trade event failed: {type(exc).__name__}: {exc}")
+
 def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, side: str,
                        token_id: str, ask: float, trade_type: str = "STANDARD",
                        entry_features: Optional[dict] = None) -> bool:
@@ -840,7 +897,17 @@ def create_paper_trade(conn: sqlite3.Connection, market: dict, minutes: int, sid
          json.dumps(entry_features or {}, separators=(",",":"), default=str)),
     )
     conn.commit()
-    # No separate Discord entry post. The persistent dashboard displays the position.
+    entry_features = entry_features or {}
+    flip_risk = int(entry_features.get("flip_risk", 50))
+    hold_pressure = max(0, min(100, 100 - flip_risk))
+    target = ask * (1.0 + SCALP_TAKE_PROFIT) if str(trade_type).upper() == "SCALP" else ask * 1.04
+    stop = ask * (1.0 - SCALP_STOP_LOSS) if str(trade_type).upper() == "SCALP" else ask * 0.95
+    send_btc_trade_event(
+        conn, "ENTRY", side, trade_type, minutes, ask, ask, 0.0,
+        hold_pressure, flip_risk,
+        "Paper entry confirmed by the bot's existing filters. Recheck pressure; exit at target, stop, or invalidation.",
+        target, stop, SCALP_MAX_HOLD_SECONDS if str(trade_type).upper() == "SCALP" else None
+    )
     return True
 
 
@@ -948,6 +1015,23 @@ def manage_open_trades(conn: sqlite3.Connection, tech: dict) -> None:
         if action != trade["last_action"]:
             conn.execute("UPDATE paper_trades SET last_action=? WHERE id=?", (action, trade["id"]))
             conn.commit()
+            action_upper = action.upper()
+            if "FLIP" in action_upper or "REVERSAL" in action_upper:
+                event = "FLIP"
+                detail = f"Original {position_side} position invalidated or reversal pressure confirmed. {action}. Do not open the opposite side unless its own entry filters pass."
+            elif "EXIT" in action_upper or "STOP" in action_upper or "SELL" in action_upper:
+                event = "SELL / EXIT"
+                detail = f"{action}. Simulated exit evaluated at current bid; estimated trade ROI {roi*100:+.2f}% before fees/slippage."
+            else:
+                event = "HOLD"
+                detail = f"{action}. Continue only while the original direction remains valid; exit if target, stop, time limit, or reversal rule triggers."
+            target_value = target if trade_type == "SCALP" else full_target
+            send_btc_trade_event(
+                conn, event, position_side, trade_type, int(trade["timeframe"]),
+                entry, bid, roi, hold, flip, detail,
+                target_value, protective_stop,
+                SCALP_MAX_HOLD_SECONDS if trade_type == "SCALP" else None
+            )
 
 
 
