@@ -251,24 +251,39 @@ def send_or_edit(m, s, stats):
         print(f"Discord card error {ticker}: {type(exc).__name__}: {exc}")
 
 
+LAST_SETTLEMENT_CHECK = 0.0
+SETTLEMENT_CHECK_SECONDS = max(30, int(os.getenv("KALSHI_SETTLEMENT_CHECK_SECONDS", "60")))
+
+
 def settle_pending_calls():
-    """Reconcile recorded calls against official Kalshi settlement result."""
+    """Batch-reconcile initial calls against official Kalshi settlement results."""
+    global LAST_SETTLEMENT_CHECK
+    now = time.time()
+    if now - LAST_SETTLEMENT_CHECK < SETTLEMENT_CHECK_SECONDS:
+        return
+    LAST_SETTLEMENT_CHECK = now
     with sqlite3.connect(DB_PATH) as db:
-        rows = db.execute("SELECT ticker FROM initial_calls WHERE settlement_result IS NULL ORDER BY created_at LIMIT 50").fetchall()
-    for (ticker,) in rows:
-        try:
-            market = get_json("/markets/" + ticker).get("market", {})
+        rows = db.execute("SELECT ticker FROM initial_calls WHERE settlement_result IS NULL ORDER BY created_at LIMIT 100").fetchall()
+    tickers = [row[0] for row in rows]
+    if not tickers:
+        return
+    try:
+        data = get_json("/markets", {"tickers": ",".join(tickers), "limit": len(tickers)})
+        for market in data.get("markets", []):
+            ticker = market.get("ticker")
             result = str(market.get("result") or "").upper()
             if str(market.get("status") or "").lower() != "settled" or result not in ("YES", "NO", "VOID"):
                 continue
             core.record_settlement(DB_PATH, ticker, result)
             with sqlite3.connect(DB_PATH) as db:
-                pos = db.execute("SELECT side,status FROM paper_positions WHERE ticker=?", (ticker,)).fetchone()
-            if pos and pos[1] == "OPEN":
+                pos = db.execute("SELECT side,status FROM paper_positions WHERE ticker=? AND status='OPEN' ORDER BY opened_at DESC LIMIT 1",
+                                 (ticker,)).fetchone()
+            if pos:
                 payout = Decimal("1") if pos[0] == result else Decimal("0")
                 core.close_paper_trade(DB_PATH, ticker, payout, "official settlement")
-        except Exception as exc:
-            print(f"Settlement check failed {ticker}: {type(exc).__name__}: {exc")
+    except Exception as exc:
+        print(f"Settlement batch failed: {type(exc).__name__}: {exc}")
+
 
 
 def main():
