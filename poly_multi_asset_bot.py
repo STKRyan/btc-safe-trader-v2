@@ -1831,7 +1831,7 @@ def dashboard(c, lines):
                 sn_rate=f"{sn['win_rate']:.1f}%" if sn['win_rate'] is not None else '—'
                 snipe_record=(f"📊 SNIPE W/L {sn['wins']}/{sn['losses']} · win {sn_rate} · "
                                f"🔥 streak {sn['current_streak']} · best {sn['best_streak']}")
-                value=f'{value}\n{snipe_label}\n{snipe_record}\n{plan_text}'
+                value=f'{snipe_label}\n{snipe_record}\n{value}\n{plan_text}'
             else:
                 value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
