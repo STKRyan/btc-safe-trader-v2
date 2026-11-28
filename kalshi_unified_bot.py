@@ -1,269 +1,223 @@
 #!/usr/bin/env python3
-"""Isolated Kalshi BTC/ETH/Gold paper scanner. No order placement."""
+"""Standalone Kalshi BTC/ETH/Gold paper bot. No real order API is implemented."""
 from __future__ import annotations
-import json, os, re, sqlite3, time
+
+import hashlib
+import json
+import os
+import time
+import sqlite3
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
+
 import requests
+from kalshi_unified import core
 
 API = os.getenv("KALSHI_API_BASE", "https://external-api.kalshi.com/trade-api/v2").rstrip("/")
 DB_PATH = os.getenv("KALSHI_UNIFIED_DB", "kalshi_unified.sqlite3")
 WEBHOOK = os.getenv("KALSHI_UNIFIED_DISCORD_WEBHOOK_URL", "").strip()
-SCAN_SECONDS = max(2.0, float(os.getenv("KALSHI_SCAN_SECONDS", "3")))
-UPDATE_SECONDS = max(10, int(os.getenv("KALSHI_CARD_UPDATE_SECONDS", "20")))
-ASSETS = {
-    "BTC": (r"\bbitcoin\b|\bBTC\b",),
-    "ETH": (r"\bethereum\b|\bETH\b",),
-    "GOLD": (r"\bgold\b|\bXAU\b",),
-}
-S = requests.Session()
-S.headers.update({"User-Agent": "KalshiUnifiedPaperBot/0.1", "Accept": "application/json"})
+SCAN_SECONDS = max(3, float(os.getenv("KALSHI_SCAN_SECONDS", "5")))
+CARD_SECONDS = max(15, int(os.getenv("KALSHI_CARD_UPDATE_SECONDS", "30")))
+MAX_CARDS = max(1, min(8, int(os.getenv("KALSHI_MAX_CARDS", "4"))))
+HTTP = requests.Session()
+HTTP.headers.update({"User-Agent": "STK-Kalshi-Paper/1.0", "Accept": "application/json"})
 
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
+def utc_iso(ts=None):
+    return datetime.fromtimestamp(ts or time.time(), timezone.utc).isoformat()
 
 
-def dec(value, default=None):
-    try:
-        if value is None or value == "":
-            return default
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
-        return default
-
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as db:
-        db.execute("""CREATE TABLE IF NOT EXISTS market_samples(
-            ticker TEXT NOT NULL, ts REAL NOT NULL, yes_mid REAL, title TEXT,
-            PRIMARY KEY(ticker, ts))""")
-        db.execute("""CREATE TABLE IF NOT EXISTS active_cards(
-            ticker TEXT PRIMARY KEY, message_id TEXT, last_payload TEXT,
-            last_sent REAL NOT NULL DEFAULT 0, current_side TEXT,
-            initial_side TEXT, initial_call_ts REAL, initial_result TEXT)""")
-        db.execute("""CREATE TABLE IF NOT EXISTS paper_events(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL,
-            asset TEXT NOT NULL, event_type TEXT NOT NULL, side TEXT,
-            price REAL, pct REAL, ts REAL NOT NULL, detail TEXT)""")
-        db.execute("""CREATE TABLE IF NOT EXISTS market_outcomes(
-            ticker TEXT PRIMARY KEY, asset TEXT NOT NULL, initial_side TEXT,
-            final_side TEXT, initial_result TEXT, managed_result TEXT,
-            settlement_result TEXT, updated_at TEXT)""")
-        db.commit()
-
-
-def api_get(path, params=None):
-    response = S.get(API + path, params=params, timeout=8)
+def get_json(path, params=None):
+    response = HTTP.get(API + path, params=params, timeout=12)
+    if response.status_code == 429:
+        time.sleep(min(20, int(response.headers.get("Retry-After", "3"))))
+        response = HTTP.get(API + path, params=params, timeout=12)
     response.raise_for_status()
     return response.json()
 
 
 def discover_markets():
-    """Collect active markets and retain only unambiguous BTC/ETH/Gold contracts."""
-    found, cursor = [], None
-    for _ in range(5):
+    """Page through public market metadata; reject any ambiguous settlement contract."""
+    cursor, candidates = None, []
+    for _ in range(4):
         params = {"status": "open", "limit": 1000}
         if cursor:
             params["cursor"] = cursor
-        data = api_get("/markets", params)
-        for market in data.get("markets", []):
-            title = " ".join(str(market.get(k) or "") for k in
-                             ("title", "subtitle", "yes_sub_title", "no_sub_title"))
-            rules = " ".join(str(market.get(k) or "") for k in ("rules_primary", "rules_secondary"))
-            text = (title + " " + rules).lower()
-            asset = next((a for a, (pattern,) in ASSETS.items()
-                         if re.search(pattern, title, re.I)), None)
-            if not asset or market.get("status") not in ("open", "active"):
+        data = get_json("/markets", params)
+        for m in data.get("markets", []):
+            eligible, reason = core.contract_is_eligible(m)
+            if not eligible:
                 continue
-            # Only explicit directional/threshold contracts are eligible. Ambiguous contracts are skipped.
-            if not re.search(r"\b(above|higher|greater|below|lower|less than|at or|reach|hit)\b", text):
-                continue
-            market["_asset"] = asset
-            market["_display"] = title[:220]
-            found.append(market)
+            asset = core.classify_asset(m)
+            m["_asset"] = asset
+            m["_display"] = " ".join(str(m.get(k) or "") for k in
+                ("title", "subtitle", "yes_sub_title", "no_sub_title")).strip()[:240]
+            m["_eligibility_reason"] = reason
+            candidates.append(m)
         cursor = data.get("cursor")
         if not cursor:
             break
-    return found
-
-
-def quote_market(m):
-    yes_bid = dec(m.get("yes_bid_dollars"))
-    yes_ask = dec(m.get("yes_ask_dollars"))
-    no_bid = dec(m.get("no_bid_dollars"))
-    no_ask = dec(m.get("no_ask_dollars"))
-    if yes_ask is None and no_bid is not None:
-        yes_ask = Decimal("1") - no_bid
-    if no_ask is None and yes_bid is not None:
-        no_ask = Decimal("1") - yes_bid
-    if yes_bid is None or yes_ask is None:
-        return None
-    return {"yes_bid": yes_bid, "yes_ask": yes_ask, "no_bid": no_bid,
-            "no_ask": no_ask, "mid": (yes_bid + yes_ask) / 2,
-            "spread": yes_ask - yes_bid}
-
-
-def sample_history(ticker, mid, title):
-    now = time.time()
-    with sqlite3.connect(DB_PATH) as db:
-        db.execute("INSERT OR IGNORE INTO market_samples VALUES(?,?,?,?)",
-                   (ticker, now, float(mid), title))
-        db.execute("DELETE FROM market_samples WHERE ticker=? AND ts<?",
-                   (ticker, now - 1800))
-        row = db.execute("SELECT yes_mid,ts FROM market_samples WHERE ticker=? AND ts<=? ORDER BY ts DESC LIMIT 1",
-                         (ticker, now - 20)).fetchone()
-        db.commit()
-    return (float(mid) - row[0]) / row[0] if row and row[0] else None
-
-
-def yes_direction(m):
-    text = (m.get("_display", "") + " " + str(m.get("rules_primary") or "")).lower()
-    if re.search(r"\b(above|higher|greater than|reach|hit)\b", text):
-        return "UP"
-    if re.search(r"\b(below|lower|less than)\b", text):
-        return "DOWN"
-    return None
+    return candidates
 
 
 def evaluate(m):
-    q = quote_market(m)
-    if not q or q["spread"] > Decimal("0.08") or q["yes_ask"] < Decimal("0.08") or q["yes_ask"] > Decimal("0.92"):
-        return {"action": "WAIT", "reason": "quote unavailable, spread too wide, or contract price outside safe band", "quote": q}
-    momentum = sample_history(m["ticker"], q["mid"], m["_display"])
-    if momentum is None:
-        return {"action": "WAIT", "reason": "building fresh price history", "quote": q}
-    yes_up = yes_direction(m)
-    if yes_up is None:
-        return {"action": "WAIT", "reason": "contract direction cannot be mapped safely", "quote": q}
-    # Two independent checks: short-window price impulse and quote quality.
-    impulse = momentum * 100
-    if abs(impulse) < 0.35:
-        return {"action": "WAIT", "reason": "momentum not strong enough", "quote": q, "momentum": impulse}
-    chosen_yes = impulse > 0
-    side = yes_up if chosen_yes else ("DOWN" if yes_up == "UP" else "UP")
-    entry = q["yes_ask"] if chosen_yes else q["no_ask"]
-    if entry is None or entry <= 0 or entry >= 1:
-        return {"action": "WAIT", "reason": "no executable side quote", "quote": q}
-    flip_risk = min(99.0, max(1.0, 50.0 - abs(impulse) * 8 + float(q["spread"]) * 300))
-    hold_strength = 100.0 - flip_risk
-    # Second Brain is an independent veto layer, not a claimed AI certainty.
-    brain_agrees = abs(impulse) >= 0.55 and float(q["spread"]) <= 0.04 and flip_risk < 42
-    if not brain_agrees:
-        return {"action": "WAIT", "reason": "Second Brain veto: momentum/quote/flip-risk confirmation missing",
-                "quote": q, "momentum": impulse, "flip_risk": flip_risk, "hold_strength": hold_strength}
-    kind = "SCALP" if abs(impulse) < 1.2 else "SNIPE"
-    return {"action": f"{kind} {side}", "side": side, "yes_side": chosen_yes,
-            "entry": float(entry), "quote": q, "momentum": impulse,
-            "flip_risk": flip_risk, "hold_strength": hold_strength,
-            "signal_strength": min(95.0, 55.0 + abs(impulse) * 12),
-            "reason": "directional momentum + independent quote/flip-risk gate passed"}
+    q = core.make_quote(m)
+    if q is None:
+        return {"action": "WAIT", "reason": "quote fields incomplete or invalid", "quote": q}
+    momentum, age = core.record_sample(DB_PATH, m["ticker"], q["yes_mid"])
+    signal = core.signal_gate(quote=q, momentum_pct=momentum, sample_age=age)
+    signal["quote"] = q
+    signal["asset"] = m["_asset"]
+    signal["ticker"] = m["ticker"]
+    return signal
 
 
-def discord_url(message_id=None):
+def webhook_message_url(message_id=None):
     if not WEBHOOK.startswith("https://discord.com/api/webhooks/"):
         return None
     parts = urlsplit(WEBHOOK)
     path = parts.path.rstrip("/")
     if message_id:
         path += "/messages/" + str(message_id)
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
-def render_card(m, s):
+def manage_position(m, signal):
+    """Paper exit management uses executable bid, records outcomes append-only."""
+    ticker = m["ticker"]
+    q = signal.get("quote")
+    if not q:
+        return
+    with sqlite3.connect(DB_PATH) as db:
+        row = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=?",
+                         (ticker,)).fetchone()
+    if not row or row[3] != "OPEN":
+        if signal.get("side"):
+            core.open_paper_trade(DB_PATH, ticker, m["_asset"], signal)
+        return
+    side, entry_text, opened = row[:3]
+    entry = core.decimal(entry_text)
+    bid = q["yes_bid"] if side == "YES" else q["no_bid"]
+    if entry is None or entry <= 0:
+        return
+    pnl_pct = float((bid-entry)/entry*100)
+    age = time.time()-opened
+    target = 3.0 if age < 90 else 6.0
+    stop = -2.5
+    opposite = signal.get("side") and signal.get("side") != side
+    reason = None
+    if pnl_pct >= target:
+        reason = "paper target reached"
+    elif pnl_pct <= stop:
+        reason = "paper stop reached"
+    elif opposite:
+        reason = "qualified signal flipped; close and reassess"
+    elif age >= 240:
+        reason = "maximum paper hold time reached"
+    if reason:
+        core.close_paper_trade(DB_PATH, ticker, bid, reason)
+        if signal.get("side") and signal.get("side") != side:
+            core.open_paper_trade(DB_PATH, ticker, m["_asset"], signal)
+
+
+def render_card(m, s, stats):
     q = s.get("quote") or {}
     action = s.get("action", "WAIT")
-    color = 0x22C55E if "UP" in action else (0xEF4444 if "DOWN" in action else 0x64748B)
-    return {"embeds": [{
-        "title": f"{m['_asset']} · KALSHI · {action}",
-        "description": m["_display"][:400] + "\n\n" + s.get("reason", ""),
-        "color": color,
-        "fields": [
-            {"name": "YES bid / ask", "value": f"{q.get('yes_bid','—')} / {q.get('yes_ask','—')}", "inline": True},
-            {"name": "Entry", "value": f"{s.get('entry','—')}", "inline": True},
-            {"name": "Signal strength", "value": f"{s.get('signal_strength',0):.0f}%", "inline": True},
-            {"name": "Hold strength", "value": f"{s.get('hold_strength',0):.0f}%", "inline": True},
-            {"name": "Flip risk", "value": f"{s.get('flip_risk',50):.0f}%", "inline": True},
-            {"name": "Momentum", "value": f"{s.get('momentum',0):+.2f}%", "inline": True},
-        ],
-        "footer": {"text": "PAPER ONLY · Strength scores are heuristic, not win probabilities"},
-        "timestamp": utc_now()
-    }], "allowed_mentions": {"parse": []}}
-
-
-def update_card(m, signal):
-    ticker = m["ticker"]
-    payload = render_card(m, signal)
-    payload_json = json.dumps(payload, sort_keys=True)
-    now = time.time()
+    color = 0x22C55E if s.get("side") == "YES" else (0xEF4444 if s.get("side") == "NO" else 0x64748B)
+    side = s.get("side")
+    entry = s.get("entry")
     with sqlite3.connect(DB_PATH) as db:
-        row = db.execute("SELECT message_id,last_payload,last_sent,current_side,initial_side FROM active_cards WHERE ticker=?",
+        pos = db.execute("SELECT side,entry,opened_at,status FROM paper_positions WHERE ticker=?",
+                         (m["ticker"],)).fetchone()
+    position_text = "NO OPEN PAPER POSITION"
+    if pos and pos[3] == "OPEN":
+        position_text = f"{pos[0]} · entry {pos[1]} · {int(time.time()-pos[2])}s held"
+    fields = [
+        {"name": "YES bid / ask", "value": f"{q.get('yes_bid','—')} / {q.get('yes_ask','—')}", "inline": True},
+        {"name": "NO bid / ask", "value": f"{q.get('no_bid','—')} / {q.get('no_ask','—')}", "inline": True},
+        {"name": "Paper entry", "value": str(entry) if entry is not None else "WAIT", "inline": True},
+        {"name": "Signal / Hold", "value": f"{s.get('signal_strength','—')} / {s.get('hold_strength','—')}%", "inline": True},
+        {"name": "Flip risk", "value": f"{s.get('flip_risk','—')}%", "inline": True},
+        {"name": "Contract momentum", "value": f"{s.get('momentum_pct',0):+.2f}%" if s.get("momentum_pct") is not None else "Building history", "inline": True},
+        {"name": "Paper position", "value": position_text, "inline": False},
+        {"name": "Plan", "value": f"Target +{s.get('target_pct',0)*100:.1f}% · Stop -{s.get('stop_pct',0)*100:.1f}% · max {s.get('max_hold_seconds',0)}s" if side else "No entry until all gates pass", "inline": False},
+        {"name": "Settled initial calls", "value": f"{stats['wins']}W / {stats['losses']}L · {stats['win_rate_pct'] if stats['win_rate_pct'] is not None else '—'}% · current streak {stats['current_initial_streak']} · best {stats['best_initial_win_streak']}", "inline": False},
+    ]
+    rules = str(m.get("rules_primary") or "Settlement rules unavailable")[:650]
+    embed = {
+        "title": f"{m['_asset']} · KALSHI PAPER · {action}",
+        "description": f"**{m['_display']}**\n{m.get('ticker')}\n\n{s.get('reason','')}\n\n**Primary settlement rules (excerpt):** {rules}",
+        "color": color, "fields": fields,
+        "footer": {"text": "PAPER ONLY · contract-price momentum, not spot-price forecast · strength ≠ win probability"},
+        "timestamp": utc_iso(),
+    }
+    close = m.get("close_time") or m.get("expected_expiration_time")
+    if close:
+        embed["fields"].append({"name": "Market close", "value": str(close), "inline": True})
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+def send_or_edit(m, s, stats):
+    payload = render_card(m, s, stats)
+    packed = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(packed.encode()).hexdigest()
+    ticker = m["ticker"]
+    with sqlite3.connect(DB_PATH) as db:
+        row = db.execute("SELECT message_id,payload_hash,updated_at,last_action FROM card_state WHERE ticker=?",
                          (ticker,)).fetchone()
-        if row and row[1] == payload_json:
-            return
-        if row and now - row[2] < UPDATE_SECONDS and row[3] == signal.get("action"):
-            return
-        message_id = row[0] if row else None
-        initial_side = row[4] if row else None
-        side = signal.get("side")
-        if side and initial_side is None:
-            initial_side = side
-            db.execute("INSERT OR IGNORE INTO paper_events(ticker,asset,event_type,side,price,pct,ts,detail) VALUES(?,?,?,?,?,?,?,?)",
-                       (ticker,m["_asset"],"INITIAL_CALL",side,signal.get("entry"),None,now,signal.get("reason","")))
-        elif side and row and row[3] and row[3] != signal.get("action"):
-            db.execute("INSERT INTO paper_events(ticker,asset,event_type,side,price,pct,ts,detail) VALUES(?,?,?,?,?,?,?,?)",
-                       (ticker,m["_asset"],"FLIP",side,signal.get("entry"),None,now,signal.get("reason","")))
-        db.commit()
+    now = time.time()
+    if row and row[1] == digest:
+        return
+    if row and now-row[2] < CARD_SECONDS and row[3] == s.get("action"):
+        return
+    message_id = row[0] if row else None
     if not WEBHOOK:
-        print(json.dumps({"ticker":ticker,"signal":signal},default=str)); return
+        print(json.dumps({"market": ticker, "signal": s}, default=str))
+        return
     try:
         if message_id:
-            url = discord_url(message_id)
-            resp = S.patch(url, json=payload, timeout=8)
-            if resp.status_code == 404:
+            response = HTTP.patch(webhook_message_url(message_id), json=payload, timeout=10)
+            if response.status_code == 404:
                 message_id = None
             else:
-                resp.raise_for_status()
+                response.raise_for_status()
         if not message_id:
-            resp = S.post(discord_url(), params={"wait":"true"}, json=payload, timeout=8)
-            resp.raise_for_status()
-            message_id = str(resp.json()["id"])
+            response = HTTP.post(webhook_message_url(), params={"wait": "true"}, json=payload, timeout=10)
+            response.raise_for_status()
+            message_id = str(response.json()["id"])
         with sqlite3.connect(DB_PATH) as db:
-            db.execute("""INSERT INTO active_cards(ticker,message_id,last_payload,last_sent,current_side,initial_side,initial_call_ts)
-                          VALUES(?,?,?,?,?,?,?) ON CONFLICT(ticker) DO UPDATE SET
-                          message_id=excluded.message_id,last_payload=excluded.last_payload,
-                          last_sent=excluded.last_sent,current_side=excluded.current_side,
-                          initial_side=COALESCE(active_cards.initial_side,excluded.initial_side),
-                          initial_call_ts=COALESCE(active_cards.initial_call_ts,excluded.initial_call_ts)""",
-                       (ticker,message_id,payload_json,now,signal.get("action"),initial_side,now))
+            db.execute("INSERT INTO card_state VALUES(?,?,?,?,?) ON CONFLICT(ticker) DO UPDATE SET message_id=excluded.message_id,payload_hash=excluded.payload_hash,updated_at=excluded.updated_at,last_action=excluded.last_action",
+                       (ticker, message_id, digest, now, s.get("action","WAIT")))
             db.commit()
     except Exception as exc:
-        print(f"Discord card update failed for {ticker}: {type(exc).__name__}: {exc}")
+        print(f"Discord card error {ticker}: {type(exc).__name__}: {exc}")
 
 
 def main():
-    init_db()
-    print("Kalshi unified paper bot started; no orders will be placed.")
+    core.init_ledger(DB_PATH)
+    print("Kalshi BTC/ETH/Gold paper bot started. Real order endpoints are not present.")
     while True:
         started = time.time()
         try:
             markets = discover_markets()
-            # Rank qualified candidates; emit WAIT cards only for the best small set to avoid message flooding.
-            evaluated = [(m,evaluate(m)) for m in markets]
-            qualified = [(m,s) for m,s in evaluated if s.get("side")]
-            qualified.sort(key=lambda pair: (pair[1].get("hold_strength",0),
-                                            pair[1].get("signal_strength",0),
-                                            -pair[1].get("flip_risk",100)), reverse=True)
-            selected = {m["ticker"] for m,_ in qualified[:3]}
-            for m,s in evaluated:
-                if m["ticker"] in selected:
-                    update_card(m,s)
-            if not markets:
-                print("No eligible open BTC/ETH/Gold threshold contracts found.")
+            evaluated = []
+            for market in markets:
+                signal = evaluate(market)
+                manage_position(market, signal)
+                if signal.get("side"):
+                    rank = (signal.get("hold_strength",0), signal.get("signal_strength",0),
+                            -signal.get("flip_risk",100))
+                    evaluated.append((rank, market, signal))
+            evaluated.sort(key=lambda item: item[0], reverse=True)
+            overall = core.stats(DB_PATH)
+            for _, market, signal in evaluated[:MAX_CARDS]:
+                send_or_edit(market, signal, overall)
+            if not evaluated:
+                print(f"{utc_iso()} · no qualified contract · {len(markets)} verified contracts scanned")
         except Exception as exc:
-            print(f"Scan error: {type(exc).__name__}: {exc}")
-        time.sleep(max(0.2, SCAN_SECONDS - (time.time()-started)))
+            print(f"Scan failure: {type(exc).__name__}: {exc}")
+        time.sleep(max(0.25, SCAN_SECONDS-(time.time()-started)))
 
 
 if __name__ == "__main__":
