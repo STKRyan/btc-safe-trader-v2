@@ -282,29 +282,67 @@ def record_settlement(db_path: str | Path, ticker: str, result: str) -> bool:
     return True
 
 
-def stats(db_path: str | Path) -> dict[str, Any]:
-    with sqlite3.connect(db_path) as db:
-        calls = db.execute("SELECT settlement_result FROM initial_calls WHERE settlement_result IN ('WIN','LOSS') ORDER BY created_at").fetchall()
-        trades = db.execute("SELECT pnl_pct FROM paper_positions WHERE status='CLOSED' ORDER BY closed_at").fetchall()
-    wins = sum(1 for (r,) in calls if r == "WIN")
-    losses = len(calls)-wins
-    streak = 0
-    for (result,) in reversed(calls):
-        if not result:
+def _streaks(results: list[str]) -> tuple[int, int]:
+    current = 0
+    for result in reversed(results):
+        if result not in ("WIN", "LOSS"):
             continue
-        if streak == 0:
-            streak = 1 if result == "WIN" else -1
-        elif (streak > 0 and result == "WIN") or (streak < 0 and result == "LOSS"):
-            streak += 1 if streak > 0 else -1
+        if current == 0:
+            current = 1 if result == "WIN" else -1
+        elif (current > 0 and result == "WIN") or (current < 0 and result == "LOSS"):
+            current += 1 if current > 0 else -1
         else:
             break
-    best = 0
-    run = 0
-    for (result,) in calls:
-        run = run+1 if result == "WIN" else 0
+    best = run = 0
+    for result in results:
+        run = run + 1 if result == "WIN" else 0
         best = max(best, run)
-    pnl = [r[0] for r in trades if r[0] is not None]
-    return {"settled_calls": len(calls), "wins": wins, "losses": losses,
-            "win_rate_pct": round(100*wins/len(calls),1) if calls else None,
-            "current_initial_streak": streak, "best_initial_win_streak": best,
-            "managed_closed_trades": len(pnl), "managed_avg_pnl_pct": round(sum(pnl)/len(pnl),2) if pnl else None}
+    return current, best
+
+
+def stats(db_path: str | Path) -> dict[str, Any]:
+    with sqlite3.connect(db_path) as db:
+        calls = db.execute("SELECT asset,settlement_result,created_at,ticker FROM initial_calls WHERE settlement_result IN ('WIN','LOSS') ORDER BY created_at,ticker").fetchall()
+        trades = db.execute("SELECT asset,pnl_pct,closed_at,ticker FROM paper_positions WHERE status='CLOSED' AND pnl_pct IS NOT NULL ORDER BY closed_at,id").fetchall()
+        flips = db.execute("SELECT COUNT(*) FROM paper_events WHERE event_type='FLIP'").fetchone()[0]
+    call_results = [r[1] for r in calls]
+    wins = call_results.count("WIN")
+    losses = call_results.count("LOSS")
+    current, best = _streaks(call_results)
+    managed_results = ["WIN" if r[1] > 0 else "LOSS" for r in trades]
+    managed_current, managed_best = _streaks(managed_results)
+    pnl = [r[1] for r in trades]
+    by_asset = {}
+    for asset in ("BTC", "ETH", "GOLD"):
+        asset_calls = [r[1] for r in calls if r[0] == asset]
+        asset_trades = [r[1] for r in trades if r[0] == asset]
+        asset_current, asset_best = _streaks(asset_calls)
+        by_asset[asset] = {
+            "settled_calls": len(asset_calls), "wins": asset_calls.count("WIN"),
+            "losses": asset_calls.count("LOSS"),
+            "win_rate_pct": round(100*asset_calls.count("WIN")/len(asset_calls),1) if asset_calls else None,
+            "current_initial_streak": asset_current, "best_initial_win_streak": asset_best,
+            "managed_closed_trades": len(asset_trades),
+            "managed_avg_pnl_pct": round(sum(asset_trades)/len(asset_trades),2) if asset_trades else None,
+        }
+    return {
+        "settled_calls": len(calls), "wins": wins, "losses": losses,
+        "win_rate_pct": round(100*wins/len(calls),1) if calls else None,
+        "current_initial_streak": current, "best_initial_win_streak": best,
+        "managed_closed_trades": len(pnl),
+        "managed_avg_pnl_pct": round(sum(pnl)/len(pnl),2) if pnl else None,
+        "managed_wins": sum(1 for value in pnl if value > 0),
+        "managed_losses": sum(1 for value in pnl if value <= 0),
+        "managed_win_rate_pct": round(100*sum(1 for value in pnl if value > 0)/len(pnl),1) if pnl else None,
+        "current_managed_streak": managed_current, "best_managed_win_streak": managed_best,
+        "flip_events": flips, "by_asset": by_asset,
+    }
+
+
+def record_flip(db_path: str | Path, ticker: str, asset: str, old_side: str,
+                new_side: str, price: Decimal, detail: str = "") -> None:
+    with sqlite3.connect(db_path) as db:
+        db.execute("INSERT INTO paper_events(ticker,asset,event_type,side,price,ts,detail) VALUES(?,?,?,?,?,?,?)",
+                   (ticker, asset, "FLIP", new_side, str(price), time.time(),
+                    f"{old_side}->{new_side} {detail}".strip()))
+        db.commit()
