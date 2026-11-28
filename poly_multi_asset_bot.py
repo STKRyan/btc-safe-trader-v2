@@ -1317,23 +1317,37 @@ def cycle(c):
                     lines.append(f"**{asset} {tf}m** · MARKET NOT FOUND · no call"); continue
                 register_live_tokens(list(tokens(m).values()))
                 save_observation(c,asset,tf,m,tech)
-                record_forecast(c,m,asset,tf,tech.get("side","WAIT"),tech)
-                action=maybe_enter(c,asset,tf,m,tech)
+                exchange=exchange_snapshot(asset,seconds=10)
+                candidate_side,flip_reason,flip_immediate=adaptive_forecast_side(c,m.get("id"),tf,tech,exchange)
+                forecast_features=dict(tech)
+                forecast_features["exchange_flow"]=exchange
+                forecast_features["adaptive_forecast"]={"candidate":candidate_side,"reason":flip_reason}
+                forecast_side,forecast_note=record_forecast(
+                    c,m,asset,tf,candidate_side,forecast_features,
+                    flip_reason=flip_reason,immediate=flip_immediate)
+                decision_tech=dict(tech)
+                if forecast_side in ("UP","DOWN") and tech.get("side") in ("UP","DOWN") and forecast_side!=tech["side"]:
+                    decision_tech["side"]=forecast_side
+                    decision_tech["score"]=-int(tech.get("score",0))
+                    decision_tech["up_votes"],decision_tech["down_votes"]=tech.get("down_votes",0),tech.get("up_votes",0)
+                    decision_tech["adaptive_flip"]=forecast_note
+                action=maybe_enter(c,asset,tf,m,decision_tech)
                 lr=learning_adjustment(c,asset,tf)
                 wr=(f" · recent {lr['win_rate']:.0f}%/{lr['sample']} · flips {lr['flip_rate']*100:.0f}%"
                     if lr["win_rate"] is not None else
                     f" · learning sample {lr['sample']}/12 · flips {lr['flip_rate']*100:.0f}%")
-                scalp=scalp_call(c,asset,tf,m,tech)
+                scalp=scalp_call(c,asset,tf,m,decision_tech)
                 if scalp.startswith("SCALP CALL "):
                     smatch=re.search(r"entry ([0-9.]+)",scalp)
                     sside=re.search(r"SCALP CALL (UP|DOWN)",scalp)
                     if smatch and sside:
-                        record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)),features=tech)
-                side=tech["side"]
+                        record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)),features=decision_tech)
+                side=forecast_side
                 # Individual per-market Discord alerts are intentionally suppressed.
                 # The persistent, editable board below contains the latest call and avoids channel clutter.
-                vote_line=(f"MAJORITY VOTE: UP {tech['up_votes']}/5" if tech['up_votes']>=3 else f"MAJORITY VOTE: DOWN {tech['down_votes']}/5" if tech['down_votes']>=3 else f"NO MAJORITY: UP {tech['up_votes']}/5 · DOWN {tech['down_votes']}/5")
-                lines.append(f"**{asset} {tf}m** · **{tech['side']}** ({tech['score']:+d}/5 net) · {vote_line} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
+                vote_line=(f"MAJORITY VOTE: UP {decision_tech['up_votes']}/5" if decision_tech['up_votes']>=3 else f"MAJORITY VOTE: DOWN {decision_tech['down_votes']}/5" if decision_tech['down_votes']>=3 else f"NO MAJORITY: UP {decision_tech['up_votes']}/5 · DOWN {decision_tech['down_votes']}/5")
+                flip_display=f" · {forecast_note}" if any(x in forecast_note for x in ("FLIP","HOLDING CURRENT")) else ""
+                lines.append(f"**{asset} {tf}m** · **{side}** ({decision_tech['score']:+d}/5 net) · {vote_line}{flip_display} · RSI {tech['rsi']:.0f} · 1m {tech['move1']:+.3f}% · 3m {tech['move3']:+.3f}% · RANGE 20m {tech['range_position']:.0f}% · 10m {tech['move10']:+.3f}%\n{action}{wr}\n⚡ SCALP: {scalp}")
             except Exception as e:
                 msg=f"**{asset} {tf}m** · SCAN ERROR · {type(e).__name__}: {str(e)[:100]}"; print(msg); lines.append(msg)
     # Keep the most recent scan for every supported coin so the site shows the full radar.
