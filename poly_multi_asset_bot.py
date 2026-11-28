@@ -821,7 +821,7 @@ def scalp_call(c, asset, tf, market, tech):
     sm=brain.get("snipe_memory",{})
     wr=f"{sm['win_rate']:.0f}%" if sm.get("win_rate") is not None else "new sample"
     memory_note=f" · snipe memory {wr}/{sm.get('sample',0)} · loss streak {sm.get('loss_streak',0)}"
-    flow_note=f" · Polymarket tape {flow['trade_count']} prints/10s, net {flow['net_flow_pct']:+.0f}%"
+    flow_note=f" · Polymarket tape {flow['trade_count']} prints/5s, net {flow['net_flow_pct']:+.0f}%"
     ex_net=float(exchange.get("net_flow_pct",0) or 0); ex_imb=float(exchange.get("imbalance",0) or 0)
     ex_c1=exchange.get("candle_1m_pct"); ex_c5=exchange.get("candle_5m_pct")
     exchange_note=f" · Binance {exchange.get('symbol',asset)} flow {ex_net:+.0f}% / book {ex_imb:+.2f} / 1m {float(ex_c1):+.3f}% / 5m {float(ex_c5):+.3f}%" if ex_c1 is not None and ex_c5 is not None else " · Binance live chart data warming up"
@@ -926,6 +926,8 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     streak_note=(f" · streak {global_current}/{global_best} global, {asset_current}/{asset_best} {asset}"
                  f" · next global record win {global_best+1}" if global_best else
                  " · first global snipe record target: 1 win")
+    if target_guard:
+        streak_note += " · 60% rolling paper win-rate guard active (selectivity raised)"
     if streak_protect or record_chase:
         review_level=f"🏆 STREAK PROTECTION · evidence threshold {required_strength}/100"
     confirmed=confirmed and strength>=required_strength and evidence_count>=7 and not flip_chance and not learning_pause
@@ -942,9 +944,9 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     elif not flow_confirm:
         status="SNIPE WATCH · Polymarket contract buying not confirmed"
     elif possible_spoof:
-        status="SNIPE WATCH · possible spoof/fake stack · no persistent buyer prints"
+        status="SNIPE WATCH · possible spoof/fake stack · no persistent aggressor prints"
     elif not large_buyer_confirm:
-        status="SNIPE WATCH · waiting for large executed buyer flow"
+        status="SNIPE WATCH · waiting for large direction-aligned aggressor flow"
     elif not stack_confirm:
         status="SNIPE WATCH · buyer stack not persistent yet"
     elif not (ex_flow_confirm and ex_book_confirm and ex_move_confirm and chart_confirm):
