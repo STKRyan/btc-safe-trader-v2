@@ -838,9 +838,38 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     review_level="🔎 REVIEW · 40+ evidence" if strength>=40 else "⚪ LOW EVIDENCE · below review threshold"
     if flip_chance:
         review_level=f"🟠 FLIP CHANCE · risk {flip_risk_value}/100 · possible {('DOWN' if side=='UP' else 'UP')} reversal"
-    # Require at least 60 evidence points to promote an otherwise aligned setup.
-    confirmed=confirmed and strength>=60 and evidence_count>=7 and not flip_chance
-    if not tape_live or not quote_fresh:
+    # Streak protection: never chase a record by taking weaker entries.
+    # As the current streak approaches its record, raise the evidence bar and honor learned loss pauses.
+    global_streak=all_snipe_stats(c)
+    asset_streak=asset_paper_stats(c,asset,True)
+    learn=snipe_learning_adjustment(c,asset,tf)
+    global_current=int(global_streak.get("current_streak",0))
+    global_best=int(global_streak.get("best_streak",0))
+    asset_current=int(asset_streak.get("current_streak",0))
+    asset_best=int(asset_streak.get("best_streak",0))
+    streak_protect=max(global_current,asset_current)>=2
+    record_chase=(global_best>0 and global_current>=max(0,global_best-2)) or (
+        asset_best>0 and asset_current>=max(0,asset_best-2))
+    required_strength=60
+    if streak_protect: required_strength+=8
+    if record_chase: required_strength+=7
+    if learn.get("caution"): required_strength+=5
+    required_strength=min(85,required_strength)
+    learning_pause=bool(learn.get("pause"))
+    streak_note=(f" · streak {global_current}/{global_best} global, {asset_current}/{asset_best} {asset}"
+                 f" · next record win {global_best+1}" if global_best or asset_best else
+                 " · first snipe record target: 1 win")
+    if learning_pause:
+        confirmed=False
+        status=f"SNIPE PAUSED · recent snipe learning safety stop (loss streak {learn.get('loss_streak',0)})"
+    elif streak_protect or record_chase:
+        review_level=f"🏆 STREAK PROTECTION · evidence threshold {required_strength}/100"
+    confirmed=confirmed and strength>=required_strength and evidence_count>=7 and not flip_chance and not learning_pause
+    if confirmed and record_chase:
+        status="SNIPE CONFIRMED · record-chase setup passed stricter evidence"
+    elif confirmed and streak_protect:
+        status="SNIPE CONFIRMED · protecting active winning streak"
+        if not tape_live or not quote_fresh:
         status="SNIPE WATCH · waiting for fresh Polymarket trades/quote"
     elif not ex_fresh: status="SNIPE WATCH · waiting for fresh Binance spot trades/order book"
     elif flow_conflict or ex_flow_conflict: status="SNIPE BLOCKED · live selling pressure outweighs buying"
@@ -1816,7 +1845,7 @@ def main():
                 print(f"Cycle error: {type(e).__name__}: {e}")
                 print(f"Cycle error (dashboard will show next successful scan): {type(e).__name__}: {str(e)[:180]}",flush=True)
             if args.duration and time.time()-start>=args.duration:break
-            time.sleep(max(2,SCAN_SECONDS))
+            time.sleep(max(1.0,SCAN_SECONDS))
     finally:c.close()
     return 0
 
