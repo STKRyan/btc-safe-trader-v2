@@ -970,7 +970,11 @@ def snipe_update(c, market_id, side, stats, tech, brain, token=None, exchange=No
     ex_buy=float(exchange.get("buy_notional",0) or 0); ex_sell=float(exchange.get("sell_notional",0) or 0)
     ex_price=exchange.get("last_price"); ex_spread=exchange.get("spread_pct")
     c1=exchange.get("candle_1m_pct"); c5=exchange.get("candle_5m_pct")
-    ex_summary=(f"EXCHANGE: {exchange.get('symbol',asset)} price {float(ex_price):,.2f} · 5s buy {ex_buy:,.0f}/sell {ex_sell:,.0f} USD · net {ex_net:+.0f}% · large UP buys {large_buy_n} (${large_buy_value:,.0f}) / DOWN sells {large_sell_n} (${large_sell_value:,.0f}) · large net {large_net:+.0f}% · stack {stack_side} {stack_persistence:.0f}% persistent · book {ex_imb:+.2f} · spread {float(ex_spread):.3f}% · candles 1m {float(c1):+.3f}% / 5m {float(c5):+.3f}% · depth {float(exchange.get('depth_usd',0) or 0):,.0f} USD" if ex_price is not None and c1 is not None and c5 is not None and ex_spread is not None else f"EXCHANGE: {exchange.get('symbol',asset)} live trade/book/candles warming up")
+    ex_price_text=f"{float(ex_price):,.2f}" if ex_price is not None else "—"
+    ex_spread_text=f"{float(ex_spread):.3f}%" if ex_spread is not None else "—"
+    c1_text=f"{float(c1):+.3f}%" if c1 is not None else "—"
+    c5_text=f"{float(c5):+.3f}%" if c5 is not None else "—"
+    ex_summary=(f"EXCHANGE: {exchange.get('symbol',asset)} price {ex_price_text} · 5s buy {ex_buy:,.0f}/sell {ex_sell:,.0f} USD · net {ex_net:+.0f}% · large UP buys {large_buy_n} (\${large_buy_value:,.0f}) / DOWN sells {large_sell_n} (\${large_sell_value:,.0f}) · large net {large_net:+.0f}% · stack {stack_side} {stack_persistence:.0f}% persistent · book {ex_imb:+.2f} · spread {ex_spread_text} · candles 1m {c1_text} / 5m {c5_text} · depth {float(exchange.get('depth_usd',0) or 0):,.0f} USD")
     chart=f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{str(exchange.get('symbol',asset+'USDT')).upper()}"
     reason_bits=[]
     reason_bits.append("contract bid/ask movement supports direction" if ask_move is not None and ask_move>=0.75 else "contract price move not yet confirmed")
