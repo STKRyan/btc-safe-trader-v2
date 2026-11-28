@@ -1,0 +1,32 @@
+name: Validate unified Kalshi paper bot
+
+on:
+  push:
+    branches: [kalshi-gold-eth-btc-unified]
+    paths:
+      - kalshi_unified_bot.py
+      - kalshi_unified/**
+      - tests/test_kalshi_unified.py
+      - .github/workflows/validate-kalshi-unified.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - kalshi_unified_bot.py
+      - kalshi_unified/**
+      - tests/test_kalshi_unified.py
+      - .github/workflows/validate-kalshi-unified.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python -m py_compile kalshi_unified_bot.py tests/test_kalshi_unified.py
+      - run: python -m unittest discover -s tests -p 'test_kalshi_unified.py'
