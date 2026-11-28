@@ -1762,7 +1762,39 @@ def dashboard(c, lines):
                 snipe_label=f'🎯 **SNIPE CALL: {call_match.group(1).upper()}** · strength {strength}% {color_pct_bar(strength,"🎯")}{move_text}'
             else:
                 snipe_label=f'👀 **SNIPE WATCH** · no entry approved{move_text}'
-            value=f'{value}\n{snipe_label}'
+            if not item.get('missing') and item.get('side') in ('UP','DOWN'):
+                # Show actual paper entry when open; otherwise clearly label the sizing idea.
+                paper_size=max(0.0,min(float(portfolio["equity"])*PAPER_POSITION_FRACTION,float(portfolio["cash"])))
+                open_call=c.execute(
+                    "SELECT stake,entry,remaining_qty FROM calls "
+                    "WHERE asset=? AND timeframe=? AND side=? AND status='OPEN' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (asset,int(tf),item['side'])
+                ).fetchone()
+                if open_call:
+                    actual_stake=float(open_call["stake"] or 0)
+                    remaining_cost=float(open_call["entry"] or 0)*float(open_call["remaining_qty"] or 0)
+                    plan_base=max(0.0,remaining_cost)
+                    amount_line=(f"🧾 ACTUAL PAPER ENTRY: ${actual_stake:,.2f} original · "
+                                 f"${remaining_cost:,.2f} remaining cost")
+                else:
+                    plan_base=paper_size
+                    amount_line=f"🧾 PAPER SIZE IDEA: ${paper_size:,.2f} · not invested unless entry is approved"
+                evidence=max(0,min(100,50+item['score']*10))
+                risk_usd=plan_base*0.05
+                target_usd=plan_base*0.10
+                partial_usd=plan_base*0.04
+                plan_text=(
+                    f"{amount_line}\n"
+                    f"🧠 BOT TRUST / EVIDENCE: {evidence}/100 · signal evidence, NOT profit odds\n"
+                    f"🛡️ PAPER PLAN: +4% review ≈ +${partial_usd:,.2f} · "
+                    f"+10% target ≈ +${target_usd:,.2f} · -5% stop ≈ -${risk_usd:,.2f}\n"
+                    f"⏳ HOLD GUIDE: {tf}m market window · recheck each scan; exit sooner on stop, "
+                    f"profit target, or reversal. No fixed hold guarantee."
+                )
+                value=f'{value}\n{snipe_label}\n{plan_text}'
+            else:
+                value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
         card_fields.append({'name':'🎯 SNIPE METER · 5M / 15M','value':asset_snipe_meter(windows),'inline':False})
         card_fields.append({'name':'📈 PAPER W/L + STREAK TRACKER','value':per_asset_tracker_field(c,asset)[:1024],'inline':False})
