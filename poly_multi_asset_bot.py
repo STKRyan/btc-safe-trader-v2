@@ -1109,6 +1109,8 @@ def market_embeds(lines):
             pm_value='Live Polymarket bid/ask unavailable this scan'
         snipe_line=next((line.replace('🎯 ','').strip() for line in body.splitlines() if 'SNIPE ' in line),'SNIPE WATCH · no confirmed contract move yet')
         snipe_strength_match=re.search(r'strength (\d+)/100',snipe_line)
+        snipe_status_match=re.search(r'SNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)',snipe_line)
+        snipe_status=snipe_status_match.group(0) if snipe_status_match else 'SNIPE WATCH'
         snipe_strength=int(snipe_strength_match.group(1)) if snipe_strength_match else 0
         snipe_move_match=re.search(r'contract (?:move|trade) ([+-]?\d+\.\d+)%',snipe_line)
         snipe_move=float(snipe_move_match.group(1)) if snipe_move_match else None
