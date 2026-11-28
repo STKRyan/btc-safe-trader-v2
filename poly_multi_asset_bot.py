@@ -1533,17 +1533,17 @@ def asset_snipe_meter(windows):
             lines.append(f"{tf}m · WAIT · data unavailable")
             continue
         raw=str(item.get("snipe") or "")
-        direction_match=re.search(r"SNIPE DIRECTION:\\s*(UP|DOWN|NONE)",raw,re.I)
-        status_match=re.search(r"\\bSNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)\\b",raw,re.I)
-        strength_match=re.search(r"SNIPE STRENGTH\\s*(\\d+)%",raw,re.I)
-        move_match=re.search(r"CONTRACT MOVE\\s*([+-]?\\d+(?:\\.\\d+)?)%",raw,re.I)
+        direction_match=re.search(r"SNIPE DIRECTION:\s*(UP|DOWN|NONE)",raw,re.I)
+        status_match=re.search(r"\bSNIPE (CONFIRMED|WATCH|BLOCKED|FLIP RISK)\b",raw,re.I)
+        strength_match=re.search(r"SNIPE STRENGTH\s*(\d+)%",raw,re.I)
+        move_match=re.search(r"CONTRACT MOVE\s*([+-]?\d+(?:\.\d+)?)%",raw,re.I)
         direction=direction_match.group(1).upper() if direction_match else "WAIT"
         status=status_match.group(1).upper() if status_match else "WATCH"
         strength=int(strength_match.group(1)) if strength_match else 0
         bar=color_pct_bar(strength,"🎯")
         move=f" · {float(move_match.group(1)):+.2f}%" if move_match else ""
         lines.append(f"{tf}m {direction} · {status} · {strength}/100 {bar}{move}")
-    return "\\n".join(lines)[:1024]
+    return "\n".join(lines)[:1024]
 
 
 def per_asset_market_results(c, asset, limit=5):
