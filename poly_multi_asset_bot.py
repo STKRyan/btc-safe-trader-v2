@@ -1356,7 +1356,7 @@ def compact_discord_board(embeds):
         elif "MARKET RESULT" in title:
             kind="result"; budget=250
         elif "LIVE RADAR" in title:
-            kind="asset"; budget=760
+            kind="asset"; budget=900
         else:
             kind="other"; budget=300
 
@@ -1396,7 +1396,7 @@ def compact_discord_board(embeds):
             name=clip(field.get("name",""),80 if kind=="summary" else 45)
             if kind=="asset":
                 label=str(field.get("name",""))
-                value_limit=160 if "SNIPE METER" in label else 200 if "MARKET-BY-MARKET" in label else 150
+                value_limit=230 if "⏱" in label else 200 if "MARKET-BY-MARKET" in label else 150
             elif kind=="live":
                 value_limit=220
             elif kind=="summary":
@@ -1827,7 +1827,11 @@ def dashboard(c, lines):
                     f"⏳ HOLD GUIDE: {tf}m market window · recheck each scan; exit sooner on stop, "
                     f"profit target, or reversal. No fixed hold guarantee."
                 )
-                value=f'{value}\n{snipe_label}\n{plan_text}'
+                sn=asset_paper_stats(c,asset,True)
+                sn_rate=f"{sn['win_rate']:.1f}%" if sn['win_rate'] is not None else '—'
+                snipe_record=(f"📊 SNIPE W/L {sn['wins']}/{sn['losses']} · win {sn_rate} · "
+                               f"🔥 streak {sn['current_streak']} · best {sn['best_streak']}")
+                value=f'{value}\n{snipe_label}\n{snipe_record}\n{plan_text}'
             else:
                 value=f'{value}\n{snipe_label}\n🧾 PAPER SIZE: no entry sizing shown · direction/market not approved'
             card_fields.append({'name':f'⏱ {tf}M','value':value[:1024],'inline':False})
@@ -1888,6 +1892,14 @@ def cycle(c):
                     sside=re.search(r"SCALP CALL (UP|DOWN)",scalp)
                     if smatch and sside:
                         record_snipe_signal(c,asset,tf,m,sside.group(1),float(smatch.group(1)),features=decision_tech)
+                        alert_key=f"snipe:{asset}:{tf}:{m.get('id','')}:{sside.group(1)}"
+                        target_match=re.search(r"target ([0-9.]+)",scalp)
+                        stop_match=re.search(r"stop ([0-9.]+)",scalp)
+                        alert=(f"🎯 **SNIPE CALL · {asset} {tf}m · {sside.group(1)}**\n"
+                               f"**ENTRY:** {float(smatch.group(1)):.3f} · **TARGET:** {float(target_match.group(1)) if target_match else 0:.3f} · "
+                               f"**STOP:** {float(stop_match.group(1)) if stop_match else 0:.3f}\n"
+                               f"{scalp}\nPaper signal only; confirm current market before acting.")
+                        send_signal_once(c,alert_key,alert)
                 side=forecast_side
                 action_display=action.replace("WAIT ·","ENTRY NOT CONFIRMED ·",1)
                 scalp_display=scalp
