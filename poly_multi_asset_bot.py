@@ -1538,12 +1538,12 @@ def per_asset_market_results(c, asset, limit=5):
     for row in rows:
         label=(row["slug"] or row["market_id"] or "market")[:42]
         lines.append(
-            f"**{label}**\\n"
-            f"🟢 Won $ {float(row['won']):,.2f} ({int(row['wins'] or 0)} W) · "
-            f"🔴 Lost $ {float(row['lost']):,.2f} ({int(row['losses'] or 0)} L) · "
+            f"**{label}**\n"
+            f"🟢 Won ${float(row['won']):,.2f} ({int(row['wins'] or 0)} W) · "
+            f"🔴 Lost ${float(row['lost']):,.2f} ({int(row['losses'] or 0)} L) · "
             f"NET {float(row['net']):+,.2f} USD"
         )
-    return "\\n".join(lines)[:1024]
+    return "\n".join(lines)[:1024]
 
 
 def recent_market_result_embeds(c, limit=2):
