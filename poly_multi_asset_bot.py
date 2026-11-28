@@ -1283,6 +1283,109 @@ def live_position_embed(c):
     }
 
 
+def compact_discord_board(embeds):
+    """Keep the complete multi-embed board below Discord's 6,000-char message limit."""
+    def clip(value, limit):
+        value=str(value or "")
+        return value if len(value)<=limit else value[:max(0,limit-1)]+"…"
+
+    compact=[]
+    for original in embeds[:10]:
+        embed=dict(original)
+        title=str(embed.get("title",""))
+        if title.startswith("SIGNALFORGE"):
+            kind="summary"; budget=1250
+        elif "LIVE PAPER POSITIONS" in title:
+            kind="live"; budget=1000
+        elif "MARKET RESULT" in title:
+            kind="result"; budget=400
+        elif "LIVE RADAR" in title:
+            kind="asset"; budget=650
+        else:
+            kind="other"; budget=300
+
+        out={}
+        if title:
+            out["title"]=clip(title,256)
+        used=len(out.get("title",""))
+        desc_limits={"summary":100,"asset":65,"result":120,"live":150,"other":80}
+        description=clip(embed.get("description",""),desc_limits[kind])
+        if description:
+            out["description"]=description
+            used+=len(description)
+        footer=embed.get("footer")
+        footer_text=clip(footer.get("text",""),{"summary":80,"asset":45,"result":45,"live":70,"other":40}[kind]) if isinstance(footer,dict) else ""
+        if footer_text:
+            out["footer"]={"text":footer_text}
+            used+=len(footer_text)
+
+        fields=list(embed.get("fields",[]) or [])
+        if kind=="summary":
+            priorities=("PAPER ACCOUNT","PAPER WIN / LOSS","SNIPE SCORE","SNIPE STREAK",
+                        "WIN STREAK","OPEN POSITIONS","SIGNAL TREND","FORECAST WINS",
+                        "FORECAST FLIPS","FORECAST LOSSES","RESOLVED")
+            fields.sort(key=lambda f: next((i for i,p in enumerate(priorities) if p in str(f.get("name",""))),len(priorities)))
+            field_limit=6
+        elif kind=="live":
+            field_limit=3
+        else:
+            field_limit=3 if kind=="asset" else 1 if kind=="result" else 2
+
+        fitted=[]
+        for index,field in enumerate(fields[:field_limit]):
+            name=clip(field.get("name",""),80 if kind=="summary" else 45)
+            if kind=="asset":
+                value_limit=(150,150,170)[min(index,2)]
+            elif kind=="live":
+                value_limit=220
+            elif kind=="summary":
+                label=str(field.get("name",""))
+                value_limit=230 if "PAPER ACCOUNT" in label else 160 if any(p in label for p in ("PAPER WIN / LOSS","SNIPE SCORE")) else 120
+            elif kind=="result":
+                value_limit=170
+            else:
+                value_limit=120
+            remaining=max(0,budget-used-len(name)-4)
+            value=clip(field.get("value",""),min(value_limit,remaining))
+            if not name or not value:
+                continue
+            fitted_field={"name":name,"value":value}
+            if field.get("inline") is not None:
+                fitted_field["inline"]=field.get("inline")
+            fitted.append(fitted_field)
+            used+=len(name)+len(value)
+        if fitted:
+            out["fields"]=fitted
+        for key in ("color","timestamp"):
+            if key in embed:
+                out[key]=embed[key]
+        compact.append(out)
+
+    # The chosen card budgets total 5,900 characters for the current board layout.
+    # Keep a final safety trim in case a future card type is added.
+    total=sum(len(str(e.get("title","")))+len(str(e.get("description","")))+
+              len(str(e.get("footer",{}).get("text","")))+
+              sum(len(str(f.get("name","")))+len(str(f.get("value",""))) for f in e.get("fields",[]))
+              for e in compact)
+    while total>5900 and compact:
+        target=compact[-1]
+        fields=target.get("fields",[])
+        if fields and fields[-1].get("value"):
+            excess=total-5900
+            old=fields[-1]["value"]
+            fields[-1]["value"]=clip(old,max(1,len(old)-excess-2))
+        elif target.get("description"):
+            old=target["description"]
+            target["description"]=clip(old,max(1,len(old)-(total-5900)-2))
+        else:
+            break
+        total=sum(len(str(e.get("title","")))+len(str(e.get("description","")))+
+                  len(str(e.get("footer",{}).get("text","")))+
+                  sum(len(str(f.get("name","")))+len(str(f.get("value",""))) for f in e.get("fields",[]))
+                  for e in compact)
+    return compact
+
+
 def publish_board(c, embeds):
     """Post once, then edit the same multi-bot Discord message to prevent alert flooding."""
     webhook=os.getenv("DISCORD_WEBHOOK_URL","").strip()
@@ -1291,7 +1394,7 @@ def publish_board(c, embeds):
         return
     row=c.execute("SELECT value FROM bot_state WHERE key='multi_dashboard_message_id'").fetchone()
     message_id=str(row["value"]) if row else ""
-    payload={"embeds":embeds,"allowed_mentions":{"parse":[]}}
+    payload={"embeds":compact_discord_board(embeds),"allowed_mentions":{"parse":[]}}
     try:
         if message_id:
             response=S.patch(webhook.rstrip("/")+"/messages/"+message_id,json=payload,timeout=12)
@@ -1557,7 +1660,7 @@ def dashboard(c, lines):
         })
     if not asset_embeds:
         asset_embeds=[{'title':'⚪ CRYPTO RADAR · WAITING','description':'No verified markets this scan.','color':0x8794a8}]
-    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,3)+[live_position_card])
+    publish_board(c,[summary]+asset_embeds[:5]+recent_market_result_embeds(c,1)+[live_position_card])
 def cycle(c):
     global _ASSET_CYCLE
     register_exchange_assets(TOP_ASSETS)
