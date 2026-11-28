@@ -32,7 +32,7 @@ def _state(token):
     return _STATE.setdefault(str(token), {
         "trades": deque(maxlen=600), "bids": [], "asks": [],
         "bid": None, "ask": None, "imbalance": 0.0,
-        "book_ts": 0.0, "quote_ts": 0.0
+        "book_ts": 0.0, "quote_ts": 0.0, "book_history":deque(maxlen=1200)
     })
 
 
@@ -100,6 +100,26 @@ def _handle(raw):
                         continue
 
 
+def large_print_summary(trades, seconds=10, minimum_notional=5000.0):
+    """Flag unusually large executed aggressor prints against a 60-second median."""
+    now=time.time()
+    history=[x for x in trades if now-x[0]<=60]
+    recent=[x for x in history if now-x[0]<=seconds]
+    notionals=[float(x[2])*float(x[3]) for x in history if float(x[2])*float(x[3])>0]
+    threshold=float(minimum_notional)
+    if notionals:
+        ordered=sorted(notionals); threshold=max(threshold,ordered[len(ordered)//2]*4.0)
+    large=[x for x in recent if float(x[2])*float(x[3])>=threshold]
+    buys=[x for x in large if x[1]=="BUY"]; sells=[x for x in large if x[1]=="SELL"]
+    buy_value=sum(float(x[2])*float(x[3]) for x in buys)
+    sell_value=sum(float(x[2])*float(x[3]) for x in sells)
+    total=buy_value+sell_value
+    return {"large_trade_threshold":threshold,"large_buy_count":len(buys),
+            "large_sell_count":len(sells),"large_buy_notional":buy_value,
+            "large_sell_notional":sell_value,
+            "large_net_flow_pct":100*(buy_value-sell_value)/total if total else 0.0}
+
+
 def flow_snapshot(token, seconds=10):
     now=time.time()
     empty={"trade_count":0,"buy_notional":0.0,"sell_notional":0.0,"net_flow_pct":0.0,
@@ -109,8 +129,10 @@ def flow_snapshot(token, seconds=10):
     with _LOCK:
         st=_STATE.get(str(token))
         if not st: return empty
-        trades=[x for x in st["trades"] if now-x[0]<=seconds]
+        all_trades=list(st["trades"])
+        trades=[x for x in all_trades if now-x[0]<=seconds]
         bid=st["bid"]; ask=st["ask"]; imbalance=st["imbalance"]; book_ts=st["book_ts"]; quote_ts=st["quote_ts"]
+        large=large_print_summary(all_trades,seconds,minimum_notional=100.0)
     buy=sum(p*z for _,side,p,z in trades if side=="BUY"); sell=sum(p*z for _,side,p,z in trades if side=="SELL")
     total=buy+sell; prices=[x[2] for x in trades]
     move=(prices[-1]/prices[0]-1)*100 if len(prices)>=2 and prices[0]>0 else None
@@ -120,7 +142,7 @@ def flow_snapshot(token, seconds=10):
             "trade_move_pct":move,"last_trade_price":prices[-1] if prices else None,
             "trade_age":now-last if last else None,"bid":bid,"ask":ask,"imbalance":imbalance,
             "book_age":now-book_ts if book_ts else None,"quote_age":now-quote_ts if quote_ts else None,
-            "stream_connected":_CONNECTED}
+            **large,"stream_connected":_CONNECTED}
 
 
 def streamed_book_stats(token):
@@ -183,7 +205,7 @@ def live_flow_snapshot(token, seconds=10):
 def _bx_state(symbol):
     return _BX_STATE.setdefault(symbol,{"trades":deque(maxlen=3000),"bids":[],"asks":[],
         "bid":None,"ask":None,"book_ts":0.0,"quote_ts":0.0,
-        "candles":deque(maxlen=240),"last_price":None,"last_price_ts":0.0,"last_agg_id":None})
+        "candles":deque(maxlen=240),"book_history":deque(maxlen=1200),"last_price":None,"last_price_ts":0.0,"last_agg_id":None})
 
 
 def register_exchange_assets(assets):
@@ -226,8 +248,11 @@ def _bx_handle(raw):
                 parsed_b=sorted([(float(x[0]),float(x[1])) for x in bids if float(x[1])>0],key=lambda x:x[0],reverse=True)
                 parsed_a=sorted([(float(x[0]),float(x[1])) for x in asks if float(x[1])>0],key=lambda x:x[0])
                 if parsed_b and parsed_a:
+                    bd=sum(p*q for p,q in parsed_b[:10]); ad=sum(p*q for p,q in parsed_a[:10])
+                    imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
                     st.update({"bids":parsed_b[:10],"asks":parsed_a[:10],"bid":parsed_b[0][0],
-                               "ask":parsed_a[0][0],"book_ts":receipt,"quote_ts":receipt})
+                               "ask":parsed_a[0][0],"imbalance":imb,"book_ts":receipt,"quote_ts":receipt})
+                    st["book_history"].append((receipt,imb,depth))
             except (TypeError,ValueError,IndexError): pass
         elif event=="kline":
             k=data.get("k",{})
@@ -275,8 +300,11 @@ def _bx_rest_poll_symbol(symbol):
         bids=sorted([(float(x[0]),float(x[1])) for x in depth.get("bids",[]) if float(x[1])>0],key=lambda x:x[0],reverse=True)
         asks=sorted([(float(x[0]),float(x[1])) for x in depth.get("asks",[]) if float(x[1])>0],key=lambda x:x[0])
         if bids and asks:
+            bd=sum(p*q for p,q in bids[:10]); ad=sum(p*q for p,q in asks[:10])
+            imb=(bd-ad)/max(1.0,bd+ad); depth=min(bd,ad)
             st.update({"bids":bids[:10],"asks":asks[:10],"bid":bids[0][0],"ask":asks[0][0],
-                       "book_ts":receipt,"quote_ts":receipt})
+                       "imbalance":imb,"book_ts":receipt,"quote_ts":receipt})
+            st["book_history"].append((receipt,imb,depth))
         rows=st["candles"]
         for k in klines:
             try:
@@ -361,16 +389,22 @@ def exchange_snapshot(asset, seconds=10):
            "spread_pct":None,"imbalance":0.0,"depth_usd":0.0,"book_age":None,
            "quote_age":None,"last_price":None,"candle_1m_pct":None,"candle_5m_pct":None,
            "candle_bias":"UNKNOWN","candle_high":None,"candle_low":None,
+           "stack_side":"NEUTRAL","stack_persistence_pct":0.0,"stack_observations":0,
+           "large_trade_threshold":5000.0,"large_buy_count":0,"large_sell_count":0,
+           "large_buy_notional":0.0,"large_sell_notional":0.0,"large_net_flow_pct":0.0,
            "stream_connected":_BX_CONNECTED}
     if not symbol: return empty
     now=time.time()
     with _BX_LOCK:
         st=_BX_STATE.get(symbol)
         if not st: return empty
-        trades=[x for x in st["trades"] if now-x[0]<=seconds]
+        all_trades=list(st["trades"])
+        trades=[x for x in all_trades if now-x[0]<=seconds]
         bids=list(st["bids"]); asks=list(st["asks"]); bid=st["bid"]; ask=st["ask"]
         book_ts=st["book_ts"]; quote_ts=st["quote_ts"]; candles=list(st["candles"])
+        book_history=[x for x in st.get("book_history",[]) if now-x[0]<=5]
         last_price=st["last_price"]; last_price_ts=st["last_price_ts"]
+    large=large_print_summary(all_trades,seconds,minimum_notional=5000.0)
     buy=sum(p*q for _,side,p,q in trades if side=="BUY")
     sell=sum(p*q for _,side,p,q in trades if side=="SELL")
     total=buy+sell; prices=[x[2] for x in trades]
@@ -379,6 +413,8 @@ def exchange_snapshot(asset, seconds=10):
     bd=sum(p*q for p,q in bids[:10]); ad=sum(p*q for p,q in asks[:10])
     imbalance=(bd-ad)/max(1.0,bd+ad) if bids and asks else 0.0
     depth=min(bd,ad) if bids and asks else 0.0
+    stack_side="UP" if imbalance>=0.04 else "DOWN" if imbalance<=-0.04 else "NEUTRAL"
+    stack_persistence=100*sum(1 for _,hist_imb,_ in book_history if (hist_imb>=0.04 if stack_side=="UP" else hist_imb<=-0.04 if stack_side=="DOWN" else False))/max(1,len(book_history))
     spread_pct=((ask-bid)/((ask+bid)/2)*100) if bid and ask and ask>=bid else None
     closed=[x for x in candles if x["closed"]]
     c1=c5=None; bias="UNKNOWN"; hi=lo=None
@@ -398,7 +434,9 @@ def exchange_snapshot(asset, seconds=10):
             "book_age":now-book_ts if book_ts else None,"quote_age":now-quote_ts if quote_ts else None,
             "last_price":last_price,"price_age":now-last_price_ts if last_price_ts else None,
             "candle_1m_pct":c1,"candle_5m_pct":c5,"candle_bias":bias,
-            "candle_high":hi,"candle_low":lo,"stream_connected":_BX_CONNECTED}
+            "candle_high":hi,"candle_low":lo,
+            "stack_side":stack_side,"stack_persistence_pct":stack_persistence,
+            "stack_observations":len(book_history),**large,"stream_connected":_BX_CONNECTED}
 
 
 def live_flow_snapshot(token, seconds=10):
